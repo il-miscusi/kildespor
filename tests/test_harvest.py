@@ -125,6 +125,22 @@ class SocialTests(unittest.TestCase):
         found = self._profiles(html)
         self.assertEqual(list(found), ["https://linkedin.com/company/fjordbygg"])
 
+    def test_former_name_never_approves_a_profile(self) -> None:
+        """Codex review rc2 N1: Nordlys Produksjon AS was Solglimt AS; facebook.com/solglimt on its
+        site may be the successor's, so it is not published. Its current-name account is."""
+        home_html = """<html><head><title>Nordlys Produksjon</title></head><body><footer>
+        <a href="https://www.facebook.com/solglimt">Facebook</a><a href="https://www.instagram.com/nordlysproduksjon">Instagram</a>
+        Org.nr 923 609 016</footer></body></html>"""
+        fetcher = FakeFetcher({}, robots="User-agent: *\nAllow: /\n")
+        rec = record("NORDLYS PRODUKSJON AS")
+        rec.context["entity"]["historiskeNavn"] = [{"navn": "SOLGLIMT AS", "fraDato": "2015-01-01", "tilDato": "2024-01-01"}]
+        visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.fjordbygg.no/", home_html)
+        soup, _html, text = parse(home)
+        visit.pages.append((home, soup, text))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+        self.assertEqual([c["value"]["url"] for c in rec.claims if c["field"] == "social_profile"], ["https://instagram.com/nordlysproduksjon"])
+
     def test_id_only_accounts_need_the_site_social_block(self) -> None:
         """Codex review rc1 finding 4: a numeric Facebook/YouTube account in body content is not
         published; in the footer social block or the site's own Organization sameAs it is."""

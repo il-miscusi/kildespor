@@ -1522,9 +1522,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
 
     # -- brand, description, contacts (homepage and the pages the identity check read) ------------
     brand_names = _brand_and_contacts(rec, home, own_pages(), exact, company_label)
-    entity = rec.context.get("entity") or {}
-    former = [h.get("navn") for h in entity.get("historiskeNavn") or [] if isinstance(h, dict) and h.get("navn")]
-    names = _names_of(rec) + brand_names + former
+    # Current names only (legal, subunits, brand, domain). A former name never approves a profile:
+    # the name may now belong to a successor, so an account matching only it is not published.
+    names = _names_of(rec) + brand_names
     own_names = sorted({" ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)).split()) for n in names} | {" ".join(_fold_a(t) for t in name_tokens(n)) for n in names}, key=len, reverse=True)
     own_words = {re.sub(r"[^a-z0-9]", "", f(w)) for n in names for w in name_tokens(n) for f in (_fold_a, _fold_b)} | set(re.split(r"[^a-z0-9]+", _site(home.final_url).split(".")[0]))
     rec.context["site_brand_names"] = brand_names
