@@ -14,6 +14,7 @@ def main() -> int:
     parser.add_argument("--report", default=None, help="machine-readable run report (default: run-report.json next to --output)")
     parser.add_argument("--site", default=None, help="directory for the static HTML viewer (default: site/ next to --output)")
     parser.add_argument("--no-site", action="store_true", help="skip the HTML viewer")
+    parser.add_argument("--app-data", default=None, help="where to write the web app's dataset (default: profiles.json next to --output; the app reads public/data/profiles.json)")
     parser.add_argument("--previous", default=None, help="previous envelopes JSONL to refresh against (default: <state-dir>/latest.jsonl when present)")
     parser.add_argument("--state-dir", default=os.environ.get("KILDESPOR_STATE_DIR", "state"), help="where run snapshots are kept for refresh (default: state/)")
     parser.add_argument("--registry-snapshot", default=os.environ.get("KILDESPOR_REGISTRY_SNAPSHOT"), help="optional Brreg bulk CSV(.gz) used if the live register is unreachable")

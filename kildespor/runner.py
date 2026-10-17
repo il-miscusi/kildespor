@@ -380,6 +380,14 @@ def run_batch(args: Any) -> int:
             log(f"site written to {site_dir}/index.html")
         except Exception as exc:
             log(f"site build failed (envelopes unaffected): {type(exc).__name__}: {exc}")
+    try:
+        from .export_profiles import write as write_profiles
+
+        app_data = Path(args.app_data) if args.app_data else output.parent / "profiles.json"
+        write_profiles(envelopes, app_data)
+        log(f"web-app dataset written to {app_data}")
+    except Exception as exc:
+        log(f"web-app dataset not written (envelopes unaffected): {type(exc).__name__}: {exc}")
     if state_dir:
         try:
             (state_dir / "runs").mkdir(parents=True, exist_ok=True)
