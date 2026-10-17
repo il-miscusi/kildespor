@@ -250,6 +250,30 @@ EMAIL_ON_PAGE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]
 COPYRIGHT = re.compile(r"(?:©|\(c\)|copyright|opphavsrett|kopirett)\s*(?:\d{4}(?:\s*[-–]\s*\d{2,4})?\s*)?[,:\-–]?\s*([^|•·©]{2,90})", re.I)
 
 
+LEGAL_NAME_BEFORE = re.compile(r"((?:[^\W_][\w&.'’\-]*\s+){1,6}?)(?:as|asa|ans|da|sa|nuf|enk)\b[\s,.:;·|\-–]*(?:org|organisasjons|foretak|mva|vat|no\b|\d)", re.I)
+
+
+def _number_named_for_another(span: str, org: str, sig: "RegisterSignals") -> str | None:
+    """The legal name printed right before our organisation number, when it is not one of ours."""
+    digits = re.search(r"[\s.\-]?".join(org[k:k + 3] for k in (0, 3, 6)), span)
+    if not digits:
+        return None
+    before = span[: digits.start()]
+    match = None
+    for match in LEGAL_NAME_BEFORE.finditer(before):
+        pass
+    if match is None or len(before) - match.end() > 40:
+        return None
+    words = [w for w in core_tokens(match.group(1)) if w not in ("og", "and") and not w.isdigit()]
+    if not words:
+        return None
+    for name in sig.names:
+        ours = [w for w in core_tokens(name) if w not in ("og", "and")]
+        if ours and words[-len(ours):] == ours:
+            return None
+    return " ".join(words[-4:])
+
+
 def number_contexts(text: str) -> dict[str, tuple[str, str]]:
     """Every valid organisation number in ``text`` mapped to (kind, span).
 
@@ -1232,6 +1256,13 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
             if len(foreign_any) >= 3:
                 rec.error("website", "guessed site shows this organisation number among several others; treated as ambiguous", snap.final_url)
                 rec.context["website_ambiguous"] = snap.final_url
+                return None
+            other = _number_named_for_another(own[1], org, sig)
+            if other:
+                # "© 2025 Euroshopper Group AS Organisasjonsnummer: <ours>": the page puts our number
+                # under another registered company's name. Which of the two runs it is not decidable.
+                rec.context["website_ambiguous"] = snap.final_url
+                rec.context["website_ambiguous_reason"] = f"{snap.final_url} prints this organisation number under another company's name ({other})"
                 return None
             return "organisation_number_on_site", own[2], own[1], foreign_any, group_on_page
         if own is not None and own[0] == "bare":

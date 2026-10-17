@@ -680,3 +680,17 @@ class NoindexContactPages(unittest.TestCase):
         pages = {"https://flytbok.no/": html("Båtbok", "<a href='/om'>Om</a> Velkommen"),
                  "https://flytbok.no/kontakt/": html("Kontakt", f"Flytbok AS Org. nr.: {ORG}")}
         self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [("organisation_number_on_site", "https://flytbok.no/")])
+
+
+class NumberUnderAnotherName(unittest.TestCase):
+    def test_our_number_printed_under_another_company_is_refused(self) -> None:
+        # SORTLAND FASADEVASK AS: atvtilsalgs.no reads "© 2025 Euroshopper Group AS Organisasjonsnummer: <ours>".
+        cache = FakeCaches(social=[{"url": "https://www.atvtilsalgs.no/", "kind": "website", "platform": None, "source": "noindex", "match_rule": "copyright", "source_record": "https://www.atvtilsalgs.no/"}])
+        rec = make_rec(name="SORTLAND FASADEVASK AS", phone=None)
+        pages = {"https://www.atvtilsalgs.no/": html("Mini ATV for barn", f"© 2025 Euroshopper Group AS Organisasjonsnummer: {ORG[:3]} {ORG[3:6]} {ORG[6:]} Nettside utviklet av Byrå")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
+
+    def test_our_name_or_a_brand_before_the_number_is_fine(self) -> None:
+        rec = make_rec(name="AUZILIUM INVEST AS", phone=None)
+        pages = {"https://oobgolf.no/": html("Out of Bounds Golf", f"post@oobgolf.no Drives av Auzilium Invest AS · org.nr. {ORG[:3]} {ORG[3:6]} {ORG[6:]} Fore!")}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=["oobgolf.no"])], ["organisation_number_on_site"])
