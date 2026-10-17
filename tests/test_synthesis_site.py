@@ -223,5 +223,62 @@ class SynthesisTests(unittest.TestCase):
         self.assertEqual(json.dumps(build_synthesis(rich_record()), sort_keys=True), json.dumps(build_synthesis(rich_record()), sort_keys=True))
 
 
+class SiteTests(unittest.TestCase):
+    def build(self, shape: str) -> tuple[Path, list[dict]]:
+        from kildespor.site import build_site
+
+        envs = [envelope_of(rich_record()), envelope_of(bare_holding()), envelope_of(sole_proprietor())]
+        if shape == "published":
+            envs = [published(e) for e in envs]
+        out = Path(tempfile.mkdtemp()) / "site"
+        build_site(envs, out, {"run": {"run_id": "r1", "completed_at": "2026-10-17T07:00:00Z"}})
+        return out, envs
+
+    def test_split_files_and_routes(self) -> None:
+        for shape in ("internal", "published"):
+            out, envs = self.build(shape)
+            html = (out / "index.html").read_text()
+            for route in ("#/research", "#/companies/", "#/compare", "#/refresh"):
+                self.assertIn(route, html)
+            self.assertNotIn("https://cdn", html)
+            self.assertIn('src="data/index.js"', html)
+            index = json.loads((out / "data" / "index.json").read_text())
+            self.assertEqual([r["o"] for r in index["rows"]], [e["organisation_number"] for e in envs])
+            rich = index["rows"][0]
+            self.assertEqual((rich["j"], rich["cp"], rich["nw"], rich["cv"]), (1, True, 1, 5), shape)
+            self.assertEqual(rich["w"], "https://fjorddata.no/")
+            self.assertEqual(rich["so"], ["linkedin"])
+            bare = index["rows"][1]
+            self.assertEqual((bare["j"], bare["cp"], bare["w"]), (0, False, None))
+            for env in envs:
+                org = env["organisation_number"]
+                data = json.loads((out / "data" / "companies" / f"{org}.json").read_text())
+                js = (out / "data" / "companies" / f"{org}.js").read_text()
+                self.assertTrue(js.startswith('kildesporLoad("company",'))
+                self.assertEqual(data["org"], org)
+                # every evidence id a claim cites resolves to a source with URL, time and hash
+                for claim in data["cl"]:
+                    for ev_id in claim["e"]:
+                        source = data["src"][data["ev"][ev_id]["r"]]
+                        self.assertTrue(source["u"] and source["t"] and source["h"])
+                self.assertTrue(data["syn"]["summary"])
+
+    def test_script_parses(self) -> None:
+        import re
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        out, _ = self.build("internal")
+        html = (out / "index.html").read_text()
+        for i, script in enumerate(re.findall(r"<script>(.*?)</script>", html, flags=re.S)):
+            path = out / f"check{i}.js"
+            path.write_text(script)
+            result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr[:500])
+
+
 if __name__ == "__main__":
     unittest.main()

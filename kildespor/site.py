@@ -1,76 +1,330 @@
-"""Static, self-contained HTML viewer for a run's envelopes.
+"""Static viewer for a run: find, compare and verify company information.
 
-One file (``index.html``) with the data embedded, so it opens from disk or
-any static host with no server. Users can search and filter companies, read
-the evidence-linked brief, open every fact's source with its retrieval date
-and content hash, compare up to four companies side by side, and see what
-changed and what remains unknown. The layout is responsive for mobile.
+Every run writes ``<output dir>/site/``:
+
+    index.html                    the viewer (no external dependencies, no network calls)
+    data/index.json, index.js     one summary row per company (search, filters, screening)
+    data/companies/<org>.json     the full profile of one company, loaded on demand
+    data/companies/<org>.js       the same data wrapped for ``file://`` use
+
+Pages are hash routes, named after Builderr's preferred interface routes:
+
+    #/research                    find and screen companies; ask questions over the run's evidence
+    #/companies/<org>             one company: brief, figures, people, web and hiring, changes, unknowns
+    #/compare?orgs=a,b,c          side by side, same financial year
+    #/refresh                     what changed in this run, both sides with their evidence
+
+Every fact opens its source URL, retrieval time, quoted span, extraction
+method and content hash. The viewer loads its data with ``fetch`` when served
+over HTTP and with script tags when opened from disk, so ``file://`` works.
+
+    python -m kildespor.site --input out/envelopes.jsonl --output out/site
 """
 from __future__ import annotations
 
+import argparse
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .model import CompanyRecord
+from .synthesis import build_synthesis, claim_value, internal_field, job_date, money, nace_en, news_date
+
+PUBLISHED_FIELD = {"careers_page": "hiring_signal", "job_posting": "hiring_signal", "company_news": "dated_news"}
 
 
-def _compact(env: dict[str, Any]) -> dict[str, Any]:
-    evidence = {
-        e["id"]: {
-            "u": e.get("final_url") or e.get("source_url"),
-            "c": e.get("source_class"),
-            "t": e.get("retrieved_at"),
-            "h": (e.get("content_sha256") or "")[:12],
-            "s": e.get("claim_span"),
-            "m": e.get("extraction_method"),
-            "p": e.get("reporting_period"),
-        }
-        for e in env.get("evidence", [])
-    }
-    claims = []
+# -- projection ---------------------------------------------------------------------------------
+
+
+def claims_of(env: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every claim of an envelope in the internal shape (field names and dict values), either input shape."""
+    out = []
     for c in env.get("claims", []):
-        item = {"f": c.get("field"), "fa": c.get("family"), "a": c.get("availability"), "v": c.get("value"), "e": c.get("evidence_ids", [])}
-        for src, dst in (("label", "l"), ("effective_date", "d"), ("reporting_period", "rp"), ("relationship", "rel"), ("reason", "r"), ("confidence", "cf"), ("stale", "st")):
-            if c.get(src) is not None:
+        item = dict(c)
+        item["field"] = internal_field(c)
+        item["value"] = claim_value(c)
+        out.append(item)
+    return out
+
+
+def _record(env: dict[str, Any]) -> CompanyRecord:
+    rec = CompanyRecord(env["organisation_number"])
+    rec.claims = [c for c in claims_of(env) if c.get("availability") == "available"]
+    rec.evidence = {e["id"]: e for e in env.get("evidence", []) if e.get("id")}
+    rec.family_state = {
+        fam: {"state": info.get("state"), "reason": info.get("reason"), "checked_sources": info.get("checked_sources", [])}
+        for sec in (env.get("sections") or {}).values()
+        for fam, info in (sec.get("families") or {}).items()
+    }
+    return rec
+
+
+def synthesis_of(env: dict[str, Any]) -> dict[str, Any]:
+    """The envelope's brief; envelopes written before the current brief format get it rebuilt from their claims."""
+    syn = env.get("synthesis") or {}
+    if "summary_sentences" in syn and "coverage" in syn:
+        return syn
+    refresh = env.get("refresh") or {}
+    return build_synthesis(_record(env), env.get("changes") or None, baseline=bool(refresh.get("baseline", True)))
+
+
+def _compact_sentence(s: dict[str, Any]) -> dict[str, Any]:
+    out = {"t": s.get("text"), "c": s.get("claim_ids", []), "e": s.get("evidence_ids", []), "b": s.get("basis", "fact")}
+    if s.get("checked_sources"):
+        out["k"] = s["checked_sources"]
+    return out
+
+
+def company_payload(env: dict[str, Any]) -> dict[str, Any]:
+    """The full profile the viewer shows for one company (compact keys, every fact keeps its evidence ids)."""
+    syn = synthesis_of(env)
+    # Evidence records share their source snapshot (URL, retrieval time, hash): store each snapshot once.
+    sources: list[dict[str, Any]] = []
+    source_index: dict[tuple[Any, ...], int] = {}
+
+    def source_ref(e: dict[str, Any], previous: bool = False) -> int:
+        key = (e.get("final_url") or e.get("source_url"), e.get("retrieved_at"), e.get("content_sha256"), previous)
+        if key not in source_index:
+            item = {"u": key[0], "c": e.get("source_class"), "t": e.get("retrieved_at"), "h": e.get("content_sha256")}
+            for src, dst in (("http_status", "hs"), ("access_policy", "a")):
+                if e.get(src) is not None:
+                    item[dst] = e[src]
+            if e.get("final_url") and e.get("source_url") != e.get("final_url"):
+                item["ru"] = e.get("source_url")
+            if previous:
+                item["prev"] = True
+            source_index[key] = len(sources)
+            sources.append(item)
+        return source_index[key]
+
+    evidence: dict[str, dict[str, Any]] = {}
+    for e in env.get("evidence", []):
+        item = {"r": source_ref(e), "s": e.get("claim_span"), "m": e.get("extraction_method")}
+        if e.get("reporting_period"):
+            item["p"] = e["reporting_period"]
+        evidence[e["id"]] = item
+    claims = []
+    for c in claims_of(env):
+        item: dict[str, Any] = {"id": c.get("id"), "f": c.get("field"), "fa": c.get("family"), "a": c.get("availability"), "v": c.get("value"), "e": c.get("evidence_ids", [])}
+        if c["field"] in PUBLISHED_FIELD:
+            item["pf"] = PUBLISHED_FIELD[c["field"]]
+        for src, dst in (("label", "l"), ("effective_date", "d"), ("reporting_period", "rp"), ("relationship", "rel"), ("reason", "r"), ("stale", "st"), ("historical", "hi"), ("first_observed_at", "fo"), ("carried_forward_reason", "cr"), ("checked_sources", "k")):
+            if c.get(src) not in (None, [], ""):
                 item[dst] = c[src]
         claims.append(item)
+    for change in env.get("changes", []):
+        for e in change.get("previous_evidence") or []:
+            if e.get("id") and e["id"] not in evidence:
+                evidence[e["id"]] = {"r": source_ref(e, previous=True), "s": e.get("claim_span"), "m": e.get("extraction_method")}
+    families = {
+        fam: {"s": info.get("state"), "r": info.get("reason"), "n": info.get("claim_count", 0), "k": (info.get("checked_sources") or [])[:4]}
+        for sec in (env.get("sections") or {}).values()
+        for fam, info in (sec.get("families") or {}).items()
+    }
     return {
         "org": env["organisation_number"],
         "state": env.get("state"),
-        "id": env.get("legal_identity", {}),
-        "sec": {k: {"s": v["state"], "f": {fk: {"s": fv["state"], "r": fv.get("reason"), "n": fv.get("claim_count", 0)} for fk, fv in v["families"].items()}} for k, v in env.get("sections", {}).items()},
+        "run": {k: (env.get("run") or {}).get(k) for k in ("run_id", "completed_at", "started_at")},
+        "id": env.get("legal_identity") or {},
+        "fam": families,
         "cl": claims,
         "ev": evidence,
-        "syn": env.get("synthesis", {}),
+        "src": sources,
+        "syn": {
+            "headline": syn.get("headline"),
+            "summary": [_compact_sentence(s) for s in syn.get("summary_sentences", [])],
+            "sections": [{"key": sec.get("key"), "h": sec.get("heading"), "q": sec.get("question"), "s": [_compact_sentence(s) for s in sec.get("sentences", [])]} for sec in syn.get("sections", [])],
+            "timeline": syn.get("timeline", []),
+            "signals": syn.get("signals", []),
+            "unknowns": syn.get("unknowns", []),
+            "coverage": syn.get("coverage") or {},
+            "method": syn.get("method"),
+        },
         "ch": [
-            {k: ch.get(k) for k in ("change_type", "field", "summary", "materiality", "previous", "current", "current_evidence_ids", "previous_evidence_ids", "detected_at")}
+            {
+                "type": ch.get("change_type"), "field": ch.get("field"), "summary": ch.get("summary"), "mat": ch.get("materiality"),
+                "prev": ch.get("previous"), "cur": ch.get("current"), "ce": ch.get("current_evidence_ids", []), "pe": ch.get("previous_evidence_ids", []),
+                "cc": ch.get("current_claim_id"), "pc": ch.get("previous_claim_id"), "at": ch.get("detected_at"),
+            }
             for ch in env.get("changes", [])
         ],
-        "rf": env.get("refresh", {}),
-        "run": {k: env.get("run", {}).get(k) for k in ("run_id", "completed_at")},
+        "rf": env.get("refresh") or {},
     }
+
+
+def _first(claims: list[dict[str, Any]], field: str) -> dict[str, Any] | None:
+    items = [c for c in claims if c["field"] == field and c.get("availability") == "available" and not c.get("historical")]
+    return items[0] if items else None
+
+
+def index_row(env: dict[str, Any], payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One summary row per company: what search, filters, screening and the compare picker need."""
+    claims = [c for c in claims_of(env) if c.get("availability") == "available"]
+    evidence = {e["id"]: e for e in env.get("evidence", []) if e.get("id")}
+    syn = (payload or {}).get("syn") or {}
+    if not syn:
+        full = synthesis_of(env)
+        syn = {"headline": full.get("headline"), "summary": [_compact_sentence(s) for s in full.get("summary_sentences", [])], "coverage": full.get("coverage") or {}, "timeline": full.get("timeline", [])}
+    cite: dict[str, list[Any]] = {}
+
+    def remember(key: str, claim: dict[str, Any] | None) -> None:
+        if not claim:
+            return
+        ev = next((evidence[e] for e in claim.get("evidence_ids", []) if e in evidence), {})
+        cite[key] = [claim.get("id"), (claim.get("evidence_ids") or [None])[0], ev.get("final_url") or ev.get("source_url"), ev.get("retrieved_at")]
+
+    name = _first(claims, "legal_name")
+    brand = _first(claims, "public_brand_name")
+    muni = _first(claims, "municipality")
+    form = _first(claims, "legal_form")
+    industries = sorted((c for c in claims if c["field"] == "industry_code" and isinstance(c["value"], dict)), key=lambda c: c["value"].get("rank", 9))
+    ind = industries[0] if industries else None
+    employees = _first(claims, "registered_employees")
+    status = _first(claims, "registry_status")
+    founded = _first(claims, "founded_date")
+    site = _first(claims, "official_website")
+    socials = [c for c in claims if c["field"] == "social_profile"]
+    jobs = [c for c in claims if c["field"] == "job_posting"]
+    careers = [c for c in claims if c["field"] == "careers_page"]
+    news = sorted((c for c in claims if c["field"] == "company_news"), key=lambda c: news_date(c["value"]), reverse=True)
+    roles = [c for c in claims if c["field"] == "role" and isinstance(c["value"], dict)]
+    ceo = next((c for c in roles if c["value"].get("role_code") == "DAGL"), None)
+    chair = next((c for c in roles if c["value"].get("role_code") == "LEDE"), None)
+    parent = next((c for c in claims if c["field"] == "group_relationship" and isinstance(c["value"], dict) and c["value"].get("relationship") in ("parent", "ultimate_parent")), None)
+    fin: dict[str, dict[str, dict[str, Any]]] = {}
+    for c in claims:
+        if c["field"].startswith("financial.") and isinstance(c["value"], dict) and c["value"].get("account_type", "SELSKAP") == "SELSKAP" and "amount" in c["value"]:
+            fin.setdefault(str(c["value"].get("fiscal_year")), {})[c["field"].split(".", 1)[1]] = c
+    years = sorted(y for y in fin if y.isdigit())
+    latest = fin.get(years[-1], {}) if years else {}
+    prev = fin.get(str(int(years[-1]) - 1), {}) if years else {}
+
+    def amount(row: dict[str, dict[str, Any]], metric: str) -> float | None:
+        c = row.get(metric)
+        return c["value"].get("amount") if c else None
+
+    revenue, prev_revenue = amount(latest, "revenue"), amount(prev, "revenue")
+    equity, assets = amount(latest, "equity"), amount(latest, "total_assets")
+    for key, claim in (("name", name), ("municipality", muni), ("industry", ind), ("employees", employees), ("website", site), ("revenue", latest.get("revenue")), ("result", latest.get("annual_result")), ("equity", latest.get("equity")), ("ceo", ceo), ("chair", chair), ("parent", parent)):
+        remember(key, claim)
+    if jobs or careers:
+        remember("hiring", (jobs or careers)[0])
+    if socials:
+        remember("social", socials[0])
+    if news:
+        remember("news", news[0])
+    ind_code = ind["value"].get("code") if ind else None
+    changes = env.get("changes") or []
+    stale = sum(1 for c in claims if c.get("stale"))
+    timeline = syn.get("timeline") or []
+    coverage = syn.get("coverage") or {}
+    return {
+        "o": env["organisation_number"],
+        "n": name["value"] if name else env["organisation_number"],
+        "b": brand["value"] if brand else None,
+        "m": muni["value"] if muni else None,
+        "f": (form["value"] or {}).get("code") if form and isinstance(form["value"], dict) else None,
+        "i": ind_code,
+        "il": ind["value"].get("description") if ind else None,
+        "ie": nace_en(ind_code) if ind_code and not str(ind_code).startswith("00") else None,
+        "dv": str(ind_code)[:2] if ind_code and not str(ind_code).startswith("00") else None,
+        "e": employees["value"] if employees else None,
+        "fd": str(founded["value"])[:4] if founded else None,
+        "rs": status["value"] if status else None,
+        "y": years[-1] if years else None,
+        "r": revenue,
+        "rg": round(revenue / prev_revenue - 1, 4) if revenue is not None and prev_revenue else None,
+        "nr": amount(latest, "annual_result"),
+        "eq": equity,
+        "er": round(equity / assets, 4) if equity is not None and assets else None,
+        "w": ((site["value"] or {}).get("url") if isinstance(site["value"], dict) else site["value"]) if site else None,
+        "so": sorted({(c["value"].get("platform") if isinstance(c["value"], dict) else "profile") for c in socials}),
+        "j": len(jobs),
+        "cp": bool(careers),
+        "nw": len(news),
+        "nd": news_date(news[0]["value"]) if news else None,
+        "ceo": ceo["value"].get("name") if ceo else None,
+        "chair": chair["value"].get("name") if chair else None,
+        "pg": parent["value"].get("name") if parent else None,
+        "cv": coverage.get("score"),
+        "ca": [1 if a.get("available") else 0 for a in coverage.get("areas", [])],
+        "ch": len(changes),
+        "cs": [ch.get("summary") for ch in changes[:3]],
+        "st": stale,
+        "ld": timeline[0]["date"] if timeline else None,
+        "lt": timeline[0]["text"] if timeline else None,
+        "hl": syn.get("headline"),
+        "s1": (syn.get("summary") or [{}])[0].get("t"),
+        "ws": next((info.get("state") for sec in (env.get("sections") or {}).values() for fam, info in (sec.get("families") or {}).items() if fam == "official_website"), None),
+        "src": cite,
+    }
+
+
+def _js(kind: str, key: str | None, data: Any) -> str:
+    body = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return f"kildesporLoad({json.dumps(kind)},{json.dumps(key)},{body});\n"
+
+
+def _write(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def build_site(envelopes: list[dict[str, Any]], site_dir: Path, report: dict[str, Any] | None = None) -> Path:
-    site_dir.mkdir(parents=True, exist_ok=True)
-    data = [_compact(env) for env in envelopes]
+    site_dir = Path(site_dir)
+    data_dir = site_dir / "data"
+    companies_dir = data_dir / "companies"
+    if companies_dir.exists():
+        shutil.rmtree(companies_dir)
+    companies_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for env in envelopes:
+        try:
+            payload = company_payload(env)
+            rows.append(index_row(env, payload))
+        except Exception as exc:  # one malformed envelope must not cost the whole viewer
+            payload = {"org": env.get("organisation_number"), "error": f"{type(exc).__name__}: {exc}", "cl": [], "ev": {}, "syn": {}, "ch": [], "fam": {}}
+            rows.append({"o": env.get("organisation_number"), "n": env.get("organisation_number"), "err": True, "so": [], "ca": [], "src": {}})
+        org = str(payload.get("org"))
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+        _write(companies_dir / f"{org}.json", text + "\n")
+        _write(companies_dir / f"{org}.js", _js("company", org, payload))
+    run = (report or {}).get("run") or (envelopes[0].get("run") if envelopes else {}) or {}
+    previous = sorted({str((e.get("refresh") or {}).get("previous_run_id")) for e in envelopes if (e.get("refresh") or {}).get("previous_run_id")})
     meta = {
+        "agent": "kildespor",
         "version": __version__,
-        "run_id": (report or {}).get("run", {}).get("run_id"),
-        "completed_at": (report or {}).get("run", {}).get("completed_at"),
+        "run_id": run.get("run_id"),
+        "completed_at": run.get("completed_at"),
         "count": len(envelopes),
-        "validation": (report or {}).get("validation", {}).get("passed"),
-        "coverage": {k: v.get("share_available") for k, v in (report or {}).get("coverage_by_family", {}).items()},
-        "claims": (report or {}).get("available_claims"),
-        "requests": (report or {}).get("operations", {}).get("requests"),
+        "previous_runs": previous,
+        "baseline": not previous,
+        "validation": ((report or {}).get("validation") or {}).get("passed"),
+        "coverage": {k: v.get("share_available") for k, v in ((report or {}).get("coverage_by_family") or {}).items()},
+        "requests": ((report or {}).get("operations") or {}).get("requests"),
+        "generated_by": f"kildespor {__version__} site.py",
     }
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str).replace("</", "<\\/")
-    meta_json = json.dumps(meta, ensure_ascii=False, default=str).replace("</", "<\\/")
-    html = TEMPLATE.replace("__DATA__", payload).replace("__META__", meta_json)
-    path = site_dir / "index.html"
-    path.write_text(html, encoding="utf-8")
-    return path
+    index = {"meta": meta, "rows": rows}
+    _write(data_dir / "index.json", json.dumps(index, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+    _write(data_dir / "index.js", _js("index", None, index))
+    _write(site_dir / "index.html", TEMPLATE.replace("__VERSION__", __version__))
+    return site_dir / "index.html"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build the static viewer from a run's envelopes")
+    parser.add_argument("--input", default="out/envelopes.jsonl")
+    parser.add_argument("--output", default="out/site")
+    parser.add_argument("--report", default=None, help="run-report.json (optional; adds run totals)")
+    args = parser.parse_args()
+    envelopes = [json.loads(line) for line in Path(args.input).read_text(encoding="utf-8").splitlines() if line.strip()]
+    report = json.loads(Path(args.report).read_text(encoding="utf-8")) if args.report and Path(args.report).exists() else None
+    path = build_site(envelopes, Path(args.output), report)
+    print(f"wrote {path} ({len(envelopes)} companies)")
+    return 0
 
 
 TEMPLATE = r"""<!doctype html>
@@ -78,220 +332,406 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kildespor — Norwegian company research</title>
-<meta name="description" content="Evidence-linked profiles of Norwegian companies: identity, accounts, leadership, workplaces, website, hiring and activity, with a source for every fact.">
+<title>Kildespor company research</title>
+<meta name="description" content="Find, compare and verify Norwegian company information. Every fact links to its source, retrieval time and quoted span.">
+<meta name="generator" content="kildespor __VERSION__">
 <style>
-:root{--bg:#f6f7f9;--panel:#fff;--ink:#14181f;--muted:#5b6472;--line:#e3e6eb;--accent:#0b5cad;--accent-soft:#e7f0fb;--ok:#137a3a;--ok-soft:#e5f5eb;--warn:#9a5b00;--warn-soft:#fff3e0;--bad:#b42318;--bad-soft:#fdecea;--chip:#eef1f5;--shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08)}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--panel:#171b23;--ink:#e8ebf0;--muted:#9aa4b2;--line:#2a303b;--accent:#6aa9ff;--accent-soft:#1b2a40;--ok:#4cc27a;--ok-soft:#14301f;--warn:#f0b04f;--warn-soft:#33270f;--bad:#ff7b6e;--bad-soft:#3a1714;--chip:#222833;--shadow:none}}
-*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-a{color:var(--accent)}button,input,select{font:inherit;color:inherit}
-header.top{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-header.top h1{font-size:17px;margin:0;letter-spacing:.2px}header.top .run{color:var(--muted);font-size:13px}
-.searchbar{flex:1;min-width:220px;display:flex;gap:8px}
-.searchbar input{flex:1;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
-.searchbar select{padding:9px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
-.layout{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:16px;padding:16px;max-width:1500px;margin:0 auto}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
-.listpanel{position:sticky;top:70px;max-height:calc(100vh - 86px);display:flex;flex-direction:column}
-.filters{display:flex;flex-wrap:wrap;gap:6px;padding:10px;border-bottom:1px solid var(--line)}
-.filters button{border:1px solid var(--line);background:var(--chip);border-radius:999px;padding:4px 10px;font-size:13px;cursor:pointer}
-.filters button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
-.count{padding:6px 12px;color:var(--muted);font-size:13px}
-#list{overflow:auto;padding:0 6px 8px}
-.row{display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;padding:9px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer}
-.row:hover,.row:focus-visible{background:var(--accent-soft);outline:none}.row.active{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
-.row .n{font-weight:600;display:block}.row .m{color:var(--muted);font-size:12.5px;display:block}
-.dots{display:flex;gap:3px;align-items:center;flex-shrink:0}.dot{width:8px;height:8px;border-radius:50%;background:var(--line)}.dot.on{background:var(--ok)}
-main{min-width:0}
-.profile{padding:18px 20px}
-.ph{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
-.ph h2{margin:0;font-size:22px}.ph .sub{color:var(--muted)}
-.actions{display:flex;gap:8px;flex-wrap:wrap}
-.btn{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:7px 12px;cursor:pointer;text-decoration:none;color:var(--ink);font-size:14px}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin:14px 0}
-.kv div{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
-.kv b{display:block;font-size:12px;color:var(--muted);font-weight:500}
-.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:10px;overflow-x:auto}
-.tabs button{border:0;background:transparent;padding:9px 12px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;color:var(--muted)}
-.tabs button[aria-selected=true]{border-color:var(--accent);color:var(--ink);font-weight:600}
-.card{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:12px 0;background:var(--panel)}
-.card h3{margin:0 0 6px;font-size:15px}
-.state{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;background:var(--chip);color:var(--muted);margin-left:6px;vertical-align:middle}
+:root{--bg:#f5f6f8;--panel:#fff;--ink:#141820;--muted:#566070;--line:#dfe3e9;--accent:#0b5cad;--accent-ink:#fff;--accent-soft:#e6effa;--ok:#11703a;--ok-soft:#e3f4e9;--warn:#8a5300;--warn-soft:#fff2dc;--bad:#b42318;--bad-soft:#fdecea;--chip:#eef1f5;--focus:#ffbf47;--shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08)}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--panel:#171b23;--ink:#e8ebf0;--muted:#a3adbb;--line:#2a303b;--accent:#6aa9ff;--accent-ink:#0f1218;--accent-soft:#1b2a40;--ok:#4cc27a;--ok-soft:#14301f;--warn:#f0b04f;--warn-soft:#33270f;--bad:#ff7b6e;--bad-soft:#3a1714;--chip:#222833;--shadow:none}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;overflow-x:hidden}
+a{color:var(--accent);overflow-wrap:anywhere}button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;z-index:99;background:var(--panel);padding:10px}
+header.top{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line)}
+.bar{max-width:1280px;margin:0 auto;padding:6px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:700;font-size:17px;text-decoration:none;color:var(--ink);display:flex;align-items:center;min-height:44px}
+.runinfo{color:var(--muted);font-size:12.5px;flex:1;min-width:0}
+nav.main{display:flex;gap:4px}
+nav.main a{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;border-radius:10px;text-decoration:none;color:var(--ink);font-weight:600}
+nav.main a[aria-current=page]{background:var(--accent-soft);color:var(--accent)}
+main{max-width:1280px;margin:0 auto;padding:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:16px;margin-bottom:16px;min-width:0}
+h1{font-size:22px;margin:0 0 4px;line-height:1.25;overflow-wrap:anywhere}h2{font-size:17px;margin:0 0 8px}h3{font-size:15px;margin:14px 0 6px}
+.muted{color:var(--muted)}.small{font-size:13px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;overflow-wrap:anywhere}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 14px;border:1px solid var(--line);background:var(--panel);border-radius:10px;cursor:pointer;text-decoration:none;color:var(--ink);font-weight:600}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.grid2{display:grid;grid-template-columns:minmax(0,320px) minmax(0,1fr);gap:16px;align-items:start}
+input[type=search],input[type=text],input[type=number],select{min-height:44px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);width:100%;min-width:0}
+label.field{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+.toggle{display:flex;align-items:center;gap:10px;min-height:44px;cursor:pointer;font-size:14px}
+.toggle input{width:22px;height:22px;margin:0;flex:none}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ask{display:flex;gap:8px}.ask input{flex:1}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.examples button{min-height:44px;border:1px solid var(--line);background:var(--chip);border-radius:999px;padding:0 12px;font-size:13px;cursor:pointer}
+.answer{margin-top:12px;border-left:4px solid var(--accent);padding:8px 12px;background:var(--accent-soft);border-radius:0 10px 10px 0}
+.answer.unsupported{border-color:var(--warn);background:var(--warn-soft)}
+.answer ul{margin:6px 0;padding-left:20px}
+.list{display:flex;flex-direction:column;gap:8px}
+.card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:start;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--panel)}
+.card a.name{font-weight:700;text-decoration:none;color:var(--ink);font-size:15.5px;display:inline-flex;align-items:center;min-height:44px}
+.card a.name:hover{color:var(--accent)}
+.card .meta{color:var(--muted);font-size:13px}
+.badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.badge{display:inline-flex;align-items:center;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--muted);white-space:nowrap}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}.badge.warn{background:var(--warn-soft);color:var(--warn)}.badge.bad{background:var(--bad-soft);color:var(--bad)}.badge.info{background:var(--accent-soft);color:var(--accent)}
+.cov{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:13px;white-space:nowrap}
+.dots{display:inline-flex;gap:3px}.dot{width:9px;height:9px;border-radius:50%;background:var(--line)}.dot.on{background:var(--ok)}
+.pick{display:flex;align-items:center;gap:6px;min-height:44px;font-size:13px;cursor:pointer}
+.pick input{width:22px;height:22px}
+.state{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;background:var(--chip);color:var(--muted)}
 .state.available{background:var(--ok-soft);color:var(--ok)}.state.failed,.state.blocked{background:var(--bad-soft);color:var(--bad)}.state.ambiguous{background:var(--warn-soft);color:var(--warn)}
-sup.src a{text-decoration:none;font-size:11px;padding:0 3px;border-radius:4px;background:var(--accent-soft)}
-.signal{display:inline-block;margin:3px 4px 3px 0;padding:3px 9px;border-radius:999px;font-size:13px;background:var(--chip)}
-.signal.positive{background:var(--ok-soft);color:var(--ok)}.signal.negative{background:var(--bad-soft);color:var(--bad)}
-table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600;font-size:12.5px}
-td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.tablewrap{overflow-x:auto}
-details.ev{margin:6px 0;border:1px solid var(--line);border-radius:10px;padding:6px 10px}details.ev summary{cursor:pointer;font-size:13.5px}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;word-break:break-all}
-.muted{color:var(--muted)}.small{font-size:13px}
-#compareTray{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:30;background:var(--panel);border:1px solid var(--line);box-shadow:0 6px 24px rgba(0,0,0,.18);border-radius:14px;padding:8px 12px;display:none;gap:8px;align-items:center;max-width:calc(100vw - 24px);flex-wrap:wrap}
-#compareTray .pill{background:var(--chip);border-radius:999px;padding:3px 10px;font-size:13px}
-.empty{padding:30px;color:var(--muted);text-align:center}
-.backbtn{display:none}
-.timeline li{margin:4px 0}
-@media (max-width:860px){header.top{position:static}header.top a.btn{display:none}.layout{grid-template-columns:1fr;padding:10px}.listpanel{position:static;max-height:none}#list{max-height:none}
- body.viewing .listpanel{display:none} body.viewing .backbtn{display:inline-block} body:not(.viewing) main{display:none}
- .profile{padding:14px}.ph h2{font-size:19px}.kv{grid-template-columns:1fr 1fr}}
-@media print{header.top,.listpanel,#compareTray,.actions{display:none}.layout{display:block}}
+.cite{position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 5px;margin:0 1px;border:0;border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:11.5px;font-weight:700;cursor:pointer;vertical-align:1px;line-height:1}
+.cite::after{content:"";position:absolute;inset:-12px -6px}
+.cite.computed{background:var(--chip);color:var(--ink)}.cite.stale{background:var(--warn-soft);color:var(--warn)}
+.stale-mark{display:inline-block;font-size:11.5px;font-weight:700;color:var(--warn);background:var(--warn-soft);border-radius:6px;padding:0 6px;margin-left:4px}
+.covbox{border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-width:200px}
+.covbox .score{font-size:24px;font-weight:800}.covbox ul{list-style:none;margin:6px 0 0;padding:0;font-size:13px}.covbox li{display:flex;justify-content:space-between;gap:8px;padding:2px 0}
+.head{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;margin:12px 0}
+.kv div{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}
+.kv b{display:block;font-size:12px;color:var(--muted);font-weight:500}
+.secnav{display:flex;gap:6px;overflow-x:auto;padding:4px 0;margin:4px 0 0;-webkit-overflow-scrolling:touch}
+.secnav a{flex:none;display:inline-flex;align-items:center;min-height:44px;padding:0 12px;border-radius:999px;background:var(--chip);text-decoration:none;color:var(--ink);font-size:13.5px}
+.brief p{margin:6px 0}
+.q{font-size:12.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em;margin:14px 0 2px}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12.5px}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.compare th[scope=row]{position:sticky;left:0;background:var(--panel);min-width:120px;z-index:1}
+table.compare td{min-width:150px}
+table.compare thead a{display:inline-flex;align-items:center;min-height:44px}
+.strip{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.strip .btn{font-weight:500}
+ul.plain{list-style:none;margin:0;padding:0}ul.plain li{padding:6px 0;border-bottom:1px solid var(--line)}
+.timeline li{display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px}
+.change{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0}
+.side{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}.side>div{background:var(--bg);border-radius:8px;padding:6px 8px;min-width:0;overflow-wrap:anywhere}
+details.facts>summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600}
+#drawer{position:fixed;inset:0;z-index:50;display:none}
+#drawer.open{display:block}
+#drawer .shade{position:absolute;inset:0;background:rgba(0,0,0,.35)}
+#drawer .sheet{position:absolute;right:0;top:0;bottom:0;width:min(520px,100%);background:var(--panel);overflow:auto;padding:16px;box-shadow:-8px 0 24px rgba(0,0,0,.2)}
+.evi{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:10px 0}
+.evi blockquote{margin:8px 0;padding:6px 10px;border-left:3px solid var(--accent);background:var(--bg);font-size:13.5px;overflow-wrap:anywhere;white-space:pre-wrap}
+.evi dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:2px 8px;margin:6px 0 0;font-size:13px}.evi dt{color:var(--muted)}.evi dd{margin:0;overflow-wrap:anywhere}
+#tray{position:fixed;left:50%;transform:translateX(-50%);bottom:12px;z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:6px 8px;display:none;gap:8px;align-items:center;max-width:calc(100vw - 24px)}
+#tray.show{display:flex}
+.empty{padding:24px;text-align:center;color:var(--muted)}
+.notice{background:var(--warn-soft);color:var(--warn);border-radius:10px;padding:8px 12px;margin:8px 0;font-size:14px}
+.stat{display:inline-block;margin-right:16px}.stat b{font-size:20px;display:block}
+@media (max-width:640px){table.compare thead{display:none}table.compare,table.compare tbody,table.compare tr{display:block}table.compare tr{border-bottom:1px solid var(--line);padding:6px 0}table.compare th[scope=row]{display:block;position:static;border:0;padding:4px 0;font-size:13px}table.compare td{display:grid;grid-template-columns:minmax(0,40%) minmax(0,1fr);gap:8px;min-width:0;border:0;padding:4px 0}table.compare td::before{content:attr(data-label);color:var(--muted);font-size:13px;overflow-wrap:anywhere}}
+@media (max-width:860px){.grid2{grid-template-columns:1fr}.runinfo{display:none}main{padding:10px}.panel{padding:12px}h1{font-size:19px}.side{grid-template-columns:1fr}.timeline li{grid-template-columns:1fr;gap:0}.covbox{width:100%}#drawer .sheet{top:auto;max-height:88vh;width:100%;border-radius:16px 16px 0 0}}
+@media print{header.top,#tray,#drawer,.secnav,.btn{display:none!important}main{max-width:none}}
 </style>
 </head>
 <body>
-<header class="top">
-  <h1>Kildespor</h1>
-  <span class="run" id="runinfo"></span>
-  <div class="searchbar" role="search">
-    <label for="q" class="muted small" style="position:absolute;left:-9999px">Search companies</label>
-    <input id="q" type="search" placeholder="Search name, brand, org. number, industry, place…" autocomplete="off">
-    <label for="sort" style="position:absolute;left:-9999px">Sort</label>
-    <select id="sort"><option value="data">Most data</option><option value="name">Name A–Z</option><option value="revenue">Revenue</option><option value="employees">Employees</option><option value="jobs">Active jobs</option></select>
-  </div>
-  <a class="btn" href="../envelopes.jsonl" download>Envelopes (JSONL)</a>
-  <a class="btn" href="../run-report.json">Run report</a>
-</header>
-<div class="layout">
-  <aside class="panel listpanel" aria-label="Companies">
-    <div class="filters" id="filters"></div>
-    <div class="count" id="count" aria-live="polite"></div>
-    <div id="list" role="list"></div>
-  </aside>
-  <main><div class="panel" id="view"><div class="empty">Select a company.</div></div></main>
-</div>
-<div id="compareTray" role="region" aria-label="Compare tray"></div>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="bar">
+<a class="brand" href="#/research">Kildespor</a>
+<span class="runinfo" id="runinfo"></span>
+<nav class="main" aria-label="Main">
+<a href="#/research" data-route="research">Research</a>
+<a href="#/compare" data-route="compare">Compare</a>
+<a href="#/refresh" data-route="refresh">Refresh</a>
+</nav></div></header>
+<main id="main" tabindex="-1"><div class="panel empty">Loading the run's data…</div></main>
+<div id="tray" role="region" aria-label="Companies selected for comparison"></div>
+<div id="drawer" aria-hidden="true"><div class="shade" data-close="1"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><div class="row" style="justify-content:space-between"><h2 id="drawer-title" style="margin:0">Verify</h2><button class="btn" data-close="1" aria-label="Close">Close</button></div><div id="drawer-body"></div></div></div>
+<noscript><p style="padding:16px">This viewer needs JavaScript. The same data is in data/index.json and data/companies/&lt;organisation number&gt;.json.</p></noscript>
 <script>
-const DATA=__DATA__;
-const META=__META__;
-const $=s=>document.querySelector(s);
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const safeUrl=u=>/^https?:\/\/[^\s"'<>]+$/i.test(String(u??''))?String(u):'#';
-const hesc=v=>esc(safeUrl(v));
-const norm=v=>String(v??'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
-const SECTIONS=[["legal_identity_and_brand","Identity"],["annual_accounts","Accounts"],["leadership_and_workplaces","People & places"],["website_and_profiles","Website & profiles"],["hiring_and_activity","Hiring & activity"]];
-const FAM={legal_identity:"Legal identity",public_brand:"Public brand",annual_accounts:"Annual accounts",leadership:"Leadership",workplaces:"Registered workplaces",official_website:"Official website",company_profiles:"Company profiles",contact_channels:"Contact channels",hiring:"Hiring",public_activity:"Public activity"};
-const fmt=new Intl.NumberFormat('en-GB',{maximumFractionDigits:0});
-function money(v,c){if(v==null)return'<span class="muted">not reported</span>';return esc(fmt.format(v)+' '+(c||'NOK'))}
-function compact(v){if(v==null)return'—';const a=Math.abs(v);const s=v<0?'-':'';return a>=1e9?s+(a/1e9).toFixed(1)+' bn':a>=1e6?s+(a/1e6).toFixed(1)+' m':a>=1e3?s+(a/1e3).toFixed(0)+' k':s+a.toFixed(0)}
-DATA.forEach((d,i)=>{d._i=i;d._claims=d.cl.filter(c=>c.a==='available');
-  const by=f=>d._claims.filter(c=>c.f===f);d._by=by;
-  d._score=SECTIONS.filter(([k])=>d.sec[k]&&d.sec[k].s==='available').length;
-  const fin=by('financial.revenue').filter(c=>c.v.account_type==='SELSKAP').sort((a,b)=>b.v.fiscal_year.localeCompare(a.v.fiscal_year));
-  d._rev=fin.length?fin[0].v.amount:null;d._emp=(by('registered_employees')[0]||{}).v??null;d._jobs=by('job_posting').length;
-  d._site=by('official_website').length>0;d._social=by('social_profile').length;d._changes=(d.ch||[]).length;
-  d._text=norm([d.id.legal_name,d.id.public_brand,d.org,d.id.municipality,d.id.industry&&d.id.industry.description,d.id.industry&&d.id.industry.code,d.id.official_website].join(' '));});
-const FILTERS=[["site","Has website",d=>d._site],["social","Social profiles",d=>d._social>0],["jobs","Hiring now",d=>d._jobs>0],["fin","Has accounts",d=>d._rev!=null],["changes","Changed",d=>d._changes>0],["full","All 5 areas",d=>d._score===5]];
-const active=new Set();let compare=[];let current=null;let tab='brief';
-function renderFilters(){$('#filters').innerHTML=FILTERS.map(([k,l])=>`<button type="button" data-k="${k}" aria-pressed="${active.has(k)}">${l} (${DATA.filter(FILTERS.find(f=>f[0]===k)[2]).length})</button>`).join('');
-  $('#filters').querySelectorAll('button').forEach(b=>b.onclick=()=>{active.has(b.dataset.k)?active.delete(b.dataset.k):active.add(b.dataset.k);renderFilters();renderList()})}
-function rows(){const q=norm($('#q').value.trim());let r=DATA.filter(d=>(!q||q.split(/\s+/).every(t=>d._text.includes(t)))&&[...active].every(k=>FILTERS.find(f=>f[0]===k)[2](d)));
-  const s=$('#sort').value;const nm=d=>d.id.legal_name||d.org;
-  r.sort((a,b)=>s==='name'?nm(a).localeCompare(nm(b),'nb'):s==='revenue'?(b._rev??-1e18)-(a._rev??-1e18):s==='employees'?(b._emp??-1)-(a._emp??-1):s==='jobs'?b._jobs-a._jobs:(b._score-a._score)||(b._claims.length-a._claims.length));return r}
-function dots(d){return '<span class="dots" aria-label="'+d._score+' of 5 areas with data">'+SECTIONS.map(([k,l])=>`<span class="dot ${d.sec[k]&&d.sec[k].s==='available'?'on':''}" title="${l}"></span>`).join('')+'</span>'}
-function renderList(){const r=rows();$('#count').textContent=`${r.length} of ${DATA.length} companies`;
-  $('#list').innerHTML=r.slice(0,600).map(d=>`<button type="button" role="listitem" class="row ${current===d?'active':''}" data-i="${d._i}"><span><span class="n">${esc(d.id.legal_name||d.org)}</span><span class="m">${esc(d.org)} · ${esc((d.id.municipality||'').toString())} · ${esc(d.id.industry?d.id.industry.description:'')}</span></span>${dots(d)}</button>`).join('')+(r.length>600?'<div class="empty">Refine the search to see more.</div>':'');
-  $('#list').querySelectorAll('.row').forEach(b=>b.onclick=()=>{open(DATA[b.dataset.i]);})}
-function src(d,ids){if(!ids||!ids.length)return'';return '<sup class="src">'+ids.slice(0,4).map(id=>`<a href="#ev-${esc(id)}" data-ev="${esc(id)}" data-org="${esc(d.org)}" title="${esc((d.ev[id]||{}).u||'')}">src</a>`).join(' ')+'</sup>'}
-function openEvidence(org,id){const d=DATA.find(x=>x.org===org);if(!d)return;tab='evidence';open(d,false);const el=document.getElementById('ev-'+id);if(el){el.open=true;el.scrollIntoView({block:'center'})}}
-function evLink(d,ids){if(!ids||!ids.length)return'';const e=d.ev[ids[0]];if(!e)return'';return `<a class="small" href="${hesc(e.u)}" target="_blank" rel="noopener noreferrer">source</a> <span class="muted small">${esc((e.t||'').slice(0,10))}</span> ${src(d,ids)}`}
-function stateBadge(s){return `<span class="state ${esc(s)}">${esc((s||'').replace('_',' '))}</span>`}
-function famNote(d,fam){for(const [k] of SECTIONS){const f=d.sec[k]&&d.sec[k].f[fam];if(f)return f}return null}
-function unknownLine(d,fam){const f=famNote(d,fam);if(!f||f.s==='available')return'';return `<p class="muted small">${FAM[fam]}: ${stateBadge(f.s)} ${esc(f.r||'')}</p>`}
-function brief(d){const syn=d.syn||{};let h='';
-  if(syn.signals&&syn.signals.length)h+='<div>'+syn.signals.map(s=>`<span class="signal ${esc(s.tone)}">${esc(s.text)} ${src(d,s.evidence_ids)}</span>`).join('')+'</div>';
-  (syn.sections||[]).forEach(s=>{let body=s.sentences&&s.sentences.length?s.sentences.map(x=>esc(x.text)+' '+src(d,x.evidence_ids)).join(' '):esc(s.text);h+=`<div class="card"><h3>${esc(s.heading)}</h3><p style="margin:0">${body}</p></div>`});return h}
-function identity(d){const by=d._by;const rowsH=[];const add=(label,c,val)=>{if(c)rowsH.push(`<tr><th>${esc(label)}</th><td>${val??esc(typeof c.v==='object'?JSON.stringify(c.v):c.v)}</td><td>${evLink(d,c.e)}</td></tr>`)};
-  const one=f=>by(f)[0];
-  add('Organisation number',one('organisation_number'));add('Legal name',one('legal_name'));add('Public brand',one('public_brand_name'));
-  const lf=one('legal_form');add('Legal form',lf,lf&&esc(lf.v.description+' ('+lf.v.code+')'));
-  add('Business address',one('registered_business_address'));add('Postal address',one('postal_address'));
-  by('industry_code').forEach(c=>add('Industry',c,esc(c.v.code+' '+c.v.description)));
-  add('Registered employees',one('registered_employees'));add('Founded',one('founded_date'));add('Registered',one('registered_date'));
-  const sc=one('share_capital');add('Share capital',sc,sc&&money(sc.v.amount,sc.v.currency));
-  add('Registry status',one('registry_status'));add('VAT registered',one('vat_registered'));add('Part of a group',one('part_of_group'));
-  add('Registered activity',one('registered_activity'));add('Statutory purpose',one('statutory_purpose'));add('Self-description (website)',one('self_description'));
-  by('former_name').forEach(c=>add('Former name',c,esc(c.v.name+' ('+c.v.from+' – '+c.v.to+')')));
-  by('group_relationship').forEach(c=>add('Group: '+c.v.relationship.replace('_',' '),c,esc((c.v.name||'')+' ('+c.v.organisation_number+')'+(c.v.ownership?' · '+c.v.ownership:''))));
-  return `<div class="card"><h3>Legal identity and brand</h3><div class="tablewrap"><table>${rowsH.join('')}</table></div>${unknownLine(d,'public_brand')}</div>`}
-function accounts(d){const fin=d._claims.filter(c=>c.f.startsWith('financial.')&&c.v&&c.v.amount!==undefined);
-  if(!fin.length)return `<div class="card"><h3>Annual accounts</h3>${unknownLine(d,'annual_accounts')||'<p class="muted">No figures.</p>'}</div>`;
-  let h='';for(const t of ['KONSERN','SELSKAP']){const f=fin.filter(c=>c.v.account_type===t);if(!f.length)continue;
-    const years=[...new Set(f.map(c=>c.v.fiscal_year))].sort().reverse();const metrics=[...new Set(f.map(c=>c.f))];
-    const label=c=>c.l||c.f.replace('financial.','');
-    h+=`<div class="card"><h3>${t==='KONSERN'?'Group (consolidated)':'Company'} accounts</h3><div class="tablewrap"><table><tr><th>Metric</th>${years.map(y=>`<th class="num">${y}</th>`).join('')}</tr>`+
-      metrics.map(m=>{const any=f.find(c=>c.f===m);return `<tr><td>${esc(label(any))}</td>`+years.map(y=>{const c=f.find(x=>x.f===m&&x.v.fiscal_year===y);return `<td class="num">${c?esc(compact(c.v.amount))+' '+src(d,c.e):'—'}</td>`}).join('')+'</tr>'}).join('')+
-      `</table></div><p class="muted small">Amounts in ${esc(f[0].v.currency)}; source: Register of Company Accounts (Regnskapsregisteret). Missing values are shown as —, never as zero.</p></div>`}
-  return h}
-function people(d){const roles=d._by('role');const units=d._by('registered_workplace');let h='<div class="card"><h3>Leadership and board</h3>';
-  h+=roles.length?'<div class="tablewrap"><table><tr><th>Role</th><th>Name</th><th>Since change</th><th>Source</th></tr>'+roles.map(c=>`<tr><td>${esc(c.v.role)}</td><td>${esc(c.v.name)}${c.v.organisation_number?' <span class="muted">('+esc(c.v.organisation_number)+')</span>':''}</td><td>${esc(c.d||'')}</td><td>${evLink(d,c.e)}</td></tr>`).join('')+'</table></div>':unknownLine(d,'leadership');
-  h+='</div><div class="card"><h3>Registered workplaces</h3>';
-  h+=units.length?'<div class="tablewrap"><table><tr><th>Name</th><th>Address</th><th>Employees</th><th>Source</th></tr>'+units.map(c=>`<tr><td>${esc(c.v.name)} <span class="muted">${esc(c.v.organisation_number)}</span></td><td>${esc(c.v.address||'')}</td><td class="num">${c.v.employees??'—'}</td><td>${evLink(d,c.e)}</td></tr>`).join('')+'</table></div>':unknownLine(d,'workplaces');
-  return h+'</div>'}
-function web(d){const site=d._by('official_website')[0];let h='<div class="card"><h3>Official website</h3>';
-  if(site){h+=`<p><a href="${hesc(site.v.url)}" target="_blank" rel="noopener noreferrer">${esc(site.v.url)}</a> ${src(d,site.e)}<br><span class="muted small">Identity: ${esc(site.v.identity_method.replace(/_/g,' '))}${site.rel?' · labelled '+esc(site.rel.replace(/_/g,' ')):''}</span></p>`}else h+=unknownLine(d,'official_website');
-  const reg=d._by('registry_website')[0];if(reg)h+=`<p class="small">Listed in the Entity Register: ${esc(reg.v)} ${src(d,reg.e)}</p>`;
-  h+='</div><div class="card"><h3>Company-owned profiles</h3>';const so=d._by('social_profile');
-  h+=so.length?'<ul>'+so.map(c=>`<li><b>${esc(c.v.platform)}</b>: <a href="${hesc(c.v.url)}" target="_blank" rel="noopener noreferrer">${esc(c.v.url)}</a> ${src(d,c.e)}</li>`).join('')+'</ul>':unknownLine(d,'company_profiles');
-  h+='</div><div class="card"><h3>Contact channels</h3>';const cc=d._claims.filter(c=>c.fa==='contact_channels');
-  h+=cc.length?'<ul>'+cc.map(c=>`<li>${esc(c.l||c.f)}: ${esc(c.v)} ${src(d,c.e)}</li>`).join('')+'</ul>':unknownLine(d,'contact_channels');
-  return h+'</div>'}
-function hiring(d){const jobs=d._by('job_posting');const car=d._by('careers_page');let h='<div class="card"><h3>Hiring</h3>';
-  if(car.length)h+=`<p>Careers page: <a href="${hesc(car[0].v)}" target="_blank" rel="noopener noreferrer">${esc(car[0].v)}</a> ${src(d,car[0].e)}</p>`;
-  h+=jobs.length?'<div class="tablewrap"><table><tr><th>Job</th><th>Location</th><th>Published</th><th>Expires</th><th>Source</th></tr>'+jobs.map(c=>`<tr><td><a href="${hesc(c.v.url)}" target="_blank" rel="noopener noreferrer">${esc(c.v.title)}</a></td><td>${esc(c.v.location||'')}</td><td>${esc(c.v.published||c.v.date_posted||'')}</td><td>${esc(c.v.expires||c.v.valid_through||'')}</td><td>${evLink(d,c.e)}</td></tr>`).join('')+'</table></div>':unknownLine(d,'hiring');
-  h+='</div><div class="card"><h3>Dated public activity</h3>';const act=d._claims.filter(c=>c.fa==='public_activity').sort((a,b)=>String(b.d||b.v.date||'').localeCompare(String(a.d||a.v.date||'')));
-  h+=act.length?'<ul class="timeline">'+act.map(c=>`<li><b>${esc(c.v.date||c.d||'')}</b> · ${c.v.url?`<a href="${hesc(c.v.url)}" target="_blank" rel="noopener noreferrer">${esc(c.v.title||c.v.event)}</a>`:esc(c.v.title||c.v.event)} <span class="muted small">${esc(c.l||'')}</span> ${src(d,c.e)}</li>`).join('')+'</ul>':unknownLine(d,'public_activity');
-  return h+'</div>'}
-function changes(d){let h='<div class="card"><h3>What changed since the previous run</h3>';
-  if(!d.rf||d.rf.baseline){h+='<p class="muted">This run is the baseline snapshot: no previous run was supplied for this company.</p>'}
-  else if(!d.ch.length){h+=`<p>No changes since run ${esc(d.rf.previous_run_id||'')}.</p>`}
-  else h+='<div class="tablewrap"><table><tr><th>Change</th><th>Before</th><th>Now</th><th>Materiality</th></tr>'+d.ch.map(c=>`<tr><td>${esc(c.change_type.replace(/_/g,' '))}</td><td class="small">${esc(c.previous==null?'—':JSON.stringify(c.previous).slice(0,140))} ${src(d,c.previous_evidence_ids)}</td><td class="small">${esc(c.current==null?'—':JSON.stringify(c.current).slice(0,140))} ${src(d,c.current_evidence_ids)}</td><td>${esc(c.materiality)}</td></tr>`).join('')+'</table></div>';
-  h+='</div><div class="card"><h3>Availability of every area</h3><div class="tablewrap"><table><tr><th>Area</th><th>State</th><th>Reason</th></tr>';
-  for(const [k] of SECTIONS){const s=d.sec[k];if(!s)continue;for(const [fk,fv] of Object.entries(s.f))h+=`<tr><td>${esc(FAM[fk]||fk)}</td><td>${stateBadge(fv.s)}</td><td class="small">${esc(fv.r||'')} ${fv.n?'<span class="muted">('+fv.n+' facts)</span>':''}</td></tr>`}
-  return h+'</table></div></div>'}
-function evidence(d){const ids=Object.keys(d.ev);return `<div class="card"><h3>Evidence (${ids.length})</h3><p class="muted small">Every fact links here. Each record keeps the source URL, retrieval time, content hash and the span the fact was read from.</p>`+ids.map(id=>{const e=d.ev[id];return `<details class="ev" id="ev-${esc(id)}"><summary>${esc(e.c||'')} · ${esc((e.t||'').slice(0,16).replace('T',' '))} · <span class="mono">${esc(id)}</span></summary><div class="small"><a class="mono" href="${hesc(e.u)}" target="_blank" rel="noopener noreferrer">${esc(e.u)}</a><br>Span: <span class="mono">${esc(e.s||'—')}</span><br>Method: ${esc(e.m||'')} · sha256 ${esc(e.h)}…${e.p?' · period '+esc(e.p):''}</div></details>`}).join('')+'</div>'}
-const TABS=[["brief","Brief",brief],["identity","Identity",identity],["accounts","Accounts",accounts],["people","People & places",people],["web","Website & profiles",web],["hiring","Hiring & activity",hiring],["changes","Changes & gaps",changes],["evidence","Evidence",evidence]];
-function open(d,push=true){current=d;document.body.classList.add('viewing');const by=d._by;const site=by('official_website')[0];
-  const kv=[['Org. number',d.org],['Legal form',d.id.legal_form&&d.id.legal_form.code],['Municipality',d.id.municipality],['Employees (register)',d._emp],['Revenue (latest, company)',d._rev!=null?compact(d._rev)+' NOK':null],['Active jobs',d._jobs||null]].filter(x=>x[1]!=null&&x[1]!=='');
-  $('#view').innerHTML=`<div class="profile"><div class="ph"><div><button class="btn backbtn" id="back" type="button">← Companies</button><h2>${esc(d.id.legal_name||d.org)}</h2><div class="sub">${esc(d.id.public_brand&&d.id.public_brand!==d.id.legal_name?d.id.public_brand+' · ':'')}${esc(d.id.industry?d.id.industry.description:'')}${site?' · <a href="'+esc(site.v.url)+'" target="_blank" rel="noopener noreferrer">'+esc(site.v.url.replace(/^https?:\/\//,'').replace(/\/$/,''))+'</a>':''}</div></div>
-   <div class="actions"><button class="btn ${compare.includes(d.org)?'primary':''}" id="cmpbtn" type="button">${compare.includes(d.org)?'In comparison':'Compare'}</button><button class="btn" id="copylink" type="button">Copy link</button></div></div>
-   <div class="kv">${kv.map(([k,v])=>`<div><b>${esc(k)}</b>${esc(v)}</div>`).join('')}</div>
-   <div class="tabs" role="tablist">${TABS.map(([k,l])=>`<button role="tab" type="button" data-t="${k}" aria-selected="${tab===k}">${l}</button>`).join('')}</div><div id="tabbody" role="tabpanel"></div></div>`;
-  renderTab();$('#view').querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;$('#view').querySelectorAll('.tabs button').forEach(x=>x.setAttribute('aria-selected',x===b));renderTab()});
-  $('#cmpbtn').onclick=()=>{toggleCompare(d.org);open(d,false)};$('#copylink').onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText(location.href.split('#')[0]+'#org='+d.org)};
-  $('#back').onclick=()=>{document.body.classList.remove('viewing');history.replaceState(null,'','#')};
-  if(push)history.replaceState(null,'','#org='+d.org);renderList();window.scrollTo({top:0})}
-function renderTab(){const d=current;const t=TABS.find(x=>x[0]===tab)||TABS[0];$('#tabbody').innerHTML=t[2](d);
-  $('#tabbody').querySelectorAll('a[data-ev]').forEach(a=>a.onclick=e=>{e.preventDefault();openEvidence(a.dataset.org||d.org,a.dataset.ev)})}
-function toggleCompare(org){compare=compare.includes(org)?compare.filter(x=>x!==org):[...compare,org].slice(-4);renderTray()}
-function renderTray(){const t=$('#compareTray');if(!compare.length){t.style.display='none';return}t.style.display='flex';
-  t.innerHTML='<b class="small">Compare:</b>'+compare.map(o=>{const d=DATA.find(x=>x.org===o);return `<span class="pill">${esc((d.id.legal_name||o).slice(0,28))}</span>`}).join('')+`<button class="btn primary" id="docmp" type="button" ${compare.length<2?'disabled':''}>Compare ${compare.length}</button><button class="btn" id="clrcmp" type="button">Clear</button>`;
-  $('#docmp').onclick=()=>showCompare();$('#clrcmp').onclick=()=>{compare=[];renderTray();if(current)open(current,false)}}
-function latest(d,metric,type){const c=d._by('financial.'+metric).filter(c=>c.v.account_type===(type||'SELSKAP')).sort((a,b)=>b.v.fiscal_year.localeCompare(a.v.fiscal_year))[0];return c}
-function showCompare(){document.body.classList.add('viewing');const ds=compare.map(o=>DATA.find(x=>x.org===o));
-  const row=(label,fn)=>`<tr><th>${esc(label)}</th>${ds.map(d=>`<td>${fn(d)??'—'}</td>`).join('')}</tr>`;
-  const fin=(m)=>d=>{const c=latest(d,m);return c?esc(compact(c.v.amount))+' <span class="muted small">('+esc(c.v.fiscal_year)+')</span> '+src(d,c.e):'<span class="muted">not reported</span>'};
-  const eqr=d=>{const e=latest(d,'equity'),a=latest(d,'total_assets');return e&&a&&a.v.amount?(e.v.amount/a.v.amount*100).toFixed(0)+'%':'—'};
-  const role=code=>d=>{const c=d._by('role').find(c=>c.v.role_code===code);return c?esc(c.v.name)+' '+src(d,c.e):'—'};
-  $('#view').innerHTML=`<div class="profile"><div class="ph"><div><button class="btn backbtn" id="back" type="button">← Companies</button><h2>Comparison</h2><div class="sub">Every cell links to its source.</div></div><div class="actions"><button class="btn" id="copycmp" type="button">Copy link</button></div></div><div class="tablewrap"><table>
-   <tr><th></th>${ds.map(d=>`<th><a href="#org=${d.org}" data-open="${d.org}">${esc(d.id.legal_name||d.org)}</a></th>`).join('')}</tr>
-   ${row('Org. number',d=>esc(d.org))}${row('Legal form',d=>esc(d.id.legal_form&&d.id.legal_form.description))}${row('Municipality',d=>esc(d.id.municipality))}${row('Industry',d=>esc(d.id.industry&&d.id.industry.description))}
-   ${row('Employees (register)',d=>d._emp??'—')}${row('Revenue',fin('revenue'))}${row('Operating result',fin('operating_result'))}${row('Annual result',fin('annual_result'))}${row('Equity',fin('equity'))}${row('Equity ratio',eqr)}
-   ${row('General manager',role('DAGL'))}${row('Chair',role('LEDE'))}${row('Workplaces',d=>d._by('registered_workplace').length)}
-   ${row('Website',d=>{const s=d._by('official_website')[0];return s?`<a href="${hesc(s.v.url)}" target="_blank" rel="noopener noreferrer">${esc(s.v.url.replace(/^https?:\/\//,''))}</a>`:'—'})}${row('Social profiles',d=>d._by('social_profile').map(c=>esc(c.v.platform)).join(', ')||'—')}
-   ${row('Active job ads',d=>d._jobs)}${row('Data areas',d=>d._score+' / 5')}</table></div></div>`;
-  $('#view').querySelectorAll('a[data-open]').forEach(a=>a.onclick=e=>{e.preventDefault();open(DATA.find(x=>x.org===a.dataset.open))});
-  $('#view').querySelectorAll('a[data-ev]').forEach(a=>a.onclick=e=>{e.preventDefault();openEvidence(a.dataset.org,a.dataset.ev)});
-  $('#back').onclick=()=>{document.body.classList.remove('viewing')};$('#copycmp').onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText(location.href.split('#')[0]+'#compare='+compare.join(','))};
-  history.replaceState(null,'','#compare='+compare.join(','));}
-function route(){const h=location.hash.slice(1);const p=new URLSearchParams(h);if(p.get('org')){const d=DATA.find(x=>x.org===p.get('org'));if(d){open(d,false);return}}
-  if(p.get('compare')){compare=p.get('compare').split(',').filter(o=>DATA.some(x=>x.org===o)).slice(0,4);renderTray();if(compare.length>1){showCompare();return}}
-  if(window.innerWidth>860&&DATA.length){open(rows()[0]||DATA[0],false)}}
-$('#runinfo').textContent=`${META.count} companies · run ${META.run_id||''} · ${String(META.completed_at||'').slice(0,16).replace('T',' ')} UTC`;
-$('#q').addEventListener('input',renderList);$('#sort').addEventListener('change',renderList);
-document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus()}});
-renderFilters();renderList();route();
+"use strict";
+var KD={meta:{},rows:[],byOrg:{},cache:{},waiting:{},compare:[],shown:50};
+function kildesporLoad(kind,key,data){if(kind==="index"){KD.loaded=true;KD.meta=data.meta||{};KD.rows=data.rows||[];KD.rows.forEach(function(r){KD.byOrg[r.o]=r});if(KD.onIndex)KD.onIndex()}else if(kind==="company"){KD.cache[key]=data;(KD.waiting[key]||[]).forEach(function(f){f(data)});delete KD.waiting[key]}}
+</script>
+<script src="data/index.js" onerror="KD.indexError=true;KD.onIndex&&KD.onIndex()"></script>
+<script>
+"use strict";
+(function(){
+var $=function(s,el){return (el||document).querySelector(s)},$$=function(s,el){return Array.prototype.slice.call((el||document).querySelectorAll(s))};
+function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+function title(s){return String(s||"").toLowerCase().replace(/(^|[\s-])([a-zæøåéü])/g,function(m,a,b){return a+b.toUpperCase()})}
+function money(a,cur){if(a==null)return "not reported";cur=cur||"NOK";var s=a<0?"-":"",v=Math.abs(a),t;if(v>=1e9)t=(v/1e9).toFixed(2)+" bn";else if(v>=1e6)t=(v/1e6).toFixed(1)+" m";else if(v>=1e4)t=Math.round(v/1e3)+" k";else t=Math.round(v).toLocaleString("en-US");return cur+" "+s+t}
+function pct(x){return x==null?"":(x>=0?"+":"")+Math.round(x*100)+"%"}
+function safeUrl(u){u=String(u||"");return /^https?:\/\//i.test(u)?u:null}
+function link(u,label){var s=safeUrl(u);return s?'<a href="'+esc(s)+'" target="_blank" rel="noopener noreferrer">'+esc(label||u)+'</a>':esc(label||u||"")}
+function host(u){try{return new URL(u).hostname.replace(/^www\./,"")}catch(e){return u}}
+function store(k,v){try{if(v===undefined)return JSON.parse(localStorage.getItem(k)||"null");localStorage.setItem(k,JSON.stringify(v))}catch(e){return null}}
+var AREAS=["Company record","Financials","People & locations","Company website","Public footprint"];
+var FAMILY={legal_identity:"Legal identity",public_brand:"Brand & self-description",annual_accounts:"Annual accounts",leadership:"Leadership & board",workplaces:"Registered workplaces",official_website:"Official website",company_profiles:"Social profiles",contact_channels:"Contact channels",hiring:"Hiring signal (job ads, careers page)",public_activity:"Dated news & activity"};
+var METRICS=[["revenue","Revenue"],["operating_result","Operating result"],["annual_result","Net result"],["equity","Equity"],["total_assets","Total assets"],["total_debt","Total liabilities"]];
+var DIVISIONS=null;
+
+/* ---------- data loading ---------- */
+function loadCompany(org,cb){
+  if(KD.cache[org])return cb(KD.cache[org]);
+  (KD.waiting[org]=KD.waiting[org]||[]).push(cb);
+  if(KD.waiting[org].length>1)return;
+  var viaScript=function(){var s=document.createElement("script");s.src="data/companies/"+encodeURIComponent(org)+".js";s.onerror=function(){var w=KD.waiting[org]||[];delete KD.waiting[org];w.forEach(function(f){f(null)})};document.head.appendChild(s)};
+  if(/^https?:$/.test(location.protocol)&&window.fetch){fetch("data/companies/"+encodeURIComponent(org)+".json").then(function(r){if(!r.ok)throw new Error(r.status);return r.json()}).then(function(d){kildesporLoad("company",org,d)}).catch(viaScript)}else viaScript();
+}
+function loadMany(orgs,cb){var out={},n=orgs.length;if(!n)return cb(out);orgs.forEach(function(o){loadCompany(o,function(d){out[o]=d;if(--n===0)cb(out)})})}
+
+/* ---------- verify drawer ---------- */
+var lastFocus=null;
+function openDrawer(html,heading){lastFocus=document.activeElement;$("#drawer-title").textContent=heading||"Verify";$("#drawer-body").innerHTML=html;var d=$("#drawer");d.classList.add("open");d.setAttribute("aria-hidden","false");var b=$("#drawer .btn");b&&b.focus()}
+function closeDrawer(){var d=$("#drawer");d.classList.remove("open");d.setAttribute("aria-hidden","true");if(lastFocus&&lastFocus.focus)lastFocus.focus()}
+document.addEventListener("keydown",function(e){if(e.key==="Escape")closeDrawer()});
+document.addEventListener("click",function(e){var t=e.target.closest("[data-close]");if(t){closeDrawer();return}var c=e.target.closest("[data-ev]");if(c){e.preventDefault();verify(c)}});
+function claimText(c){var v=c.v;if(v==null)return "";if(typeof v!=="object")return String(v);if(v.amount!=null)return money(v.amount,v.currency)+(v.fiscal_year?" ("+v.fiscal_year+(v.account_type==="KONSERN"?", group":"")+")":"");return v.title||v.name&&(v.name+(v.role?" — "+v.role:""))||v.url||v.description||v.event||JSON.stringify(v)}
+function verify(el){
+  var org=el.getAttribute("data-org"),ev=(el.getAttribute("data-ev")||"").split(",").filter(Boolean),cl=(el.getAttribute("data-cl")||"").split(",").filter(Boolean),k=(el.getAttribute("data-k")||"").split("|").filter(Boolean),label=el.getAttribute("data-label")||"";
+  loadCompany(org,function(d){
+    if(!d){openDrawer('<p class="notice">The company file could not be loaded.</p>');return}
+    var claims=d.cl.filter(function(c){return cl.indexOf(c.id)>=0});
+    var h=label?'<p><b>'+esc(label)+'</b></p>':"";
+    if(claims.length){h+='<h3>Facts this rests on</h3><ul class="plain">'+claims.map(function(c){return '<li><b>'+esc(c.l||c.f)+'</b>: '+esc(claimText(c))+(c.st?'<span class="stale-mark">not re-checked this run</span>':"")+(c.fo?'<div class="small muted">first observed '+esc(c.fo)+'</div>':"")+(c.cr?'<div class="small muted">'+esc(c.cr)+'</div>':"")+'</li>'}).join("")+'</ul>'}
+    var basis=el.getAttribute("data-basis");
+    if(basis==="computed")h+='<p class="small muted">Computed from the filed figures cited below (arithmetic only).</p>';
+    if(basis==="absence"||basis==="unknown")h+='<p class="small muted">A statement about what the checked sources did not contain. Missing data is not a negative fact.</p>';
+    h+='<h3>Sources</h3>';
+    if(!ev.length&&!k.length)h+='<p class="muted">No source record: this statement describes the run itself.</p>';
+    ev.forEach(function(id){var e=evOf(d,id);if(!e)return;h+='<div class="evi"><div>'+link(e.u)+(e.prev?' <span class="badge warn">previous run</span>':"")+'</div>'+(e.s?'<blockquote>'+esc(e.s)+'</blockquote>':"")+'<dl><dt>Retrieved</dt><dd>'+esc(e.t||"not recorded")+'</dd><dt>Source type</dt><dd>'+esc(e.c||"")+'</dd><dt>Method</dt><dd>'+esc(e.m||"")+'</dd>'+(e.p?'<dt>Period</dt><dd>'+esc(e.p)+'</dd>':"")+(e.hs?'<dt>HTTP status</dt><dd>'+esc(e.hs)+'</dd>':"")+(e.ru?'<dt>Requested</dt><dd>'+esc(e.ru)+'</dd>':"")+'<dt>SHA-256</dt><dd class="mono">'+esc(e.h||"")+'</dd>'+(e.a?'<dt>Terms</dt><dd>'+esc(e.a)+'</dd>':"")+'<dt>Evidence id</dt><dd class="mono">'+esc(id)+'</dd></dl></div>'});
+    if(k.length)h+='<p class="small">Sources checked:</p><ul class="small">'+k.map(function(u){return '<li>'+link(u)+'</li>'}).join("")+'</ul>';
+    openDrawer(h,"Verify: "+(KD.byOrg[org]?KD.byOrg[org].n:org));
+  });
+}
+function evOf(d,id){var e=d.ev[id];if(!e)return null;var s=(d.src||[])[e.r]||{};return {u:s.u,c:s.c,t:s.t,h:s.h,hs:s.hs,a:s.a,ru:s.ru,prev:s.prev,s:e.s,m:e.m,p:e.p}}
+function chip(org,n,ev,cl,basis,label,checked){ev=ev||[];cl=cl||[];if(!ev.length&&!(checked||[]).length&&!cl.length)return "";var cls="cite"+(basis==="computed"?" computed":basis==="carried_forward"?" stale":"");return '<button type="button" class="'+cls+'" data-org="'+esc(org)+'" data-ev="'+esc(ev.join(","))+'" data-cl="'+esc(cl.join(","))+'" data-basis="'+esc(basis||"")+'" data-label="'+esc(label||"")+'" data-k="'+esc((checked||[]).join("|"))+'" aria-label="Verify source '+n+'">'+n+'</button>'}
+function factChip(org,c,n){return chip(org,n||"src",c.e,[c.id],c.st?"carried_forward":"fact",(c.l||c.f)+": "+claimText(c))}
+function sentences(org,list,counter){return list.map(function(s){counter.n++;return esc(s.t)+(s.b==="carried_forward"?'<span class="stale-mark">carried forward</span>':"")+" "+chip(org,counter.n,s.e,s.c,s.b,s.t,s.k)}).join(" ")}
+
+/* ---------- shared pieces ---------- */
+function covDots(r){var a=r.ca||[];return '<span class="cov" title="'+AREAS.map(function(x,i){return x+": "+(a[i]?"found":"not available")}).join("; ")+'">'+(r.cv==null?"?":r.cv)+'/5 data areas <span class="dots" aria-hidden="true">'+[0,1,2,3,4].map(function(i){return '<span class="dot'+(a[i]?" on":"")+'"></span>'}).join("")+'</span></span>'}
+function badges(r){var b=[];if(r.w)b.push('<span class="badge ok">Website</span>');if(r.so&&r.so.length)b.push('<span class="badge ok">Social: '+esc(r.so.join(", "))+'</span>');if(r.j)b.push('<span class="badge ok">Hiring: '+r.j+' ad'+(r.j>1?"s":"")+'</span>');else if(r.cp)b.push('<span class="badge info">Careers page</span>');if(r.nw)b.push('<span class="badge info">News '+esc(r.nd||"")+'</span>');if(r.ch)b.push('<span class="badge warn">'+r.ch+' change'+(r.ch>1?"s":"")+' this run</span>');if(r.st)b.push('<span class="badge warn">'+r.st+' not re-checked</span>');if(r.rs&&r.rs!=="active")b.push('<span class="badge bad">'+esc(r.rs)+'</span>');if(r.err)b.push('<span class="badge bad">profile error</span>');return '<div class="badges">'+b.join("")+'</div>'}
+function setCompare(list){KD.compare=list.slice(0,4);store("kd-compare",KD.compare);renderTray()}
+function toggleCompare(org,on){var l=KD.compare.filter(function(o){return o!==org});if(on)l.push(org);setCompare(l)}
+function renderTray(){var t=$("#tray");if(!KD.compare.length||/^#\/compare/.test(location.hash)){t.classList.remove("show");return}t.innerHTML='<span class="small">'+KD.compare.length+' selected</span><a class="btn primary" href="#/compare?orgs='+KD.compare.join(",")+'">Compare</a><button class="btn" id="tray-clear">Clear</button>';t.classList.add("show");$("#tray-clear").onclick=function(){setCompare([]);$$("input[data-pick]").forEach(function(i){i.checked=false})}}
+function companyCard(r){var sub=[r.m?title(r.m):null,r.ie||r.il,r.f].filter(Boolean).join(" · ");var fin=r.r!=null?'<div class="small">Revenue '+esc(money(r.r))+(r.rg!=null?" ("+pct(r.rg)+")":"")+(r.y?" in "+esc(r.y):"")+(r.e!=null?" · "+esc(r.e)+" employees":"")+'</div>':(r.e!=null?'<div class="small">'+esc(r.e)+' employees</div>':"");
+  return '<div class="card"><div><a class="name" href="#/companies/'+esc(r.o)+'">'+esc(r.b?r.b+" ("+r.n+")":r.n)+'</a><div class="meta">'+esc(r.o)+(sub?" · "+esc(sub):"")+'</div>'+fin+badges(r)+'</div><div style="text-align:right">'+covDots(r)+'<label class="pick"><input type="checkbox" data-pick="'+esc(r.o)+'"'+(KD.compare.indexOf(r.o)>=0?" checked":"")+'> Compare</label></div></div>'}
+function bindPicks(root){$$("input[data-pick]",root).forEach(function(i){i.onchange=function(){toggleCompare(i.getAttribute("data-pick"),i.checked);if(KD.compare.length>=4)$$("input[data-pick]").forEach(function(x){if(!x.checked)x.disabled=true});else $$("input[data-pick]").forEach(function(x){x.disabled=false})}})}
+
+/* ---------- questions over the run's evidence (same grammar as kildespor/ask.py) ---------- */
+var UNSUPPORTED={sentiment:"sentiment is not measured",review:"reviews and ratings are not collected",rating:"reviews and ratings are not collected",glassdoor:"Glassdoor is not a permitted source",salary:"salaries are not collected",traffic:"website traffic is not collected",linkedin:"LinkedIn data is used only where a verified company site links to it",stock:"share prices are not collected",price:"prices are not collected"};
+var SECTORS={construction:["41","42","43"],builder:["41","42","43"],restaurant:["56"],food:["10","56"],"real estate":["68"],property:["68"],software:["58","62","63"],it:["62","63"],tech:["58","62","63"],retail:["47"],shop:["47"],wholesale:["46"],transport:["49","50","51","52","53"],shipping:["50","52"],health:["86","87","88"],consult:["70","71","74"],holding:["64"],finance:["64","65","66"],accounting:["69"],legal:["69"],hotel:["55"],farming:["01"],fishing:["03"],aquaculture:["03"],energy:["35"],manufactur:["10","11","13","14","15","16","17","18","20","22","23","24","25","26","27","28","29","30","31","32","33"],education:["85"],cleaning:["81"],media:["58","59","60"],research:["72"],marketing:["73"],car:["45"],housing:["97","98","68"]};
+function num(s,unit){var v=parseFloat(String(s).replace(/\s/g,"").replace(",","."));unit=(unit||"").toLowerCase();if(/^(b|bn|billion|mrd|bnok)/.test(unit))v*=1e9;else if(/^(m|mn|mill|million|mnok|mill\.)/.test(unit))v*=1e6;else if(/^(k|thousand|tnok)/.test(unit))v*=1e3;return v}
+function findCompany(q){var m=q.match(/\b(\d{3}\s?\d{3}\s?\d{3})\b/);if(m){var o=m[1].replace(/\s/g,"");if(KD.byOrg[o])return KD.byOrg[o]}var ql=" "+q.toLowerCase().replace(/[^a-z0-9æøåéü&]+/g," ")+" ";var best=null,score=0;KD.rows.forEach(function(r){[r.n,r.b].forEach(function(nm){if(!nm)return;var core=nm.toLowerCase().replace(/\b(as|asa|ans|da|sa|enk|nuf)\b/g,"").replace(/[^a-z0-9æøåéü&]+/g," ").trim();if(core.length<3)return;if(ql.indexOf(" "+core+" ")>=0&&core.length>score){best=r;score=core.length}})});return best}
+function parseScreen(q){var l=q.toLowerCase(),f=[],un=[];Object.keys(UNSUPPORTED).forEach(function(k){if(l.indexOf(k)>=0&&un.indexOf(UNSUPPORTED[k])<0)un.push(UNSUPPORTED[k])});
+  var munis={};KD.rows.forEach(function(r){if(r.m)munis[r.m.toLowerCase()]=r.m});
+  var mm=l.match(/\b(?:in|from|based in|located in)\s+([a-zæøåéü][a-zæøåéü .'-]*?)(?=\s+(?:with|and|that|having|which|who|where|over|under|above|below|more|less|by)\b|[,?.!]|$)/);
+  if(mm&&munis[mm[1].trim()])f.push({k:"m",v:munis[mm[1].trim()],t:"municipality is "+title(mm[1])});
+  else Object.keys(munis).forEach(function(n){if(n.length>3&&new RegExp("\\b"+n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b").test(l)&&!f.some(function(x){return x.k==="m"}))f.push({k:"m",v:munis[n],t:"municipality is "+title(n)})});
+  if(/\b(hiring|recruit|job ads?|vacanc|open roles?|jobs)\b/.test(l))f.push({k:"hire",t:"hiring signal (job ad or careers page)"});
+  if(/\b(without|no|lacking|missing)\s+(an?\s+)?(official\s+)?(web\s?site|homepage)/.test(l))f.push({k:"nw",t:"no verified website found (absence is not proof)"});else if(/\b(with|has|have|having)\s+(an?\s+)?(official\s+|verified\s+)?(web\s?site|homepage)/.test(l)||/\bwebsites?\b/.test(l)&&!/\bno\b/.test(l))f.push({k:"w",t:"verified website"});
+  if(/\b(without|no|lacking|missing|but no)\s+(an?\s+)?social/.test(l))f.push({k:"nso",t:"no social profile found"});else if(/\bsocial\b|facebook|instagram|linkedin|youtube|tiktok/.test(l))f.push({k:"so",t:"social profile"});
+  if(/\b(news|press|announce|articles?)\b/.test(l))f.push({k:"news",t:"dated news on its own channels"});
+  var rv=l.match(/(?:revenue|turnover|omsetning|sales)[^0-9<>]*?(over|above|more than|greater than|at least|>=|>|under|below|less than|at most|<=|<)\s*(?:nok\s*)?([\d.,\s]+?)\s*(bn|billion|mrd|m|mn|mill(?:ion)?s?|mnok|k|thousand|tnok|nok)?\b/)||l.match(/(over|above|more than|at least|under|below|less than|at most)\s*(?:nok\s*)?([\d.,]+)\s*(bn|billion|m|mn|million|mnok|k|thousand)?\s*(?:nok\s*)?(?:in\s+)?(?:revenue|turnover|sales)/);
+  if(rv){var op=/over|above|more|greater|least|>/.test(rv[1])?">":"<",val=num(rv[2],rv[3]);f.push({k:"r",op:op,v:val,t:"revenue "+(op===">"?"over":"under")+" "+money(val)})}
+  var em=l.match(/(over|above|more than|at least|under|below|fewer than|less than|at most)\s*(\d+)\s*(?:registered\s+)?(?:employees|staff|people|workers)/)||l.match(/employees?\s*(>=|<=|>|<)\s*(\d+)/);
+  if(em){var eo=/over|above|more|least|>/.test(em[1])?">":"<";f.push({k:"e",op:eo,v:+em[2],t:"employees "+(eo===">"?"over":"under")+" "+em[2]})}
+  if(/\b(loss[- ]making|unprofitable|losses|negative (net )?result)\b/.test(l))f.push({k:"loss",t:"net loss in the latest filed year"});else if(/\bprofitable\b|\bprofit\b/.test(l))f.push({k:"profit",t:"net profit in the latest filed year"});
+  if(/negative equity/.test(l))f.push({k:"negeq",t:"negative equity"});
+  if(/\b(changed|changes|what changed|new since|updated)\b/.test(l))f.push({k:"ch",t:"changed since the previous run"});
+  if(/\b(stale|carried forward|not re-?checked)\b/.test(l))f.push({k:"st",t:"facts carried forward"});
+  if(/all five|5\/5|complete profiles?|full coverage/.test(l))f.push({k:"cv5",t:"data in all five areas"});
+  var fm=l.match(/\b(asa|enk|nuf|ans|sole proprietorships?|public limited|cooperatives?|foundations?)\b/);if(fm){var code={"sole proprietorship":"ENK","sole proprietorships":"ENK","public limited":"ASA",cooperative:"SA",cooperatives:"SA",foundation:"STI",foundations:"STI"}[fm[1]]||fm[1].toUpperCase();f.push({k:"f",v:code,t:"legal form "+code})}
+  Object.keys(SECTORS).forEach(function(s){if(new RegExp("\\b"+s).test(l)&&!f.some(function(x){return x.k==="dv"}))f.push({k:"dv",v:SECTORS[s],t:"industry: "+s})});
+  var ind=l.match(/industry\s+(?:code\s+)?(\d{2}(?:\.\d{1,3})?)/);if(ind)f.push({k:"ic",v:ind[1],t:"industry code starts "+ind[1]});
+  var top=l.match(/\btop\s+(\d+)(?:\s+\w+)?\s+by\s+(revenue|employees|growth)/)||l.match(/\b(largest|biggest)\b/);var sort=null;if(top)sort={k:top[2]==="employees"?"e":top[2]==="growth"?"rg":"r",n:top[1]&&+top[1]||10};
+  return {filters:f,unsupported:un,sort:sort}}
+function rowMatch(r,x){switch(x.k){case "m":return r.m===x.v;case "hire":return r.j>0||r.cp;case "w":return !!r.w;case "nw":return !r.w;case "so":return r.so&&r.so.length>0;case "nso":return !(r.so&&r.so.length);case "news":return r.nw>0;case "r":return r.r!=null&&(x.op===">"?r.r>x.v:r.r<x.v);case "e":return r.e!=null&&(x.op===">"?r.e>x.v:r.e<x.v);case "loss":return r.nr!=null&&r.nr<0;case "profit":return r.nr!=null&&r.nr>0;case "negeq":return r.eq!=null&&r.eq<0;case "ch":return r.ch>0;case "st":return r.st>0;case "cv5":return r.cv===5;case "f":return r.f===x.v;case "dv":return x.v.indexOf(r.dv)>=0;case "ic":return String(r.i||"").indexOf(x.v)===0}return false}
+var CITE_FOR={m:"municipality",hire:"hiring",w:"website",so:"social",news:"news",r:"revenue",e:"employees",loss:"result",profit:"result",negeq:"equity",dv:"industry",ic:"industry",f:"name"};
+function answerCompany(r,q,cb){var l=q.toLowerCase();loadCompany(r.o,function(d){if(!d)return cb('<div class="answer unsupported">The profile of '+esc(r.n)+' could not be loaded.</div>');
+  var sec=function(k){return (d.syn.sections||[]).filter(function(s){return s.key===k})[0]};var topic=null;
+  for(var u in UNSUPPORTED)if(l.indexOf(u)>=0)return cb('<div class="answer unsupported"><b>Not supported by the evidence.</b> '+esc(UNSUPPORTED[u])+'. The run covers registry identity, accounts, roles, workplaces, the verified website, social profiles, job ads, careers pages and dated news.</div>');
+  if(/\b(ceo|chief executive|daglig leder|general manager|managing director|who runs|who leads|chair|board|owner|owns|owned|parent|leader|leadership|auditor|accountant)\b/.test(l))topic="who";
+  else if(/\b(hiring|hire|jobs?|vacanc|recruit|careers?|work there|work here|apply)\b/.test(l))topic="hire";
+  else if(/\b(website|web site|homepage|online|social|facebook|instagram|linkedin)\b/.test(l))topic="web";
+  else if(/\b(revenue|turnover|profit|loss|result|equity|financ|accounts|doing|money|earn|size|big|employees|staff)\b/.test(l))topic="money";
+  else if(/\b(changed?|changes|new|news|recent|latest|happen)\b/.test(l))topic="changed";
+  else if(/\b(unknown|missing|not found|gaps?|could not)\b/.test(l))topic="unknown";
+  else if(/\b(what does|what do|do they|business|industry|about|what is|who is|describe|summary|brief|overview)\b/.test(l))topic="what";
+  var n={n:0},parts=[],ok=true;
+  var hdr='<b><a href="#/companies/'+esc(r.o)+'">'+esc(r.n)+'</a></b> ('+esc(r.o)+'): ';
+  if(topic==="who"){var w=sec("who");if(/\b(ceo|chief executive|daglig leder|general manager|managing director)\b/.test(l)){var c=d.cl.filter(function(c){return c.f==="role"&&c.v&&c.v.role_code==="DAGL"})[0];if(c)parts.push("The general manager (daglig leder) is "+esc(c.v.name)+". "+factChip(r.o,c,++n.n));else{ok=false;parts.push("Not supported by the evidence: the register lists no general manager for this entity. "+(d.fam.leadership?esc(d.fam.leadership.r||""):""))}}else if(w)parts.push(sentences(r.o,w.s,n));else ok=false}
+  else if(topic==="hire"){var jobs=d.cl.filter(function(c){return c.f==="job_posting"&&c.a==="available"}),cp=d.cl.filter(function(c){return c.f==="careers_page"&&c.a==="available"});if(jobs.length){parts.push("Yes: "+jobs.length+" open job ad"+(jobs.length>1?"s":"")+" verified to this organisation number:<ul>"+jobs.slice(0,8).map(function(c){n.n++;return '<li>'+link(c.v.url,c.v.title||c.v.url)+(c.v.published?" ("+esc(String(c.v.published).slice(0,10))+")":"")+" "+factChip(r.o,c,n.n)+'</li>'}).join("")+'</ul>')}if(cp.length){n.n++;parts.push("Careers page: "+link(cp[0].v)+" "+factChip(r.o,cp[0],n.n)+(jobs.length?"":" — a recruiting channel; no open ad was verified."))}if(!jobs.length&&!cp.length){ok=false;var fh=d.fam.hiring||{};parts.push("Not supported by the evidence: no job ad or careers page was found ("+esc(fh.s||"not checked")+": "+esc(fh.r||"")+"). This is not proof that it is not hiring.")}}
+  else if(topic&&sec(topic==="web"?"signals":topic)){var sc=sec(topic==="web"?"signals":topic);parts.push(sentences(r.o,sc.s,n))}
+  else if(!topic){parts.push(sentences(r.o,d.syn.summary||[],n))}
+  else{ok=false;parts.push("Not supported by the evidence: nothing in this company's profile answers that.")}
+  cb('<div class="answer'+(ok?"":" unsupported")+'">'+hdr+parts.join(" ")+'<div class="small muted" style="margin-top:6px">Answered from this run\'s evidence only; numbered buttons open each source.</div></div>')})}
+function answer(q,cb){q=String(q||"").trim();if(!q)return cb("");var company=findCompany(q),p=parseScreen(q);
+  var personal=/\b(who|what does|what do|is it|are they|does it|tell me|ceo|daglig leder|chair|hiring|revenue|website|doing|owner|changed)\b/i.test(q);
+  if(company&&personal&&!(p.filters.filter(function(f){return f.k!=="m"&&f.k!=="dv"}).length>1))return answerCompany(company,q,cb);
+  if(p.unsupported.length&&!p.filters.length)return cb('<div class="answer unsupported"><b>Not supported by the evidence.</b> '+esc(p.unsupported.join("; "))+'.</div>');
+  if(!p.filters.length&&!p.sort){if(company)return answerCompany(company,q,cb);return cb('<div class="answer unsupported"><b>Not supported by the evidence.</b> I can screen by municipality, industry, legal form, revenue, employees, profit or loss, website, social profiles, hiring, news, coverage and changes, or answer questions about one company (name or organisation number): who runs it, what it does, how it is doing, whether it is hiring, what changed and what is unknown.</div>')}
+  var res=KD.rows.filter(function(r){return p.filters.every(function(x){return rowMatch(r,x)})});
+  if(p.sort){res=res.filter(function(r){return r[p.sort.k]!=null}).sort(function(a,b){return b[p.sort.k]-a[p.sort.k]}).slice(0,p.sort.n)}
+  var keys=[];p.filters.forEach(function(x){var k=CITE_FOR[x.k];if(k&&keys.indexOf(k)<0)keys.push(k)});if(p.sort)keys.push(p.sort.k==="e"?"employees":"revenue");
+  var h='<div class="answer"><b>'+res.length+' of '+KD.rows.length+' companies</b> match: '+esc(p.filters.map(function(x){return x.t}).join("; ")||"all")+(p.sort?" — sorted by "+({r:"revenue",e:"employees",rg:"revenue growth"}[p.sort.k]):"")+'.';
+  if(p.unsupported.length)h+='<div class="notice">Ignored: '+esc(p.unsupported.join("; "))+'.</div>';
+  if(p.filters.some(function(x){return x.k==="nw"||x.k==="nso"}))h+='<div class="small muted">"No website" means none was verified in this run; it is not proof that none exists.</div>';
+  if(p.filters.some(function(x){return x.k==="ch"})&&KD.meta.baseline)h+='<div class="small muted">This run has no previous snapshot, so no company can have changed; see Refresh.</div>';
+  h+='<ul>'+res.slice(0,25).map(function(r){var cites=keys.map(function(k,i){var c=r.src&&r.src[k];return c?chip(r.o,i+1,[c[1]],[c[0]],"fact",k):""}).join("");var val=[r.m?title(r.m):null,r.r!=null?"revenue "+money(r.r)+(r.y?" ("+r.y+")":""):null,r.e!=null?r.e+" employees":null,r.j?r.j+" job ad"+(r.j>1?"s":""):r.cp?"careers page":null,r.w?host(r.w):null,r.so&&r.so.length?r.so.join("/"):null,r.nw?r.nw+" news":null,r.ch?r.ch+" changes":null].filter(Boolean).join(" · ");return '<li><a href="#/companies/'+esc(r.o)+'">'+esc(r.n)+'</a> <span class="small muted">'+esc(val)+'</span> '+cites+'</li>'}).join("")+'</ul>'+(res.length>25?'<div class="small muted">Showing the first 25.</div>':"")+'<div class="small muted">Each number opens the claim and source used for that criterion.</div></div>';
+  cb(h,p,res)}
+KD.answer=answer;KD.parseScreen=parseScreen;
+
+/* ---------- route: research ---------- */
+function params(){var q=location.hash.split("?")[1]||"";var o={};q.split("&").forEach(function(kv){if(!kv)return;var p=kv.split("=");o[decodeURIComponent(p[0])]=decodeURIComponent((p[1]||"").replace(/\+/g," "))});return o}
+function setParams(o){var s=Object.keys(o).filter(function(k){return o[k]!==""&&o[k]!=null&&o[k]!==false}).map(function(k){return encodeURIComponent(k)+"="+encodeURIComponent(o[k])}).join("&");var h="#/research"+(s?"?"+s:"");if(location.hash!==h)history.replaceState(null,"",h)}
+function divisions(){if(DIVISIONS)return DIVISIONS;var m={};KD.rows.forEach(function(r){if(r.dv){m[r.dv]=m[r.dv]||{n:0,l:r.ie&&r.dv?null:null};m[r.dv].n++}});DIVISIONS=Object.keys(m).sort().map(function(k){var ex=KD.rows.filter(function(r){return r.dv===k})[0];return {k:k,n:m[k].n,l:ex.ie||ex.il}});return DIVISIONS}
+function renderResearch(){
+  var P=params();var munis={};KD.rows.forEach(function(r){if(r.m)munis[r.m]=(munis[r.m]||0)+1});
+  var muniOpts=Object.keys(munis).sort().map(function(m){return '<option value="'+esc(m)+'"'+(P.muni===m?" selected":"")+'>'+esc(title(m))+' ('+munis[m]+')</option>'}).join("");
+  var divOpts=divisions().map(function(d){return '<option value="'+esc(d.k)+'"'+(P.div===d.k?" selected":"")+'>'+esc(d.k)+' '+esc(String(d.l||"").slice(0,48))+' ('+d.n+')</option>'}).join("");
+  var tog=function(k,l){return '<label class="toggle"><input type="checkbox" data-f="'+k+'"'+(P[k]?" checked":"")+'> '+l+'</label>'};
+  var ex=KD.rows.filter(function(r){return r.ceo})[0]||KD.rows[0];
+  var town=Object.keys(munis).sort(function(a,b){return munis[b]-munis[a]})[0];
+  var examples=["hiring companies"+(town?" in "+title(town):""),"revenue over 10 MNOK","with a website but no social profile","loss-making companies","top 5 by revenue","what changed"];if(ex)examples.push("who is the CEO of "+ex.n,"what does "+ex.n+" do","is "+ex.n+" hiring");
+  $("#main").innerHTML='<div class="panel"><h1>Research</h1><p class="muted small" style="margin:0 0 10px">Ask about this run\'s '+KD.rows.length+' companies, or filter the list. Answers use only the evidence collected in this run and cite it.</p><form class="ask" id="askform" role="search"><label for="q" class="skip">Question</label><input id="q" type="search" placeholder="e.g. hiring companies in Oslo, or: who is the CEO of …" value="'+esc(P.ask||"")+'" autocomplete="off"><button class="btn primary" type="submit">Ask</button></form><div class="examples">'+examples.map(function(e){return '<button type="button" data-ex="'+esc(e)+'">'+esc(e)+'</button>'}).join("")+'</div><div id="answer" aria-live="polite"></div></div>'+
+  '<div class="grid2"><aside class="panel" aria-label="Filters"><h2>Find and screen</h2><label class="field" for="txt">Name, organisation number, town or industry</label><input id="txt" type="search" value="'+esc(P.text||"")+'" placeholder="Search…"><label class="field" for="muni">Municipality</label><select id="muni"><option value="">Any</option>'+muniOpts+'</select><label class="field" for="div">Industry</label><select id="div"><option value="">Any</option>'+divOpts+'</select>'+
+  '<div style="margin-top:8px">'+tog("web","Verified website")+tog("social","Social profile")+tog("hire","Hiring signal")+tog("news","Dated news")+tog("acc","Filed accounts")+tog("chg","Changed this run")+tog("full","All five data areas")+'</div>'+
+  '<label class="field">Revenue, NOK million (latest year)</label><div class="pair"><input id="rmin" type="number" inputmode="decimal" placeholder="min" value="'+esc(P.rmin||"")+'" aria-label="Minimum revenue, NOK million"><input id="rmax" type="number" inputmode="decimal" placeholder="max" value="'+esc(P.rmax||"")+'" aria-label="Maximum revenue, NOK million"></div>'+
+  '<label class="field">Registered employees</label><div class="pair"><input id="emin" type="number" inputmode="numeric" placeholder="min" value="'+esc(P.emin||"")+'" aria-label="Minimum employees"><input id="emax" type="number" inputmode="numeric" placeholder="max" value="'+esc(P.emax||"")+'" aria-label="Maximum employees"></div>'+
+  '<label class="field" for="sort">Sort by</label><select id="sort">'+[["cov","Most data found"],["name","Name A–Z"],["rev","Revenue (high first)"],["emp","Employees (high first)"],["recent","Latest dated event"],["chg","Most changes"]].map(function(o){return '<option value="'+o[0]+'"'+(P.sort===o[0]?" selected":"")+'>'+o[1]+'</option>'}).join("")+'</select><div class="row" style="margin-top:12px"><button class="btn" id="reset" type="button">Reset</button><button class="btn" id="csv" type="button">Download CSV</button></div></aside>'+
+  '<section aria-label="Companies"><div class="row" style="justify-content:space-between;margin-bottom:8px"><span id="count" class="muted" aria-live="polite"></span></div><div class="list" id="list"></div><div style="text-align:center;margin:12px"><button class="btn" id="more" type="button">Show more</button></div></section></div>';
+  var read=function(){var o={text:$("#txt").value.trim(),muni:$("#muni").value,div:$("#div").value,rmin:$("#rmin").value,rmax:$("#rmax").value,emin:$("#emin").value,emax:$("#emax").value,sort:$("#sort").value,ask:$("#q").value.trim()};$$("[data-f]").forEach(function(i){o[i.getAttribute("data-f")]=i.checked?"1":""});return o};
+  var filtered=[];
+  var apply=function(){var o=read();setParams(o);var t=o.text.toLowerCase();var rmin=o.rmin===""?null:+o.rmin*1e6,rmax=o.rmax===""?null:+o.rmax*1e6,emin=o.emin===""?null:+o.emin,emax=o.emax===""?null:+o.emax;
+    filtered=KD.rows.filter(function(r){if(t){var hay=[r.n,r.b,r.o,r.m,r.il,r.ie,r.i,r.ceo,r.chair,r.w].join(" ").toLowerCase();if(t.split(/\s+/).some(function(w){return hay.indexOf(w)<0}))return false}
+      if(o.muni&&r.m!==o.muni)return false;if(o.div&&r.dv!==o.div)return false;if(o.web==="1"&&!r.w)return false;if(o.social==="1"&&!(r.so&&r.so.length))return false;if(o.hire==="1"&&!(r.j||r.cp))return false;if(o.news==="1"&&!r.nw)return false;if(o.acc==="1"&&!r.y)return false;if(o.chg==="1"&&!r.ch)return false;if(o.full==="1"&&r.cv!==5)return false;
+      if(rmin!=null&&!(r.r!=null&&r.r>=rmin))return false;if(rmax!=null&&!(r.r!=null&&r.r<=rmax))return false;if(emin!=null&&!(r.e!=null&&r.e>=emin))return false;if(emax!=null&&!(r.e!=null&&r.e<=emax))return false;return true});
+    var s=o.sort||"cov",cmp={name:function(a,b){return a.n.localeCompare(b.n)},rev:function(a,b){return (b.r==null?-Infinity:b.r)-(a.r==null?-Infinity:a.r)},emp:function(a,b){return (b.e==null?-1:b.e)-(a.e==null?-1:a.e)},recent:function(a,b){return String(b.ld||"").localeCompare(String(a.ld||""))},chg:function(a,b){return (b.ch||0)-(a.ch||0)},cov:function(a,b){return (b.cv||0)-(a.cv||0)||a.n.localeCompare(b.n)}}[s];filtered.sort(cmp);
+    $("#count").textContent=filtered.length+" of "+KD.rows.length+" companies";draw()};
+  var draw=function(){var l=$("#list");l.innerHTML=filtered.length?filtered.slice(0,KD.shown).map(companyCard).join(""):'<div class="panel empty">No company matches these filters.</div>';$("#more").style.display=filtered.length>KD.shown?"":"none";bindPicks(l)};
+  $$("#txt,#rmin,#rmax,#emin,#emax").forEach(function(i){i.oninput=function(){KD.shown=50;apply()}});$$("#muni,#div,#sort,[data-f]").forEach(function(i){i.onchange=function(){KD.shown=50;apply()}});
+  $("#more").onclick=function(){KD.shown+=50;draw()};
+  $("#reset").onclick=function(){history.replaceState(null,"","#/research");renderResearch()};
+  $("#csv").onclick=function(){var cols=[["o","organisation_number"],["n","legal_name"],["m","municipality"],["i","industry_code"],["ie","industry"],["f","legal_form"],["e","registered_employees"],["y","latest_fiscal_year"],["r","revenue_nok"],["nr","net_result_nok"],["eq","equity_nok"],["w","website"],["j","job_ads"],["nw","news_items"],["cv","data_areas_of_5"],["ch","changes_this_run"]];var csv=[cols.map(function(c){return c[1]}).join(",")].concat(filtered.map(function(r){return cols.map(function(c){var v=c[0]==="so"?(r.so||[]).join("|"):r[c[0]];v=v==null?"":String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}).join(",")})).join("\n");var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="kildespor-companies.csv";document.body.appendChild(a);a.click();a.remove()};
+  var ask=function(q){$("#q").value=q;setParams(read());answer(q,function(h){$("#answer").innerHTML=h;bindPicks($("#answer"))})};
+  $("#askform").onsubmit=function(e){e.preventDefault();ask($("#q").value)};
+  $$("[data-ex]").forEach(function(b){b.onclick=function(){ask(b.getAttribute("data-ex"))}});
+  apply();if(P.ask)ask(P.ask);
+}
+
+/* ---------- route: company ---------- */
+function finTable(org,d,type){var rows={};d.cl.forEach(function(c){if(c.f.indexOf("financial.")===0&&c.v&&c.v.amount!=null&&(c.v.account_type||"SELSKAP")===type){var y=String(c.v.fiscal_year);(rows[y]=rows[y]||{})[c.f.slice(10)]=c}});var years=Object.keys(rows).sort().slice(-4);if(!years.length)return "";
+  var h='<h3>'+(type==="KONSERN"?"Group (consolidated) accounts":"Company accounts")+'</h3><div class="tablewrap"><table><thead><tr><th scope="col">NOK</th>'+years.map(function(y){return '<th class="num" scope="col">'+esc(y)+'</th>'}).join("")+'</tr></thead><tbody>';
+  METRICS.forEach(function(m){if(!years.some(function(y){return rows[y][m[0]]}))return;h+='<tr><th scope="row">'+m[1]+'</th>'+years.map(function(y){var c=rows[y][m[0]];return '<td class="num">'+(c?esc(money(c.v.amount,c.v.currency))+" "+factChip(org,c,"✓"):'<span class="muted">not reported</span>')+'</td>'}).join("")+'</tr>'});
+  h+='<tr><th scope="row">Equity ratio <span class="small muted">(computed)</span></th>'+years.map(function(y){var e=rows[y].equity,a=rows[y].total_assets;return '<td class="num">'+(e&&a&&a.v.amount?Math.round(100*e.v.amount/a.v.amount)+"% "+chip(org,"✓",e.e.concat(a.e),[e.id,a.id],"computed","Equity / total assets, "+y):'<span class="muted">—</span>')+'</td>'}).join("")+'</tr>';
+  h+='<tr><th scope="row">Revenue change</th>'+years.map(function(y,i){var c=rows[y].revenue,p=i>0?rows[years[i-1]].revenue:null;return '<td class="num">'+(c&&p&&p.v.amount?pct(c.v.amount/p.v.amount-1):'<span class="muted">—</span>')+'</td>'}).join("")+'</tr></tbody></table></div>';return h}
+function renderCompany(org){
+  var r=KD.byOrg[org];$("#main").innerHTML='<div class="panel empty">Loading '+esc(r?r.n:org)+'…</div>';
+  loadCompany(org,function(d){
+    if(!d){$("#main").innerHTML='<div class="panel"><h1>Not in this run</h1><p>No profile for organisation number '+esc(org)+' in this run.</p><a class="btn" href="#/research">Back to research</a></div>';return}
+    r=r||{o:org,n:org,ca:[],so:[]};var id=d.id||{},cov=d.syn.coverage||{},areas=cov.areas||[],n={n:0};
+    var lastChecked=(d.src||[]).map(function(s){return s.t||""}).sort().pop()||"";
+    var claim=function(f){return d.cl.filter(function(c){return c.f===f&&c.a==="available"})};
+    var ind=id.industry||{},form=id.legal_form||{};
+    var head='<div class="panel"><div class="head"><div style="min-width:0;flex:1"><a href="#/research" class="small">← Research</a><h1>'+esc(r.b?r.b:r.n)+'</h1>'+(r.b?'<div class="muted">'+esc(r.n)+'</div>':"")+'<div class="muted">Org. no. '+esc(org)+(form.code?' · '+esc(form.description||form.code)+' ('+esc(form.code)+')':"")+(id.municipality?' · '+esc(title(id.municipality)):"")+'</div>'+(ind.code?'<div class="small">'+esc(r.ie||"")+(r.ie?' — ':"")+'<span class="muted">'+esc(ind.description||"")+' ('+esc(ind.code)+')</span></div>':"")+'<div class="small muted">Last checked '+esc(lastChecked.slice(0,16).replace("T"," "))+' UTC · run '+esc((d.run||{}).run_id||"")+'</div>'+badges(r)+'<div class="row" style="margin-top:10px"><label class="pick btn"><input type="checkbox" data-pick="'+esc(org)+'"'+(KD.compare.indexOf(org)>=0?" checked":"")+'> Compare</label><a class="btn" href="data/companies/'+esc(org)+'.json" download>Download JSON</a></div></div>'+
+      '<div class="covbox" aria-label="Coverage"><div class="score">'+(cov.score==null?"?":cov.score)+' <span class="small muted">of '+(cov.total||5)+' data areas</span></div><ul>'+areas.map(function(a){return '<li><span>'+esc(a.label)+'</span><span class="state '+(a.available?"available":"")+'">'+(a.available?"Found":"Not available")+'</span></li>'}).join("")+'</ul></div></div>'+
+      '<nav class="secnav" aria-label="Sections"><a href="#s-brief" data-jump="s-brief">Brief</a><a href="#s-fin" data-jump="s-fin">Financials</a><a href="#s-people" data-jump="s-people">People</a><a href="#s-web" data-jump="s-web">Web & hiring</a><a href="#s-changes" data-jump="s-changes">Changes</a><a href="#s-unknown" data-jump="s-unknown">Unknown</a><a href="#s-facts" data-jump="s-facts">All facts</a></nav></div>';
+    var brief='<div class="panel brief" id="s-brief"><h2>In 20 seconds</h2><p>'+sentences(org,d.syn.summary||[],n)+'</p>'+(d.syn.signals&&d.syn.signals.length?'<div class="badges">'+d.syn.signals.map(function(s){return '<span class="badge '+(s.tone==="positive"?"ok":s.tone==="negative"?"bad":"info")+'">'+esc(s.text)+'</span>'}).join("")+'</div>':"")+
+      (d.syn.sections||[]).map(function(sec){return '<div class="q">'+esc(sec.q||sec.h)+'</div><p>'+sentences(org,sec.s,n)+'</p>'}).join("")+'<p class="small muted">'+esc(d.syn.method||"")+'. Grey buttons are computed figures; amber marks facts carried forward from an earlier run.</p></div>';
+    var fin='<div class="panel" id="s-fin"><h2>Financials</h2>'+(finTable(org,d,"SELSKAP")+finTable(org,d,"KONSERN")||'<p class="muted">No filed figures: '+esc((d.fam.annual_accounts||{}).r||"not checked")+'</p>')+'</div>';
+    var roles=claim("role"),units=claim("registered_workplace"),groups=claim("group_relationship");
+    var people='<div class="panel" id="s-people"><h2>People and places</h2>'+(roles.length?'<ul class="plain">'+roles.map(function(c){return '<li><b>'+esc(c.v.name)+'</b> — '+esc(c.v.role||"")+(c.d?' <span class="small muted">since '+esc(c.d)+'</span>':"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p class="muted">No public roles: '+esc((d.fam.leadership||{}).r||"")+'</p>')+
+      (groups.length?'<h3>Group</h3><ul class="plain">'+groups.map(function(c){return '<li>'+esc(c.v.relationship==="subsidiary"?"Subsidiary":c.v.relationship==="parent"?"Parent":"Ultimate parent")+': <a href="'+(KD.byOrg[c.v.organisation_number]?"#/companies/"+esc(c.v.organisation_number):"#/research")+'">'+esc(c.v.name)+'</a> ('+esc(c.v.organisation_number)+')'+(c.v.ownership?" · "+esc(c.v.ownership):"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':"")+
+      '<h3>Registered workplaces</h3>'+(units.length?'<ul class="plain">'+units.slice(0,30).map(function(c){return '<li>'+esc(c.v.name)+' — '+esc(c.v.address||"")+(c.v.employees!=null?' · '+esc(c.v.employees)+' employees':"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p class="muted">'+esc((d.fam.workplaces||{}).r||"None registered")+'</p>')+(id.business_address?'<p class="small">Business address: '+esc(id.business_address)+'</p>':"")+'</div>';
+    var site=claim("official_website")[0],soc=claim("social_profile"),jobs=claim("job_posting"),cp=claim("careers_page"),news=claim("company_news").sort(function(a,b){return String(b.v.published||b.v.date||"").localeCompare(String(a.v.published||a.v.date||""))}),fs=function(f){var x=d.fam[f]||{};return '<span class="state '+esc(x.s||"")+'">'+esc((x.s||"not checked").replace("_"," "))+'</span> <span class="small muted">'+esc(x.r||"")+'</span>'};
+    var web='<div class="panel" id="s-web"><h2>Web presence and hiring</h2><h3>Official website</h3>'+(site?'<p>'+link(site.v.url||site.v)+(site.st?'<span class="stale-mark">not re-checked</span>':"")+' '+factChip(org,site)+'<br><span class="small muted">'+esc((site.v.identity_method||"").replace(/_/g," "))+'</span></p>':'<p>'+fs("official_website")+'</p>')+
+      '<h3>Social profiles</h3>'+(soc.length?'<ul class="plain">'+soc.map(function(c){var u=c.v.url||c.v;return '<li>'+esc(title(c.v.platform||host(u)))+': '+link(u)+(c.st?'<span class="stale-mark">not re-checked</span>':"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p>'+fs("company_profiles")+'</p>')+
+      '<h3>Hiring</h3>'+(jobs.length||cp.length?'<ul class="plain">'+jobs.map(function(c){return '<li>'+link(c.v.url,c.v.title||c.v.url)+(c.v.location?' · '+esc(c.v.location):"")+(c.v.published?' · published '+esc(String(c.v.published).slice(0,10)):"")+(c.v.expires?' · closes '+esc(String(c.v.expires).slice(0,10)):"")+" "+factChip(org,c)+'</li>'}).join("")+cp.map(function(c){return '<li>Careers page: '+link(c.v)+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p>'+fs("hiring")+'</p>')+
+      '<h3>Dated news</h3>'+(news.length?'<ul class="plain">'+news.slice(0,15).map(function(c){return '<li><span class="mono">'+esc(String(c.v.published||c.v.date||"").slice(0,10))+'</span> '+link(c.v.url,c.v.title)+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p><span class="state">not available</span> <span class="small muted">no dated news item was found on the company\'s own channels</span></p>')+'</div>';
+    var tl=d.syn.timeline||[];
+    var changes='<div class="panel" id="s-changes"><h2>What changed</h2>'+(d.ch.length?'<h3>Since the previous run ('+esc((d.rf||{}).previous_run_id||"")+')</h3>'+d.ch.map(function(c){return changeCard(org,c)}).join(""):'<p class="muted">'+((d.rf||{}).baseline!==false?"First snapshot for this company: no earlier run to compare with.":"No published fact changed since the previous run ("+esc((d.rf||{}).previous_run_id||"")+").")+'</p>')+
+      (tl.length?'<h3>Dated events in the sources, newest first</h3><ul class="plain timeline">'+tl.map(function(t){return '<li><span class="mono">'+esc(t.date)+'</span><span>'+esc(t.text)+" "+chip(org,"src",t.evidence_ids,t.claim_ids,"fact",t.text)+'</span></li>'}).join("")+'</ul>':"")+'</div>';
+    var unk=d.syn.unknowns||[];
+    var unknown='<div class="panel" id="s-unknown"><h2>What remains unknown</h2>'+(unk.length?'<div class="tablewrap"><table><thead><tr><th scope="col">Area</th><th scope="col">State</th><th scope="col">Why</th></tr></thead><tbody>'+unk.map(function(u){return '<tr><td>'+esc(u.label)+'</td><td><span class="state '+esc(u.state)+'">'+esc(String(u.state).replace("_"," "))+'</span></td><td class="small">'+esc(u.reason||"")+((u.checked_sources||[]).length?'<br>Checked: '+u.checked_sources.map(function(x){return link(x,host(x))}).join(", "):"")+'</td></tr>'}).join("")+'</tbody></table></div>':'<p>Every area has at least one evidence-backed fact.</p>')+'<p class="small muted">"Not available" means the sources were checked and held nothing; "failed" and "blocked" mean they could not be checked; "ambiguous" means a candidate was found but not proven to be this company, so it is withheld.</p></div>';
+    var byFam={};d.cl.forEach(function(c){(byFam[c.fa]=byFam[c.fa]||[]).push(c)});
+    var facts='<div class="panel" id="s-facts"><details class="facts"><summary>All facts ('+d.cl.filter(function(c){return c.a==="available"}).length+') and availability by area</summary>'+Object.keys(FAMILY).map(function(f){var list=(byFam[f]||[]).filter(function(c){return c.a==="available"}),st=d.fam[f]||{};return '<h3>'+esc(FAMILY[f])+' <span class="state '+esc(st.s||"")+'">'+esc(String(st.s||"").replace("_"," "))+'</span></h3>'+(list.length?'<div class="tablewrap"><table><tbody>'+list.map(function(c){return '<tr><th scope="row" style="width:34%">'+esc(c.l||c.f)+(c.pf?'<div class="small muted mono">'+esc(c.pf)+'</div>':"")+'</th><td>'+esc(claimText(c))+(c.d?' <span class="small muted">'+esc(c.d)+'</span>':"")+(c.rp?' <span class="small muted">'+esc(c.rp)+'</span>':"")+(c.st?'<span class="stale-mark">not re-checked this run</span>':"")+(c.hi?'<span class="badge">earlier filing</span>':"")+" "+factChip(org,c)+'</td></tr>'}).join("")+'</tbody></table></div>':'<p class="small muted">'+esc(st.r||"")+'</p>')}).join("")+'</details></div>';
+    $("#main").innerHTML=head+brief+fin+people+web+changes+unknown+facts;bindPicks($("#main"));
+    $$("[data-jump]").forEach(function(a){a.onclick=function(e){e.preventDefault();var t=document.getElementById(a.getAttribute("data-jump"));if(t)t.scrollIntoView({behavior:"smooth",block:"start"})}});
+    document.title=(r.b||r.n)+" — Kildespor";
+  })}
+function valueText(v){if(v==null)return "—";if(typeof v!=="object")return String(v);if(v.amount!=null)return money(v.amount,v.currency)+(v.fiscal_year?" ("+v.fiscal_year+")":"");return v.title||v.name&&(v.name+(v.role?" ("+v.role+")":""))||v.url||v.event||v.description||JSON.stringify(v)}
+function changeCard(org,c){return '<div class="change"><div><span class="badge '+(c.mat==="high"?"bad":c.mat==="medium"?"warn":"")+'">'+esc(c.mat||"")+'</span> <b>'+esc(String(c.type||"").replace(/_/g," "))+'</b></div><div class="side"><div><div class="small muted">Before '+chip(org,"src",c.pe,c.pc?[c.pc]:[],"fact","Previous value")+'</div>'+esc(valueText(c.prev))+'</div><div><div class="small muted">Now '+chip(org,"src",c.ce,c.cc?[c.cc]:[],"fact","Current value")+'</div>'+esc(valueText(c.cur))+'</div></div></div>'}
+
+/* ---------- route: compare ---------- */
+function renderCompare(){
+  var P=params(),orgs=(P.orgs||KD.compare.join(",")).split(",").map(function(s){return s.trim()}).filter(function(o){return KD.byOrg[o]}).slice(0,4);
+  if(orgs.length)setCompare(orgs);
+  var picker='<form id="addform" class="ask" style="margin-top:10px"><label for="add" class="skip">Add a company</label><input id="add" list="addlist" type="search" placeholder="Add a company by name or org. no."><datalist id="addlist">'+KD.rows.slice(0,2000).map(function(r){return '<option value="'+esc(r.o)+'">'+esc(r.n)+'</option>'}).join("")+'</datalist><button class="btn" type="submit">Add</button></form>';
+  if(!orgs.length){$("#main").innerHTML='<div class="panel"><h1>Compare</h1><p>Select two to four companies with "Compare" in Research, or add them here.</p>'+picker+'</div>';bindAdd([]);return}
+  $("#main").innerHTML='<div class="panel empty">Loading…</div>';
+  loadMany(orgs,function(all){
+    var ds=orgs.map(function(o){return all[o]}).filter(Boolean);
+    var yearsOf=function(d){var s={};d.cl.forEach(function(c){if(c.f.indexOf("financial.")===0&&c.v&&(c.v.account_type||"SELSKAP")==="SELSKAP")s[c.v.fiscal_year]=1});return Object.keys(s).sort()};
+    var common=ds.map(yearsOf).reduce(function(a,b){return a.filter(function(y){return b.indexOf(y)>=0})});var Y=common.length?common[common.length-1]:null;
+    var fin=function(d,m,y){return d.cl.filter(function(c){return c.f==="financial."+m&&c.v&&(c.v.account_type||"SELSKAP")==="SELSKAP"&&String(c.v.fiscal_year)===String(y)})[0]};
+    var latestY=function(d){var y=yearsOf(d);return y[y.length-1]};
+    var cell=function(d,c,text){return c?esc(text!=null?text:claimText(c))+(c.st?'<span class="stale-mark">not re-checked</span>':"")+" "+factChip(d.org,c,"✓"):'<span class="muted">'+(text||"not available")+'</span>'};
+    var one=function(d,f,filter){return d.cl.filter(function(c){return c.f===f&&c.a==="available"&&(!filter||filter(c))})[0]};
+    var rows=[
+      ["Industry",function(d){var c=one(d,"industry_code",function(c){return c.v.rank===1})||one(d,"industry_code");return cell(d,c,c?((KD.byOrg[d.org]||{}).ie||c.v.description)+" ("+c.v.code+")":null)}],
+      ["Municipality",function(d){var c=one(d,"municipality");return cell(d,c,c?title(c.v):null)}],
+      ["Legal form",function(d){var c=one(d,"legal_form");return cell(d,c,c?c.v.code:null)}],
+      ["Founded",function(d){var c=one(d,"founded_date");return cell(d,c)}],
+      ["Employees (register)",function(d){return cell(d,one(d,"registered_employees"))}]];
+    METRICS.forEach(function(m){rows.push([m[1]+" "+(Y||"(latest)"),function(d){var y=Y||latestY(d),c=fin(d,m[0],y);return cell(d,c,c?money(c.v.amount,c.v.currency)+(Y?"":" ("+y+")"):"not reported")}])});
+    rows.push(["Revenue change on previous year",function(d){var y=Y||latestY(d),c=fin(d,"revenue",y),p=fin(d,"revenue",String(+y-1));return c&&p&&p.v.amount?pct(c.v.amount/p.v.amount-1)+" "+chip(d.org,"✓",c.e.concat(p.e),[c.id,p.id],"computed","Revenue "+(+y-1)+" → "+y):'<span class="muted">—</span>'}]);
+    rows.push(["Equity ratio (computed)",function(d){var y=Y||latestY(d),e=fin(d,"equity",y),a=fin(d,"total_assets",y);return e&&a&&a.v.amount?Math.round(100*e.v.amount/a.v.amount)+"% "+chip(d.org,"✓",e.e.concat(a.e),[e.id,a.id],"computed","Equity / total assets "+y):'<span class="muted">—</span>'}]);
+    rows.push(["General manager",function(d){var c=one(d,"role",function(c){return c.v.role_code==="DAGL"});return cell(d,c,c?c.v.name:null)}]);
+    rows.push(["Board chair",function(d){var c=one(d,"role",function(c){return c.v.role_code==="LEDE"});return cell(d,c,c?c.v.name:null)}]);
+    rows.push(["Parent company",function(d){var c=one(d,"group_relationship",function(c){return c.v.relationship==="parent"||c.v.relationship==="ultimate_parent"});return cell(d,c,c?c.v.name:"none registered")}]);
+    rows.push(["Website",function(d){var c=one(d,"official_website");return c?link(c.v.url||c.v,host(c.v.url||c.v))+" "+factChip(d.org,c,"✓"):'<span class="muted">'+esc(((d.fam.official_website||{}).s||"").replace("_"," ")||"not available")+'</span>'}]);
+    rows.push(["Social profiles",function(d){var l=d.cl.filter(function(c){return c.f==="social_profile"&&c.a==="available"});return l.length?l.map(function(c){return link(c.v.url||c.v,title(c.v.platform||"profile"))+" "+factChip(d.org,c,"✓")}).join("<br>"):'<span class="muted">none found</span>'}]);
+    rows.push(["Hiring",function(d){var j=d.cl.filter(function(c){return c.f==="job_posting"&&c.a==="available"}),cp=one(d,"careers_page");return j.length?j.length+" job ad"+(j.length>1?"s":"")+" "+factChip(d.org,j[0],"✓"):cp?"careers page "+factChip(d.org,cp,"✓"):'<span class="muted">no signal found</span>'}]);
+    rows.push(["Latest news",function(d){var l=d.cl.filter(function(c){return c.f==="company_news"&&c.a==="available"}).sort(function(a,b){return String(b.v.published||b.v.date||"").localeCompare(String(a.v.published||a.v.date||""))});return l.length?esc(String(l[0].v.published||l[0].v.date||"").slice(0,10))+" "+link(l[0].v.url,l[0].v.title)+" "+factChip(d.org,l[0],"✓"):'<span class="muted">none found</span>'}]);
+    rows.push(["Data areas",function(d){return covDots(KD.byOrg[d.org]||{ca:[]})}]);
+    rows.push(["Changes this run",function(d){return d.ch.length?d.ch.length+" — "+esc(d.ch.slice(0,2).map(function(c){return String(c.type).replace(/_/g," ")}).join(", ")):'<span class="muted">none</span>'}]);
+    var h='<div class="panel"><h1>Compare</h1><p class="small muted">'+(Y?"Figures for financial year "+esc(Y)+", the latest year filed by every company shown.":"These companies have no filed year in common; each column shows its own latest year.")+' Every value opens its source.</p><div class="strip">'+ds.map(function(d){var r=KD.byOrg[d.org]||{n:d.org};return '<a class="btn" href="#/companies/'+esc(d.org)+'">'+esc(r.n)+'</a><button class="btn" data-remove="'+esc(d.org)+'" aria-label="Remove '+esc(r.n)+' from comparison">✕</button>'}).join("")+'</div><div class="tablewrap"><table class="compare"><thead><tr><th scope="col">&nbsp;</th>'+ds.map(function(d){var r=KD.byOrg[d.org]||{n:d.org};return '<th scope="col"><a href="#/companies/'+esc(d.org)+'">'+esc(r.n)+'</a><div class="small muted">'+esc(d.org)+'</div></th>'}).join("")+'</tr></thead><tbody>'+rows.map(function(row){return '<tr><th scope="row">'+esc(row[0])+'</th>'+ds.map(function(d){return '<td data-label="'+esc((KD.byOrg[d.org]||{n:d.org}).n)+'"><span>'+row[1](d)+'</span></td>'}).join("")+'</tr>'}).join("")+'</tbody></table></div>'+(orgs.length<4?picker:"")+'</div>';
+    $("#main").innerHTML=h;
+    $$("[data-remove]").forEach(function(b){b.onclick=function(){var l=orgs.filter(function(o){return o!==b.getAttribute("data-remove")});setCompare(l);location.hash="#/compare?orgs="+l.join(",")}});
+    bindAdd(orgs);
+  })}
+function bindAdd(orgs){var f=$("#addform");if(!f)return;f.onsubmit=function(e){e.preventDefault();var v=$("#add").value.trim(),r=KD.byOrg[v.replace(/\s/g,"")]||findCompany(v)||KD.rows.filter(function(x){return x.n.toLowerCase().indexOf(v.toLowerCase())>=0})[0];if(!r)return;var l=orgs.filter(function(o){return o!==r.o}).concat([r.o]).slice(0,4);setCompare(l);location.hash="#/compare?orgs="+l.join(",")}}
+
+/* ---------- route: refresh ---------- */
+function renderRefresh(){
+  var changed=KD.rows.filter(function(r){return r.ch>0}).sort(function(a,b){return b.ch-a.ch}),stale=KD.rows.filter(function(r){return r.st>0});
+  var m=KD.meta,total=changed.reduce(function(s,r){return s+r.ch},0);
+  var h='<div class="panel"><h1>Refresh: what changed in this run</h1><p class="muted small">This run: '+esc(m.run_id||"")+' ('+esc(String(m.completed_at||"").slice(0,16).replace("T"," "))+' UTC). '+(m.baseline?"No previous snapshot was supplied, so this run is the baseline: every fact is recorded with its first-observed time and the next run reports changes against it.":"Compared with: "+esc((m.previous_runs||[]).join(", "))+".")+' Changes keep both sides and both sides\' evidence; nothing is overwritten.</p><div><span class="stat"><b>'+changed.length+'</b>companies changed</span><span class="stat"><b>'+total+'</b>changes</span><span class="stat"><b>'+stale.length+'</b>companies with facts carried forward</span></div><p class="small muted">To refresh: run the agent again with the same <span class="mono">--state-dir</span>; it reads the previous run, re-checks every source and writes the differences here.</p></div>';
+  if(changed.length){h+='<div class="panel"><h2>Companies with changes</h2><div class="list">'+changed.map(function(r){return '<details class="change" data-org="'+esc(r.o)+'"><summary style="min-height:44px;cursor:pointer"><b>'+esc(r.n)+'</b> <span class="small muted">'+esc(r.o)+'</span> <span class="badge warn">'+r.ch+' change'+(r.ch>1?"s":"")+'</span><div class="small muted">'+esc((r.cs||[]).join("; "))+'</div></summary><div class="body">Loading…</div></details>'}).join("")+'</div></div>'}
+  if(stale.length){h+='<div class="panel"><h2>Facts carried forward (not re-checked this run)</h2><ul class="plain">'+stale.map(function(r){return '<li><a href="#/companies/'+esc(r.o)+'#s-facts">'+esc(r.n)+'</a> — '+r.st+' fact'+(r.st>1?"s":"")+' kept from the previous run and marked as such</li>'}).join("")+'</ul></div>'}
+  if(!changed.length&&!stale.length&&!m.baseline)h+='<div class="panel">No published fact changed since the previous run in the sources that were re-checked.</div>';
+  $("#main").innerHTML=h;
+  $$("details.change[data-org]").forEach(function(det){det.addEventListener("toggle",function(){if(!det.open||det.getAttribute("data-done"))return;det.setAttribute("data-done","1");var org=det.getAttribute("data-org");loadCompany(org,function(d){$(".body",det).innerHTML=d?d.ch.map(function(c){return changeCard(org,c)}).join("")+'<a class="btn" href="#/companies/'+esc(org)+'">Open profile</a>':"Could not load."})})});
+}
+
+/* ---------- router ---------- */
+function route(){
+  closeDrawer();var hsh=location.hash||"#/research",path=hsh.replace(/^#/,"").split("?")[0],parts=path.split("/").filter(Boolean),name=parts[0]||"research";
+  $$("nav.main a").forEach(function(a){if(a.getAttribute("data-route")===(name==="companies"?"research":name))a.setAttribute("aria-current","page");else a.removeAttribute("aria-current")});
+  var cmp=$('nav.main a[data-route=compare]');cmp.textContent="Compare"+(KD.compare.length?" ("+KD.compare.length+")":"");cmp.href="#/compare"+(KD.compare.length?"?orgs="+KD.compare.join(","):"");
+  if(name==="companies"&&parts[1])renderCompany(parts[1]);else if(name==="compare")renderCompare();else if(name==="refresh")renderRefresh();else{document.title="Kildespor company research";renderResearch()}
+  renderTray();window.scrollTo(0,0);
+}
+function start(){
+  if(KD.indexError||!KD.rows){$("#main").innerHTML='<div class="panel"><h1>Data not found</h1><p>The viewer expects <span class="mono">data/index.js</span> next to this page. Open <span class="mono">index.html</span> from the run\'s <span class="mono">site/</span> folder.</p></div>';return}
+  var m=KD.meta;$("#runinfo").textContent=m.count+" companies · run "+(m.run_id||"")+" · "+String(m.completed_at||"").slice(0,16).replace("T"," ")+" UTC";
+  KD.compare=(store("kd-compare")||[]).filter(function(o){return KD.byOrg[o]});
+  window.addEventListener("hashchange",route);route();
+}
+if(KD.loaded||KD.indexError)start();else KD.onIndex=start;
+})();
 </script>
 </body>
 </html>
 """
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
