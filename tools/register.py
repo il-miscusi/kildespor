@@ -112,6 +112,7 @@ class Unit:
     website: str | None = None
     postcodes: set[str] = field(default_factory=set)
     subunit: bool = False
+    towns: set[str] = field(default_factory=set)  # folded post-town and municipality names of its addresses
 
 
 def _unit(rec: dict[str, Any], subunit: bool) -> Unit:
@@ -119,13 +120,16 @@ def _unit(rec: dict[str, Any], subunit: bool) -> Unit:
     parent = str(rec.get("overordnetEnhet") or org) if subunit else org
     phones = [p for p in (phone8(rec.get("telefon")), phone8(rec.get("mobil"))) if p]
     postcodes = set()
+    towns = set()
     for key in ("forretningsadresse", "postadresse", "beliggenhetsadresse"):
         addr = rec.get(key) or {}
         pc = str(addr.get("postnummer") or "").strip()
         if re.fullmatch(r"\d{4}", pc) and (addr.get("landkode") in (None, "", "NO")):
             postcodes.add(pc)
+        for k in ("poststed", "kommune"):
+            towns.update(t for t in re.split(r"[^a-z0-9]+", fold(addr.get(k) or "")) if t)
     return Unit(org, parent, str(rec.get("navn") or ""), email_of(rec.get("epostadresse")), phones,
-                str(rec.get("hjemmeside") or "").strip() or None, postcodes, subunit)
+                str(rec.get("hjemmeside") or "").strip() or None, postcodes, subunit, towns)
 
 
 def load_units(enheter: str, underenheter: str | None) -> list[Unit]:

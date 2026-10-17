@@ -17,12 +17,15 @@ keeps places with a Norwegian address, and matches them to register entities
    equals the entity's business, postal or location postcode.
 
 A ``_subunit`` suffix marks a match on a sub-unit's register data, credited to its
-parent company. Rules 1-3 must also be corroborated by the place's name: it shares
-a distinctive token (four or more letters, found in at most ``RARE_TOKEN_DF`` register
-names) with the company or one of its sub-units. A match corroborated only by a
-shared postcode carries a ``_postcode_only`` suffix, one with neither an
-``_uncorroborated`` suffix; both are weak (a holding company's restaurant, a property
-owner's tenant, an accountant's or lawyer's office registered as the contact address). Every key must point at exactly one company; a place that matches
+parent company. Rules 1-3 keep their plain (strong) name only when the place's name
+corroborates the company: it shares a distinctive token with the company or one of its
+sub-units (four or more letters, in at most ``RARE_TOKEN_DF`` register names, and not a
+post-town or municipality name), and in addition the place shares a postcode with the
+company, or shares two such tokens, or has the same normalised name. Otherwise the rule
+carries a suffix and is weak: ``_name_only`` (one distinctive token, no postcode; a sister
+company's location), ``_postcode_only`` (no shared token: a holding company's restaurant,
+a property owner's tenant) or ``_uncorroborated`` (neither: an accountant's or lawyer's
+office registered as the contact address). Every key must point at exactly one company; a place that matches
 two companies at its strongest rule is dropped, and so is a domain, e-mail or social
 URL shared by more than a handful of places (chains, directories). Phones are never
 used for matching. At most three places per company. Rows cite
@@ -169,10 +172,14 @@ def main() -> None:
         idx[kind][key][u.parent] = u.subunit if cur is None else (cur and u.subunit)
 
     token_df = Counter(t for u in units if not u.subunit for t in set(norm_name(u.name).split()))
+    geo = set().union(*(u.towns for u in units))
+    org_names: dict[str, set] = defaultdict(set)
     for u in units:
         if u.parent in universe:
-            org_tokens[u.parent].update(t for t in norm_name(u.name).split() if len(t) >= 4 and token_df[t] <= RARE_TOKEN_DF)
+            org_tokens[u.parent].update(t for t in norm_name(u.name).split()
+                                        if len(t) >= 4 and token_df[t] <= RARE_TOKEN_DF and t not in geo)
             org_pcs[u.parent].update(u.postcodes)
+            org_names[u.parent].add(norm_name(u.name))
         if not u.subunit:
             legal_name[u.orgnr] = u.name
             if u.website and host_of(u.website):
@@ -247,8 +254,13 @@ def main() -> None:
             continue
         rule, _, sub = min((f for f in found if f[1] == org), key=lambda f: (LEVEL[f[0]], f[2]))
         name = f"overture_{rule}" + ("_subunit" if sub else "")
-        if rule != "name_postcode" and not set(key.split()) & org_tokens[org]:
-            name += "_postcode_only" if pcs & org_pcs[org] else "_uncorroborated"
+        if rule != "name_postcode":
+            shared = set(key.split()) & org_tokens[org]
+            pc_ok = bool(pcs & org_pcs[org])
+            if not shared:
+                name += "_postcode_only" if pc_ok else "_uncorroborated"
+            elif not (pc_ok or len(shared) >= 2 or (key and key in org_names[org])):
+                name += "_name_only"
         rule_counts[name] += 1
         matches[org].append((LEVEL[rule], -(p.get("confidence") or 0), name, p))
 
