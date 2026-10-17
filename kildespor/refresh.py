@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .http import utc_now
+from .contract import internal
 from .model import CompanyRecord, canonical
 
 SINGLE_VALUED = {
@@ -58,7 +59,7 @@ def load_previous(path: str | None) -> dict[str, dict[str, Any]]:
                 continue
             org = envelope.get("organisation_number")
             if org:
-                out[org] = envelope
+                out[org] = internal(envelope)
     return out
 
 

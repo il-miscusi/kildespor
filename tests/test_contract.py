@@ -1,0 +1,64 @@
+"""On-disk envelope shape: scalar values in the evaluator's field names, and a lossless read-back."""
+import json
+import unittest
+
+from kildespor.contract import canonical_social, internal, publish
+
+
+def _envelope():
+    return {
+        "organisation_number": "926818317",
+        "sections": {"website_and_profiles": {"families": {"company_profiles": {"state": "available"}}},
+                     "hiring_and_activity": {"families": {"hiring": {"state": "not_available", "reason": "none"}, "public_activity": {"state": "available"}}}},
+        "claims": [
+            {"id": "cl-1", "key": "official_website:\"spedify.no\"", "family": "official_website", "field": "official_website",
+             "value": {"url": "https://spedify.no/", "domain": "spedify.no", "identity_method": "organisation_number_on_site"},
+             "availability": "available", "confidence": 0.99, "evidence_ids": ["ev-1"]},
+            {"id": "cl-2", "key": "social_profile:x", "family": "company_profiles", "field": "social_profile",
+             "value": {"platform": "facebook", "url": "https://www.facebook.com/spedify.no/?ref=x", "handle": "spedify.no"},
+             "availability": "available", "confidence": 0.92, "evidence_ids": ["ev-1"]},
+            {"id": "cl-3", "key": "company_news:y", "family": "public_activity", "field": "company_news",
+             "value": {"title": "Spedify lanserer  reparasjon", "url": "https://spedify.no/blogg/a", "published": "2026-09-22T20:00:00+02:00"},
+             "availability": "available", "confidence": 0.9, "evidence_ids": ["ev-2"]},
+            {"id": "cl-4", "key": "registry_update:z", "family": "public_activity", "field": "registry_update",
+             "value": {"event": "x"}, "availability": "available", "evidence_ids": ["ev-3"]},
+            {"id": "na-926818317-hiring", "key": "hiring:availability", "family": "hiring", "field": "hiring",
+             "value": None, "availability": "not_available", "evidence_ids": []},
+        ],
+        "evidence": [
+            {"id": "ev-1", "source_url": "https://spedify.no/", "source_class": "company_owned_website", "content_sha256": "a" * 64, "retrieved_at": "t"},
+            {"id": "ev-2", "source_url": "https://spedify.no/blogg/a", "source_class": "company_owned_website", "content_sha256": "b" * 64, "retrieved_at": "t"},
+        ],
+    }
+
+
+class ContractTest(unittest.TestCase):
+    def test_scalar_values_and_field_names(self):
+        out = publish(_envelope())
+        by = {(c["field"], c["availability"]): c for c in out["claims"]}
+        self.assertEqual(by[("official_website", "available")]["value"], "https://spedify.no/")
+        self.assertEqual(by[("social_profile", "available")]["value"], "https://facebook.com/spedify.no")
+        self.assertEqual(by[("dated_news", "available")]["value"], "Spedify lanserer reparasjon (2026-09-22T20:00:00+02:00)")
+        self.assertEqual(by[("hiring_signal", "not_available")]["value"], None)
+        self.assertNotIn("hiring", {c["field"] for c in out["claims"]})
+        site = out["profile"]["evidence"]["website"]
+        self.assertTrue(site["value"]["identity_assessment"]["publishable"])
+        self.assertEqual(site["value"]["social_links"], [{"platform": "facebook", "url": "https://facebook.com/spedify.no"}])
+        self.assertIn("https://spedify.no/blogg/a", [p["url"] for p in site["value"]["pages"]])
+
+    def test_read_back_is_lossless_for_available_claims(self):
+        env = _envelope()
+        back = internal(json.loads(json.dumps(publish(env))))
+        before = {c["key"]: (c["field"], c["value"]) for c in env["claims"] if c["availability"] == "available"}
+        after = {c["key"]: (c["field"], c["value"]) for c in back["claims"] if c["availability"] == "available"}
+        self.assertEqual(before, after)
+        self.assertNotIn("profile", back)
+
+    def test_canonical_social(self):
+        self.assertEqual(canonical_social("https://no.linkedin.com/company/elopak/about/"), "https://linkedin.com/company/elopak")
+        self.assertEqual(canonical_social("https://www.youtube.com/@Elopak/videos"), "https://youtube.com/@Elopak")
+        self.assertEqual(canonical_social("https://m.facebook.com/MtmSkogservice?locale=nb"), "https://facebook.com/MtmSkogservice")
+
+
+if __name__ == "__main__":
+    unittest.main()

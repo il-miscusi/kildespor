@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, brreg, jobs, model, website
+from .contract import publish
 from .envelope import build_envelope, placeholder_envelope
 from .http import Fetcher, utc_now
 from .model import FAMILIES, STATES, CompanyRecord
@@ -306,7 +307,7 @@ def run_batch(args: Any) -> int:
         run_now["terminal_status"] = "completed" if final else "checkpoint"
         envelopes = assemble(orgs, recs, previous, run_now, final)
         with write_lock:
-            write_jsonl_atomic(output, envelopes)
+            write_jsonl_atomic(output, [publish(e) for e in envelopes])
         return envelopes
 
     feed = None
