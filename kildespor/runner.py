@@ -21,7 +21,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
-from . import __version__, brreg, jobs, website
+from . import __version__, brreg, jobs, model, website
 from .envelope import build_envelope, placeholder_envelope
 from .http import Fetcher, utc_now
 from .model import FAMILIES, STATES, CompanyRecord
@@ -104,27 +104,36 @@ def official_phase(fetcher: Fetcher, rec: CompanyRecord, snapshot_row: dict[str,
         rec.runtime_ms += int((time.monotonic() - started) * 1000)
 
 
-def enrichment_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_company_s: float, request_cap: int | None = None) -> None:
+def enrichment_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_company_s: float, request_cap: int | None = None, feed: "jobs.NavFeed | None" = None) -> None:
     if not rec.context.get("entity"):
         return
     started = time.monotonic()
     before = fetcher.thread_requests()
     company_deadline = min(deadline, started + per_company_s)
-    fetcher.begin_company(request_cap)
     try:
-        # Jobs first: a verified ad can name the employer's homepage and profiles.
-        try:
-            jobs.research_jobs(fetcher, rec, min(company_deadline, started + per_company_s * 0.35))
-        except Exception as exc:
-            rec.error("hiring", f"{type(exc).__name__}: {exc}")
-            if not rec.claims_for("hiring"):
-                rec.set_state("hiring", "failed", f"job research stopped: {type(exc).__name__}: {str(exc)[:80]}")
+        fetcher.begin_company(request_cap)
         try:
             website.research_website(fetcher, rec, company_deadline - 5)
         except Exception as exc:
             rec.error("website", f"{type(exc).__name__}: {exc}")
-            if not rec.claims_for("official_website") or rec.family_state.get("official_website", {}).get("state") != "available":
+            if rec.family_state.get("official_website", {}).get("state") != "available":
                 rec.set_state("official_website", "failed", f"website research stopped: {type(exc).__name__}: {str(exc)[:80]}")
+        # Job ads from NAV's vacancy feed; the feed loads in the background, so this waits for it at
+        # most until the run's enrichment deadline (not the per-company cap).
+        fetcher.begin_company(None if request_cap is None else max(6, request_cap // 2))
+        try:
+            jobs.research_jobs(fetcher, rec, deadline, feed)
+        except Exception as exc:
+            rec.error("hiring", f"{type(exc).__name__}: {exc}")
+            if not rec.claims_for("hiring"):
+                rec.set_state("hiring", "failed", f"job research stopped: {type(exc).__name__}: {str(exc)[:80]}")
+        # A verified ad can name the employer's homepage: check it if no website was verified yet.
+        if (rec.context.get("nav_employer") or {}).get("homepage") and rec.family_state.get("official_website", {}).get("state") != "available":
+            fetcher.begin_company(8)
+            try:
+                website.research_website(fetcher, rec, min(deadline, time.monotonic() + 30), only_nav=True)
+            except Exception as exc:
+                rec.error("website", f"NAV homepage check stopped: {type(exc).__name__}: {exc}")
         if not rec.claims_for("public_activity"):
             rec.set_state("public_activity", "not_available", "no dated activity found in the register feeds or on the company's own channels")
     finally:
@@ -170,7 +179,7 @@ def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str
                     if family not in snap.family_state and not snap.claims_for(family):
                         snap.set_state(family, "failed", "research still in progress at this checkpoint")
             changes, meta = diff(snap, previous.get(org), run["run_id"])
-            synthesis = build_synthesis(snap, changes if meta.get("previous_run_id") else None)
+            synthesis = build_synthesis(snap, changes if meta.get("previous_run_id") else None, baseline=bool(meta.get("baseline")))
             out.append(build_envelope(snap, run=run, synthesis=synthesis, changes=changes, refresh_meta=meta))
         except Exception as exc:
             log(f"envelope build failed for {org}: {type(exc).__name__}: {exc}")
@@ -270,7 +279,11 @@ def run_batch(args: Any) -> int:
         except Exception as exc:
             log(f"registry snapshot unreadable, live register only: {exc}")
 
-    fetcher = Fetcher(per_host_limit=2, host_limits={"data.brreg.no": 10, "arbeidsplassen.nav.no": 4})
+    # arbeidsplassen.nav.no rate-limits bursts (HTTP 429 seen at 4 concurrent), so it gets one connection.
+    if state_dir and not args.no_snapshots:
+        model.SNAPSHOT_DIR = str(state_dir / "snapshots")
+        model.SNAPSHOT_LABEL = f"{state_dir.as_posix().rstrip('/')}/snapshots"
+    fetcher = Fetcher(per_host_limit=2, host_limits={"data.brreg.no": 10, "arbeidsplassen.nav.no": 1, "pam-stilling-feed.nav.no": 3})
     max_requests = int(args.max_requests) if args.max_requests else int(args.requests_per_company * max(1, len(orgs)))
     fetcher.max_requests = max_requests
     run["max_requests"] = max_requests
@@ -286,6 +299,9 @@ def run_batch(args: Any) -> int:
             write_jsonl_atomic(output, envelopes)
         return envelopes
 
+    feed = None
+    if not args.official_only:
+        feed = jobs.NavFeed(fetcher, max_seconds=max(60.0, min(300.0, budget * 0.35))).start()
     workers = max(1, int(args.workers))
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kildespor")
     # Phase 1: official records (must finish well inside the budget).
@@ -301,10 +317,10 @@ def run_batch(args: Any) -> int:
 
     # Phase 2: website, profiles, jobs, news.
     if not args.official_only:
-        enrich_deadline = deadline - max(20.0, budget * 0.06)
+        enrich_deadline = deadline - max(30.0, budget * 0.12)
         per_company = float(args.per_company_seconds)
         queue = [org for org in orgs if recs[org].context.get("entity")]
-        futures2 = {pool.submit(enrichment_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap): org for org in queue}
+        futures2 = {pool.submit(enrichment_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap, feed): org for org in queue}
         pending2 = set(futures2)
         last_checkpoint = time.monotonic()
         while pending2 and time.monotonic() < enrich_deadline:
@@ -319,6 +335,8 @@ def run_batch(args: Any) -> int:
 
     envelopes = checkpoint(final=True)
     report = run_report(envelopes, orgs, {**run, "completed_at": utc_now(), "terminal_status": "completed"}, fetcher, started, recs)
+    if feed is not None:
+        report["nav_feed"] = {"days": feed.days, "pages": feed.pages, "active_ads": len(feed.active), "error": feed.error, "loaded": feed.done.is_set()}
     report_path = Path(args.report) if args.report else output.with_name("run-report.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

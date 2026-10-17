@@ -42,6 +42,11 @@ def _nok(amount: float | None, currency: str = "NOK") -> str:
     return f"{sign}{currency} {text}"
 
 
+def _amt(claim: dict[str, Any]) -> str:
+    """A filed amount in the claim's own currency."""
+    return _nok(claim["value"]["amount"], claim["value"].get("currency") or "NOK")
+
+
 def _pct(value: float) -> str:
     return f"{value * 100:+.0f}%"
 
@@ -82,7 +87,7 @@ class Builder:
         self.signals.append({"text": text, "tone": tone, "claim_ids": sorted({c["id"] for c in claims}), "evidence_ids": sorted({e for c in claims for e in c["evidence_ids"]})})
 
 
-def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = None, baseline: bool = True) -> dict[str, Any]:
     b = Builder(rec)
     name_c = b.first("legal_name")
     name = name_c["value"] if name_c else rec.organisation_number
@@ -201,22 +206,23 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
             s.append((f"Latest filed {label} accounts ({latest}): " + ", ".join(parts) + ".", used))
         if "equity" in cur and "total_assets" in cur and cur["total_assets"]["value"]["amount"]:
             ratio = cur["equity"]["value"]["amount"] / cur["total_assets"]["value"]["amount"]
-            s.append((f"Equity ratio {ratio * 100:.0f}% (equity {_nok(cur['equity']['value']['amount'])} of total assets {_nok(cur['total_assets']['value']['amount'])}).", [cur["equity"], cur["total_assets"]]))
+            s.append((f"Equity ratio {ratio * 100:.0f}% (equity {_amt(cur['equity'])} of total assets {_amt(cur['total_assets'])}).", [cur["equity"], cur["total_assets"]]))
             if cur["equity"]["value"]["amount"] < 0:
                 b.signal(f"Negative equity in {latest} ({label})", [cur["equity"]], "negative")
         if "annual_result" in cur and cur["annual_result"]["value"]["amount"] < 0:
-            b.signal(f"Annual loss of {_nok(-cur['annual_result']['value']['amount'])} in {latest} ({label})", [cur["annual_result"]], "negative")
+            b.signal(f"Annual loss of {_nok(-cur['annual_result']['value']['amount'], cur['annual_result']['value'].get('currency') or 'NOK')} in {latest} ({label})", [cur["annual_result"]], "negative")
         if len(years) >= 2:
             prev = stmts[(account_type, years[-2])]
-            if "revenue" in cur and "revenue" in prev and prev["revenue"]["value"]["amount"] > 0 and cur["revenue"]["value"]["amount"] >= 0:
+            same_currency = all(cur[m]["value"].get("currency") == prev[m]["value"].get("currency") for m in ("revenue", "annual_result") if m in cur and m in prev)
+            if same_currency and "revenue" in cur and "revenue" in prev and prev["revenue"]["value"]["amount"] > 0 and cur["revenue"]["value"]["amount"] >= 0:
                 growth = cur["revenue"]["value"]["amount"] / prev["revenue"]["value"]["amount"] - 1
-                s.append((f"Revenue changed {_pct(growth)} from {years[-2]} ({_nok(prev['revenue']['value']['amount'])}) to {latest}.", [cur["revenue"], prev["revenue"]]))
+                s.append((f"Revenue changed {_pct(growth)} from {years[-2]} ({_amt(prev['revenue'])}) to {latest}.", [cur["revenue"], prev["revenue"]]))
                 if abs(growth) >= 0.2:
                     b.signal(f"Revenue {_pct(growth)} in {latest} vs {years[-2]} ({label})", [cur["revenue"], prev["revenue"]], "positive" if growth > 0 else "negative")
-            if "annual_result" in cur and "annual_result" in prev:
+            if same_currency and "annual_result" in cur and "annual_result" in prev:
                 a, p = cur["annual_result"]["value"]["amount"], prev["annual_result"]["value"]["amount"]
                 if (a < 0) != (p < 0):
-                    s.append((f"The annual result moved from {_nok(p)} in {years[-2]} to {_nok(a)} in {latest}.", [cur["annual_result"], prev["annual_result"]]))
+                    s.append((f"The annual result moved from {_amt(prev['annual_result'])} in {years[-2]} to {_amt(cur['annual_result'])} in {latest}.", [cur["annual_result"], prev["annual_result"]]))
         if "revenue" in cur and "operating_result" in cur and cur["revenue"]["value"]["amount"] > 0:
             margin = cur["operating_result"]["value"]["amount"] / cur["revenue"]["value"]["amount"]
             s.append((f"Operating margin {margin * 100:.1f}% in {latest}.", [cur["operating_result"], cur["revenue"]]))
@@ -295,8 +301,7 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
             parts, used = [], []
             for metric, word in (("revenue", "revenue"), ("annual_result", "annual result"), ("equity", "equity")):
                 if metric in cur and metric in prev:
-                    a, p_ = cur[metric]["value"]["amount"], prev[metric]["value"]["amount"]
-                    parts.append(f"{word} {_nok(p_)} → {_nok(a)}")
+                    parts.append(f"{word} {_amt(prev[metric])} → {_amt(cur[metric])}")
                     used += [cur[metric], prev[metric]]
             if parts:
                 label = "group" if account_type == "KONSERN" else "company"
@@ -309,8 +314,10 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         lines = [c.get("summary") for c in (material or changes)[:5] if c.get("summary")]
         ev_ids = sorted({e for c in changes for e in c.get("current_evidence_ids", []) + c.get("previous_evidence_ids", [])})
         s.append((f"Since the previous run: {len(changes)} change(s)" + (f" — {'; '.join(lines)}." if lines else "."), [{"id": c.get("current_claim_id") or c.get("previous_claim_id") or "", "evidence_ids": ev_ids} for c in changes[:1]]))
-    elif rec.context.get("refresh_baseline", True):
+    elif baseline:
         s.append(("This run is the first snapshot for this company, so no run-to-run changes are reported yet.", []))
+    else:
+        s.append(("No changes since the previous run: every re-checked source returned the same facts.", []))
     if dated:
         s.append(("Recent dated changes in the sources: " + "; ".join(text for _, text, _ in dated[:6]) + ".", [c for _, _, cs in dated[:6] for c in cs]))
     b.add("What changed", s)

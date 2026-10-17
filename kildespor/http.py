@@ -59,6 +59,7 @@ class Snapshot:
     body: bytes = field(repr=False)
     redirect_chain: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
+    retry_after: float | None = None
 
     @property
     def ok(self) -> bool:
@@ -196,6 +197,8 @@ class Fetcher:
         self.latencies: list[int] = []
         self.max_requests: int | None = None
         self.budget_refusals = 0
+        self._cooldown: dict[str, float] = {}
+        self.rate_limited = 0
 
     # -- plumbing -----------------------------------------------------------------
     def _session(self) -> requests.Session:
@@ -270,6 +273,9 @@ class Fetcher:
             host = check_url(current)
             if check_robots and not self.robots_allows(current):
                 raise RobotsDisallowed(current)
+            pause = self._cooldown.get(host, 0.0) - time.monotonic()
+            if pause > 0:
+                time.sleep(min(pause, 20.0))
             with self._semaphore(host):
                 response = session.get(
                     current,
@@ -293,6 +299,16 @@ class Fetcher:
                             break
                     status = response.status_code
                     ctype = response.headers.get("Content-Type", "")
+                    retry_after = None
+                    if status in (429, 503):
+                        try:
+                            retry_after = float(response.headers.get("Retry-After") or "")
+                        except ValueError:
+                            retry_after = None
+                        # Every worker backs off this host, not just the one that was refused.
+                        with self._lock:
+                            self.rate_limited += 1
+                            self._cooldown[host] = max(self._cooldown.get(host, 0.0), time.monotonic() + min(retry_after or 5.0, 20.0))
                 finally:
                     response.close()
             elapsed = int((time.monotonic() - started) * 1000)
@@ -312,6 +328,7 @@ class Fetcher:
                 body=data,
                 redirect_chain=chain,
                 elapsed_ms=elapsed,
+                retry_after=retry_after,
             )
         raise requests.TooManyRedirects(url)
 
@@ -322,7 +339,8 @@ class Fetcher:
             try:
                 snap = self._raw_get(url, **kwargs)
                 if snap.status in (429, 502, 503, 504) and attempt < retries:
-                    time.sleep(min(1.5 * (attempt + 1), 6.0))
+                    wait = snap.retry_after if snap.retry_after is not None else 2.0 * (2 ** attempt)
+                    time.sleep(min(max(wait, 1.0), 20.0))
                     continue
                 return snap
             except (UnsafeURL, RobotsDisallowed, RequestBudgetExhausted):
@@ -361,4 +379,4 @@ class Fetcher:
             if not latencies:
                 return None
             return latencies[min(len(latencies) - 1, int(len(latencies) * p))]
-        return {"requests": self.requests, "bytes": self.bytes, "p50_ms": pct(0.5), "p95_ms": pct(0.95), "max_requests": self.max_requests, "budget_refusals": self.budget_refusals, "dns_timeouts": DNS_STATS["timeouts"]}
+        return {"requests": self.requests, "bytes": self.bytes, "p50_ms": pct(0.5), "p95_ms": pct(0.95), "max_requests": self.max_requests, "budget_refusals": self.budget_refusals, "rate_limited_responses": self.rate_limited, "dns_timeouts": DNS_STATS["timeouts"]}

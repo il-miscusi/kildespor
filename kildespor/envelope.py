@@ -87,9 +87,28 @@ def build_envelope(
             }
         )
 
+    for change in changes:
+        for record in change.get("previous_evidence") or []:
+            evidence.setdefault(record["id"], record)
     used = {e for c in claims for e in c.get("evidence_ids", [])}
-    used |= {e for change in changes for e in change.get("current_evidence_ids", [])}
+    used |= {e for change in changes for e in change.get("current_evidence_ids", []) + change.get("previous_evidence_ids", [])}
     evidence_list = [evidence[e] for e in sorted(evidence) if e in used]
+    snapshots: dict[str, dict[str, Any]] = {}
+    for record in evidence_list:
+        sha = record.get("content_sha256")
+        url = record.get("final_url") or record.get("source_url")
+        if not sha or (sha, url) in {(v["content_sha256"], v["url"]) for v in snapshots.values()}:
+            continue
+        snapshots[f"snap-{sha[:16]}-{len(snapshots)}"] = {
+            "url": url,
+            "requested_url": record.get("source_url"),
+            "retrieved_at": record.get("retrieved_at"),
+            "content_sha256": sha,
+            "http_status": record.get("http_status"),
+            "source_class": record.get("source_class"),
+            "stored_body": record.get("snapshot_path"),
+        }
+    snapshot_list = [{"id": k, **v} for k, v in snapshots.items()]
     identity_state = (family_state.get("legal_identity") or {}).get("state", "failed")
     return {
         "schema_version": SCHEMA,
@@ -100,6 +119,7 @@ def build_envelope(
         "sections": sections,
         "claims": claims,
         "evidence": evidence_list,
+        "source_snapshots": snapshot_list,
         "synthesis": synthesis,
         "changes": changes,
         "refresh": refresh_meta,

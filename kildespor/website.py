@@ -24,7 +24,11 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from .http import Fetcher, RequestBudgetExhausted, RobotsDisallowed, Snapshot, UnsafeURL, resolve_public
+from .http import Fetcher, RequestBudgetExhausted, RobotsDisallowed, Snapshot, UnsafeURL, resolve_public, utc_now
+
+
+def utc_today() -> str:
+    return utc_now()[:10]
 from .model import CompanyRecord
 
 LEGAL_SUFFIXES = {
@@ -61,6 +65,57 @@ FREE_MAIL = {
 }
 WEIGHTS = (3, 2, 7, 6, 5, 4, 3, 2)
 ORG_CANDIDATE = re.compile(r"(?<![\d])(\d{3})[  .\-]?(\d{3})[  .\-]?(\d{3})(?![\d])")
+
+
+GENERIC_NAME_WORDS = {
+    "norge", "norway", "norsk", "nordic", "holding", "invest", "eiendom", "gruppen", "group", "service", "services", "consult",
+    "consulting", "bygg", "drift", "utvikling", "handel", "transport", "regnskap", "solutions", "systems", "media", "design",
+    "partner", "partners", "energi", "teknikk", "elektro", "maskin", "hotell", "restaurant", "senter", "borettslag", "sameie",
+    "stiftelsen", "stiftelse", "forening", "selskap", "company", "management", "capital", "the", "and", "og", "for", "til",
+}
+
+
+def _fold(text: str) -> str:
+    return strip_accents(text.lower().replace("æ", "ae").replace("ø", "o").replace("å", "a"))
+
+
+def name_corroboration(legal_name: str, subunits: list[dict[str, Any]], page_text: str, final_url: str) -> str | None:
+    """A short span proving the company name appears on the page or forms the domain, else None."""
+    folded_page = _fold(page_text)
+    host = registered_domain(urlsplit(final_url).hostname or "").split(".")[0].replace("-", "")
+    names = [legal_name] + [s.get("name") or "" for s in subunits[:5]]
+    for name in names:
+        tokens = [t for t in (_fold(t) for t in name_tokens(name)) if t]
+        if not tokens:
+            continue
+        joined = "".join(tokens)
+        if len(joined) >= 4 and joined == host:
+            return f"domain {host} spells the name {name}"
+        phrase = " ".join(tokens)
+        if len(phrase) >= 5 and phrase in folded_page:
+            at = folded_page.find(phrase)
+            return f"name on page: …{page_text[max(0, at - 40): at + len(phrase) + 40]}…"
+        distinctive = [t for t in tokens if len(t) >= 5 and t not in GENERIC_NAME_WORDS]
+        if distinctive and all(re.search(rf"\b{re.escape(t)}\b", folded_page) for t in distinctive) and len(distinctive) >= max(1, len(tokens) - 1):
+            at = folded_page.find(distinctive[0])
+            return f"name words {', '.join(distinctive)} on page: …{page_text[max(0, at - 40): at + 60]}…"
+    return None
+
+
+def safe_link(url: Any, site_host: str | None = None) -> str | None:
+    """An http(s) URL on a public-looking host (and on the company's domain when given), else None."""
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
+        return None
+    host = parts.hostname.lower()
+    if host == "localhost" or host.endswith(".local") or re.fullmatch(r"[\d.]+|\[?[0-9a-f:]+\]?", host):
+        return None
+    if site_host and registered_domain(host) != site_host:
+        return None
+    return url
 
 
 def valid_orgnr(number: str) -> bool:
@@ -293,7 +348,7 @@ def _org_on_page(text: str, html: str, org: str) -> tuple[bool, str | None, dict
     return org in numbers, numbers.get(org), numbers
 
 
-def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> None:
+def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only_nav: bool = False) -> None:
     entity = rec.context.get("entity") or {}
     org = rec.organisation_number
     legal_name = entity.get("navn") or ""
@@ -323,8 +378,13 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
         domain = email.rsplit("@", 1)[1]
         if domain and domain not in FREE_MAIL and not is_directory(domain) and all(registered_domain(urlsplit(c[0]).hostname or "") != registered_domain(domain) for c in candidates):
             candidates.append((f"https://{registered_domain(domain)}/", "registry_email_domain"))
-    guessed = guess_domains(legal_name)
-    for unit in rec.context.get("subunits") or []:
+    if only_nav:
+        # Second pass after the job feed: only the employer homepage it named is new.
+        candidates = [c for c in candidates if c[1] == "nav_employer_homepage"]
+        if not candidates:
+            return
+    guessed = [] if only_nav else guess_domains(legal_name)
+    for unit in [] if only_nav else rec.context.get("subunits") or []:
         unit_name = unit.get("name") or ""
         if unit_name and name_tokens(unit_name) != name_tokens(legal_name):
             guessed.extend(d for d in guess_domains(unit_name, limit=2) if d not in guessed)
@@ -338,8 +398,10 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
     visit = SiteVisit(fetcher, rec, deadline)
     blocked_reason = None
     budget_hit = False
+    out_of_time = False
     for url, origin in candidates:
         if visit.time_left() < 5:
+            out_of_time = True
             break
         host = urlsplit(url).hostname or ""
         if is_directory(host):
@@ -434,6 +496,18 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
                 identity = f"{base}_group_site"
             else:
                 identity = base
+                # No organisation number anywhere: the declaration alone is not enough if the domain may
+                # have changed hands. Require the name on the page or in the domain, and treat a redirect
+                # to another domain without that corroboration as ambiguous.
+                corroboration = name_corroboration(legal_name, rec.context.get("subunits") or [], text, snap.final_url)
+                if corroboration:
+                    identity = f"{base}_name_on_site"
+                    span = corroboration
+                else:
+                    reason = f"the listed site {snap.final_url} shows neither this organisation number nor the company name"
+                    rec.context["website_ambiguous"] = snap.final_url
+                    rec.context["website_ambiguous_reason"] = reason
+                    continue
         if identity.endswith("_other_entity_on_site") or identity.endswith("_group_site"):
             # The listed site names another entity (an umbrella association, a parent or a sister
             # company). Publishing it as this entity's website risks a wrong-company match, so it is
@@ -446,7 +520,11 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
         _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
         return
 
-    if budget_hit and not rec.claims_for("official_website"):
+    if only_nav:
+        return
+    if out_of_time and not rec.claims_for("official_website"):
+        rec.set_state("official_website", "failed", "time budget ran out before every website candidate was checked", checked_sources=checked)
+    elif budget_hit and not rec.claims_for("official_website"):
         rec.set_state("official_website", "failed", "request budget reached before the website could be verified", checked_sources=checked)
     elif blocked_reason and not rec.claims_for("official_website"):
         rec.set_state("official_website", "blocked", blocked_reason, checked_sources=checked)
@@ -529,7 +607,7 @@ def _publish_site(
     for claim in registry_claims:
         evidence.extend(claim["evidence_ids"])
     exact = identity.endswith("organisation_number_on_site")
-    declared = identity in ("registry_listed", "nav_listed")
+    declared = identity in ("registry_listed_name_on_site", "nav_listed_name_on_site")
     relationship = None
     if identity.endswith("_group_site"):
         relationship = "group_site"
@@ -702,16 +780,20 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span=span, method="careers_link_on_verified_site", url=snap.final_url)
         rec.add_claim(family="hiring", field_name="careers_page", value=url, evidence_ids=[ev], confidence=0.85, method="careers_link_on_verified_site", relationship=company_label, label="Careers page")
         rec.context.setdefault("career_pages", []).append(url)
+    today = utc_today()
     for item, snap in jobs_ld[:20]:
         title = item.get("title")
         if not title:
+            continue
+        valid_through = str(item.get("validThrough") or "")[:10]
+        if valid_through and valid_through < today:
             continue
         posted = str(item.get("datePosted") or "")[:10] or None
         ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span=f'JSON-LD JobPosting title = "{title}" datePosted = {posted}', method="json_ld_jobposting", url=snap.final_url)
         rec.add_claim(
             family="hiring",
             field_name="job_posting",
-            value={"title": title, "url": item.get("url") or snap.final_url, "date_posted": posted, "valid_through": str(item.get("validThrough") or "")[:10] or None, "source": "company_website"},
+            value={"title": title, "url": safe_link(item.get("url"), site_host) or snap.final_url, "date_posted": posted, "valid_through": valid_through or None, "source": "company_website"},
             key=["site", title, posted],
             evidence_ids=[ev],
             confidence=0.9,
@@ -725,7 +807,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if not title:
             continue
         ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span=f'JSON-LD article "{title}" datePublished = {date}', method="json_ld_article", url=snap.final_url)
-        rec.add_claim(family="public_activity", field_name="company_news", value={"title": title, "url": item.get("url") or snap.final_url, "date": date, "source": "company_website"}, key=["news", title, date], evidence_ids=[ev], confidence=0.9, method="json_ld_article", effective_date=date, label="Company news")
+        rec.add_claim(family="public_activity", field_name="company_news", value={"title": title, "url": safe_link(item.get("url"), site_host) or snap.final_url, "date": date, "source": "company_website"}, key=["news", title, date], evidence_ids=[ev], confidence=0.9, method="json_ld_article", effective_date=date, label="Company news")
 
     # Careers page job postings (JSON-LD only) and the site's own feed.
     for url, _snap, _span in career_links[:1]:
@@ -740,12 +822,15 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         c_snap, c_soup, _ = page
         for item in json_ld_items(c_soup):
             if "JobPosting" in _types(item) and item.get("title"):
+                expires = str(item.get("validThrough") or "")[:10]
+                if expires and expires < today:
+                    continue
                 posted = str(item.get("datePosted") or "")[:10] or None
                 ev = rec.evidence_from_snapshot(c_snap, source_class="company_owned_website", span=f'JSON-LD JobPosting title = "{item["title"]}"', method="json_ld_jobposting", url=c_snap.final_url)
                 rec.add_claim(
                     family="hiring",
                     field_name="job_posting",
-                    value={"title": item["title"], "url": item.get("url") or c_snap.final_url, "date_posted": posted, "valid_through": str(item.get("validThrough") or "")[:10] or None, "source": "company_website"},
+                    value={"title": item["title"], "url": safe_link(item.get("url"), site_host) or c_snap.final_url, "date_posted": posted, "valid_through": expires or None, "source": "company_website"},
                     key=["site", item["title"], posted],
                     evidence_ids=[ev],
                     confidence=0.9,
@@ -796,6 +881,7 @@ def _read_feed(rec: CompanyRecord, visit: SiteVisit, url: str, relationship: str
                 date = match.group(1) if match else None
         if not title or not date:
             continue
+        link = safe_link(link, registered_domain(urlsplit(url).hostname or ""))
         ev = rec.evidence_from_snapshot(snap, source_class="company_owned_feed", span=f'feed item "{title[:150]}" {date}', method="rss_atom_feed", url=url)
         rec.add_claim(
             family="public_activity",
@@ -836,7 +922,8 @@ def _read_wordpress_posts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, 
         link = post.get("link")
         if not title or not re.match(r"\d{4}-\d{2}-\d{2}", date):
             continue
-        if link and registered_domain(urlsplit(link).hostname or "") != registered_domain(parts.hostname or ""):
+        link = safe_link(link, registered_domain(parts.hostname or ""))
+        if not link:
             continue
         ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span=f'post "{title[:150]}" date {date}', method="wordpress_posts_api", url=url)
         rec.add_claim(

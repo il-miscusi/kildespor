@@ -86,7 +86,9 @@ def diff(rec: CompanyRecord, previous: dict[str, Any] | None, run_id: str) -> tu
     prev_claims = {c["key"]: c for c in previous.get("claims", []) if c.get("availability") == "available"}
     prev_evidence = {e["id"]: e for e in previous.get("evidence", [])}
     cur_claims = {c["key"]: c for c in rec.claims}
-    family_ok = {family: (state.get("state") in ("available", "not_available", "not_applicable")) for family, state in rec.family_state.items()}
+    # A family checked this run (including an explicit identity mismatch, "ambiguous") reports removals;
+    # only a failed or blocked check carries the last supported value forward.
+    family_ok = {family: (state.get("state") in ("available", "not_available", "not_applicable", "ambiguous")) for family, state in rec.family_state.items()}
     changes: list[dict[str, Any]] = []
 
     def evidence_of(claim: dict[str, Any], pool: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:

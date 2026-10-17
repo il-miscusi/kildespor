@@ -32,7 +32,7 @@ def sample_record(org: str = "938702675", employees: int = 10, job: bool = True)
 
 def envelope_for(rec: CompanyRecord, previous: dict | None = None, run_id: str = "r1") -> dict:
     changes, meta = diff(rec, previous, run_id)
-    return build_envelope(rec, run={"run_id": run_id, "completed_at": "2026-10-17T00:00:00Z"}, synthesis=build_synthesis(rec, changes), changes=changes, refresh_meta=meta)
+    return build_envelope(rec, run={"run_id": run_id, "completed_at": "2026-10-17T00:00:00Z"}, synthesis=build_synthesis(rec, changes, baseline=bool(meta.get("baseline"))), changes=changes, refresh_meta=meta)
 
 
 class IdentityTests(unittest.TestCase):

@@ -18,6 +18,31 @@ from .http import Snapshot, utc_now
 
 STATES = ("available", "not_available", "blocked", "not_applicable", "ambiguous", "failed")
 
+# When set (by the runner), every snapshot that backs a claim is stored gzipped under
+# <SNAPSHOT_DIR>/<sha[:2]>/<sha>.gz and the evidence record names the path.
+SNAPSHOT_DIR = None  # type: ignore[var-annotated]
+SNAPSHOT_LABEL = "snapshots"
+
+
+def store_body(snap: Snapshot) -> str | None:
+    if SNAPSHOT_DIR is None or not snap.body:
+        return None
+    import gzip
+    from pathlib import Path
+
+    rel = f"{SNAPSHOT_LABEL}/{snap.sha256[:2]}/{snap.sha256}.gz"
+    path = Path(SNAPSHOT_DIR) / snap.sha256[:2] / f"{snap.sha256}.gz"
+    try:
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            with gzip.open(tmp, "wb") as handle:
+                handle.write(snap.body)
+            tmp.replace(path)
+    except OSError:
+        return None
+    return rel
+
 # Section -> families. The order is the order of the required envelope sections.
 SECTIONS: dict[str, list[str]] = {
     "legal_identity_and_brand": ["legal_identity", "public_brand"],
@@ -84,6 +109,9 @@ class CompanyRecord:
             record["access_policy"] = access_policy
         if snapshot is not None:
             record["http_status"] = snapshot.status
+            stored = store_body(snapshot)
+            if stored:
+                record["snapshot_path"] = stored
             if snapshot.final_url != source_url:
                 record["final_url"] = snapshot.final_url
             if snapshot.redirect_chain:
