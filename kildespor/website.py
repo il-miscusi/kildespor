@@ -760,6 +760,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     is_wordpress = any("wp-content" in p[0].text()[:400000] or "wp-json" in p[0].text()[:400000] for p in pages[:1])
     if is_wordpress and not any(c["field"] == "company_news" for c in rec.claims) and visit.time_left() > 5:
         _read_wordpress_posts(rec, visit, home, company_label)
+    if not any(c["field"] == "company_news" for c in rec.claims) and visit.time_left() > 5 and home_page is not None:
+        _read_news_listing(rec, visit, home, home_page[1], company_label)
 
 
 def _read_feed(rec: CompanyRecord, visit: SiteVisit, url: str, relationship: str | None) -> None:
@@ -783,10 +785,12 @@ def _read_feed(rec: CompanyRecord, visit: SiteVisit, url: str, relationship: str
             link = link_tag.get("href") or link_tag.get_text(strip=True)
         date_tag = entry.find(["pubDate", "published", "updated", "dc:date", "date"])
         date = None
+        stamp = None
         if date_tag is not None:
             raw = date_tag.get_text(strip=True)
             try:
-                date = parsedate_to_datetime(raw).date().isoformat()
+                parsed = parsedate_to_datetime(raw)
+                date, stamp = parsed.date().isoformat(), parsed.isoformat()
             except (TypeError, ValueError, IndexError):
                 match = re.match(r"(\d{4}-\d{2}-\d{2})", raw)
                 date = match.group(1) if match else None
@@ -796,7 +800,7 @@ def _read_feed(rec: CompanyRecord, visit: SiteVisit, url: str, relationship: str
         rec.add_claim(
             family="public_activity",
             field_name="company_news",
-            value={"title": title[:300], "url": link, "date": date, "source": "company_feed"},
+            value={k: v for k, v in {"title": title[:300], "url": link, "date": date, "datetime": stamp or (raw if date_tag is not None else None), "source": "company_feed"}.items() if v},
             key=["news", title[:300], date],
             evidence_ids=[ev],
             confidence=0.92,
@@ -844,6 +848,85 @@ def _read_wordpress_posts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, 
             confidence=0.92,
             method="wordpress_posts_api",
             effective_date=date[:10],
+            relationship=relationship,
+            label="Company news",
+        )
+
+
+NEWS_HINTS = re.compile(r"\b(nyheter|nyhet|aktuelt|news|blogg|blog|artikler|presse|press|siste nytt)\b", re.I)
+
+
+def _dated_items(soup: BeautifulSoup, base_url: str, site_host: str) -> list[tuple[str, str, str, str]]:
+    """(title, url, date, span) for links that sit in the same item as a <time datetime>."""
+    items: list[tuple[str, str, str, str]] = []
+    seen: set[str] = set()
+    for time_tag in soup.find_all("time"):
+        stamp = (time_tag.get("datetime") or "").strip()
+        match = re.match(r"(\d{4}-\d{2}-\d{2})", stamp)
+        if not match:
+            continue
+        container = time_tag
+        for _ in range(4):
+            if container.parent is None:
+                break
+            container = container.parent
+            if container.name in ("article", "li") or any(k in " ".join(container.get("class") or []).lower() for k in ("post", "news", "article", "entry", "card", "item")):
+                break
+        link = None
+        for anchor in container.find_all("a", href=True):
+            text = anchor.get_text(" ", strip=True)
+            if len(text) >= 12:
+                link = anchor
+                break
+        if link is None:
+            heading = container.find(["h1", "h2", "h3", "h4"])
+            link = heading.find("a", href=True) if heading else None
+        if link is None:
+            continue
+        url = urljoin(base_url, link["href"]).split("#")[0]
+        if registered_domain(urlsplit(url).hostname or "") != site_host or url in seen:
+            continue
+        title = link.get_text(" ", strip=True)
+        if len(title) < 12 or len(title) > 300:
+            continue
+        seen.add(url)
+        items.append((title, url, match.group(1), f'"{title[:150]}" <time datetime="{stamp}">'))
+    return items
+
+
+def _read_news_listing(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, home_soup: BeautifulSoup, relationship: str | None) -> None:
+    site_host = registered_domain(urlsplit(home.final_url).hostname or "")
+    found = _dated_items(home_soup, home.final_url, site_host)
+    source = home
+    if not found:
+        target = None
+        for anchor in home_soup.find_all("a", href=True):
+            href = urljoin(home.final_url, anchor["href"]).split("#")[0]
+            label = f'{anchor.get_text(" ", strip=True)} {urlsplit(href).path}'
+            if registered_domain(urlsplit(href).hostname or "") == site_host and NEWS_HINTS.search(label) and href.rstrip("/") != home.final_url.rstrip("/"):
+                target = href
+                break
+        if not target:
+            return
+        try:
+            page = visit.fetch_page(target)
+        except Exception:
+            return
+        if not page:
+            return
+        source = page[0]
+        found = _dated_items(page[1], page[0].final_url, site_host)
+    for title, url, date, span in found[:10]:
+        ev = rec.evidence_from_snapshot(source, source_class="company_owned_website", span=span, method="news_listing_time_element", url=source.final_url)
+        rec.add_claim(
+            family="public_activity",
+            field_name="company_news",
+            value={"title": title, "url": url, "date": date, "source": "company_website"},
+            key=["news", title[:300], date],
+            evidence_ids=[ev],
+            confidence=0.88,
+            method="news_listing_time_element",
+            effective_date=date,
             relationship=relationship,
             label="Company news",
         )
