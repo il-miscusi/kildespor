@@ -229,7 +229,9 @@ def withhold_shared_profiles(snap: CompanyRecord, shared: set[str]) -> None:
 
 
 def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str, dict[str, Any]], run: dict[str, Any], final: bool) -> list[dict[str, Any]]:
-    out = []
+    # Pass 1: each company's current claims plus whatever refresh carries forward from its last run.
+    staged: dict[str, tuple[CompanyRecord, list[dict[str, Any]], dict[str, Any]]] = {}
+    failed: dict[str, str] = {}
     shared = shared_profiles(recs)
     for org in orgs:
         try:
@@ -243,7 +245,20 @@ def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str
                     if family not in snap.family_state and not snap.claims_for(family):
                         snap.set_state(family, "failed", "research still in progress at this checkpoint")
             changes, meta = diff(snap, previous.get(org), run["run_id"])
-            # A profile withheld as shared is never carried back from the previous run.
+            staged[org] = (snap, changes, meta)
+        except Exception as exc:
+            log(f"envelope build failed for {org}: {type(exc).__name__}: {exc}")
+            failed[org] = type(exc).__name__
+    # A profile claimed by two companies after refresh (current or carried forward) belongs to neither,
+    # and a profile withheld as shared is never carried back.
+    shared |= shared_profiles({org: item[0] for org, item in staged.items()})
+    out = []
+    for org in orgs:
+        if org in failed:
+            out.append(placeholder_envelope(org, run, f"envelope assembly failed: {failed[org]}"))
+            continue
+        try:
+            snap, changes, meta = staged[org]
             withhold_shared_profiles(snap, shared)
             synthesis = build_synthesis(snap, changes if meta.get("previous_run_id") else None, baseline=bool(meta.get("baseline")))
             out.append(build_envelope(snap, run=run, synthesis=synthesis, changes=changes, refresh_meta=meta))

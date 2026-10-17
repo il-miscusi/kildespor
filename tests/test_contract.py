@@ -141,3 +141,24 @@ class RefreshAndProfileTest(unittest.TestCase):
         self.assertEqual(site["source_url"], "https://spedify.no/")
         self.assertNotEqual(site["content_sha256"], "k" * 64)
         self.assertIn("https://spedify.no/kontakt", [p["url"] for p in site["value"]["pages"]])
+
+
+class CarriedCollisionTest(unittest.TestCase):
+    def test_profile_carried_for_one_company_and_current_for_another_is_withheld_for_both(self):
+        from kildespor.envelope import build_envelope
+        from kildespor.model import CompanyRecord
+        from kildespor.runner import assemble
+
+        def rec_with(org, url=None):
+            rec = CompanyRecord(org)
+            if url:
+                ev = rec.add_evidence(source_url="https://a.no/", source_class="company_owned_website", retrieved_at="t", content_sha256="a" * 64, claim_span="x", extraction_method="fixture")
+                rec.add_claim(family="company_profiles", field_name="social_profile", value={"platform": "facebook", "url": url}, evidence_ids=[ev], method="fixture")
+                rec.set_state("company_profiles", "available", "fixture")
+            return rec
+        prev_a = build_envelope(rec_with("111111111", "https://facebook.com/shared"), run={"run_id": "a"}, synthesis={}, changes=[], refresh_meta={})
+        recs = {"111111111": rec_with("111111111"), "222222222": rec_with("222222222", "https://facebook.com/shared")}
+        recs["111111111"].set_state("company_profiles", "failed", "site unreachable this run")  # carried forward
+        envs = assemble(["111111111", "222222222"], recs, {"111111111": prev_a}, {"run_id": "b"}, final=True)
+        for env in envs:
+            self.assertEqual([c for c in env["claims"] if c["field"] == "social_profile" and c["availability"] == "available"], [], env["organisation_number"])
