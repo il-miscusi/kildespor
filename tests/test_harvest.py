@@ -273,6 +273,11 @@ class NewsTests(unittest.TestCase):
         wp = harvest.wordpress_items(snap("https://www.fjordbygg.no/wp-json/wp/v2/posts", posts, "application/json"), self.SITE)
         self.assertEqual(wp[0].published, f"{RECENT}T10:00:00+02:00")
 
+    def test_shop_pages_are_not_news(self) -> None:
+        self.assertTrue(harvest.NOT_NEWS_PATH.search("/nettbutikk/74-hjem-fritid/2702-brannslukker"))
+        self.assertTrue(harvest.NOT_NEWS_PATH.search("/blog/category/tips"))
+        self.assertIsNone(harvest.NOT_NEWS_PATH.search("/nyheter/fjordbygg-vinner-kontrakt"))
+
     def test_sitemap_parse(self) -> None:
         xml = f"""<urlset xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"><url><loc>https://www.fjordbygg.no/karriere/</loc></url>
         <url><loc>https://www.fjordbygg.no/nyheter/ny-sak</loc><lastmod>{RECENT}</lastmod><news:news><news:publication_date>{RECENT}T08:00:00+02:00</news:publication_date><news:title>Ny sak om bygg</news:title></news:news></url></urlset>"""

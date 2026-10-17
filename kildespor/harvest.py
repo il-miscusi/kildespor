@@ -953,6 +953,8 @@ NEWS_TEXT = re.compile(
     r"more\s+news|all\s+news)$",
     re.I,
 )
+# Shop and catalogue pages: a product feed or a product listing is not news.
+NOT_NEWS_PATH = re.compile(r"/(?:nettbutikk|butikk|shop|store|produkt|produkter|products?|varer?|sortiment|kategori|category|categories|tag|tags|tips_and_guides|tips-og-guider)(?:/|$)", re.I)
 NOT_ARTICLE_SEGMENT = re.compile(r"^(?:kategori|category|categories|tag|tags|emne|author|forfatter|page|side|arkiv|archive|feed|rss|search|sok)$", re.I)
 NOT_HEADLINE = re.compile(
     r"^(?:les\s+mer|read\s+more|se\s+alle|vis\s+alle|view\s+all|all\s+news|alle\s+nyheter|nyheter|aktuelt|news|presse|press(?:\s*room)?|"
@@ -1409,7 +1411,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     news: dict[str, NewsItem] = {}
 
     def add_news(item: NewsItem) -> None:
-        if not item.title or not _news_window(item.date):
+        if not item.title or not _news_window(item.date) or (item.url and NOT_NEWS_PATH.search(urlsplit(item.url).path)):
             return
         key = _norm_url(item.url) if item.url else f"{item.title.lower()}|{item.date}"
         current = news.get(key)
@@ -1625,7 +1627,7 @@ def _declared_feeds(pages: list[tuple[Snapshot, BeautifulSoup, str]], site_host:
             kind = (link.get("type") or "").lower()
             if "alternate" in rel and ("rss" in kind or "atom" in kind):
                 feed = urljoin(snap.final_url, link["href"])
-                if _site(feed) == site_host and not re.search(r"comment|kommentar", feed, re.I) and feed not in feeds:
+                if _site(feed) == site_host and not re.search(r"comment|kommentar|product|produkt|shop|butikk|jobs\.rss", feed, re.I) and feed not in feeds:
                     feeds.append(feed)
     return feeds
 
