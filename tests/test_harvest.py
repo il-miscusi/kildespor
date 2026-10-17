@@ -620,3 +620,37 @@ class VendorContactTests(unittest.TestCase):
         harvest._extract_site_facts(rec, visit, home, True, None)
         self.assertEqual(sorted(c["value"] for c in rec.claims if c["field"] == "website_email"), ["post@fjordbygg.no"])
         self.assertEqual([c["value"] for c in rec.claims if c["field"] == "website_phone"], ["+47 55 12 34 56"])
+
+
+class SectionSiteTests(unittest.TestCase):
+    def test_section_site_never_reads_domain_wide_sources(self):
+        from kildespor.harvest import Plan
+        from kildespor.model import CompanyRecord
+
+        class FakeVisit:
+            section = "https://berggruppen.no/berg-bygg/"
+            pages = []
+
+            def __init__(self):
+                self.fetched = []
+                self.fetcher = self
+
+            def in_section(self, url):
+                from urllib.parse import urlsplit
+                parts, sec = urlsplit(url), urlsplit(self.section)
+                if parts.hostname != sec.hostname:
+                    return True
+                return (parts.path or "/").startswith(sec.path)
+
+            def time_left(self):
+                return 60.0
+
+            def get(self, url, **kwargs):
+                self.fetched.append(url)
+                return None
+
+        visit = FakeVisit()
+        plan = Plan(CompanyRecord("123456785"), visit)
+        self.assertIsNone(plan.raw("https://berggruppen.no/sitemap.xml"))
+        self.assertIsNone(plan.raw("https://berggruppen.no/wp-json/wp/v2/posts"))
+        self.assertEqual(visit.fetched, [])

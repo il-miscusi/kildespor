@@ -278,7 +278,10 @@ class Plan:
             return None
 
     def raw(self, url: str, headers: dict[str, str] | None = None) -> Snapshot | None:
-        if not self.can():
+        # On a site verified as one section of a larger domain, domain-wide sources (root sitemap,
+        # WordPress posts API, root feeds) describe the whole domain's owner, not this company.
+        in_section = getattr(self.visit, "in_section", None)
+        if not self.can() or (in_section is not None and not in_section(url)):
             return None
         try:
             snap = self.visit.fetcher.get(url, retries=0, timeout=(5.0, min(10.0, max(3.0, self.visit.time_left()))), headers=headers)
@@ -1558,7 +1561,8 @@ def read_sitemaps(plan: Plan, home: Snapshot, site_host: str, wordpress: bool) -
         if pages:
             snaps.append(snap)
             entries.extend(_from(pages, snap))
-    return [e for e in entries if _site(e.loc) == site_host], snaps
+    in_section = getattr(plan.visit, "in_section", None) or (lambda _url: True)
+    return [e for e in entries if _site(e.loc) == site_host and in_section(e.loc)], snaps
 
 
 # ----------------------------------------------------------------------------------------------
