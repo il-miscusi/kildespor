@@ -13,7 +13,8 @@ or social handle is a candidate until it is tied back to the exact entity.
 | employer homepage in an org-number-verified NAV job ad | treated like a register-listed site (the employer declared it) | same rules as above |
 | domain of the e-mail address in the Entity Register (free-mail providers excluded) | only when the site shows this organisation number | skipped |
 | domain derived from the legal or subunit name | the site (home, contact, about or privacy page) shows **this** organisation number, checked with the mod-11 checksum, and does not list three or more unrelated organisation numbers | `ambiguous` (several numbers) or skipped |
-| NAV job ad | employer name equals the legal name or a subunit name, **and** the ad page shows the organisation number of this entity or one of its subunits | not published |
+| NAV job ad | the feed's business name matches the legal or a subunit name (exactly, or as a word-boundary prefix), **and** the feed entry's own `employer.orgnr` is this entity's or one of its subunits' | not published |
+| register-listed or NAV-listed site with no organisation number on it | the company name appears on the page or spells the domain | `ambiguous` (the domain may have changed hands) |
 | social or video profile | linked from a verified company website (anchors or JSON-LD `sameAs`), listed as the website in the Entity Register, or entered by the employer in an org-number-verified NAV ad; share buttons, personal profiles and post links are rejected | `not_available` |
 
 Directory and aggregator hosts (proff.no, gulesider.no, 1881.no, finn.no and
@@ -54,6 +55,6 @@ than a fact published under the wrong company.
    group, update feed). A complete output file is written right after.
 2. Website discovery and verification, then site facts (brand, description,
    contacts, profiles, careers page, JSON-LD jobs and articles, RSS/Atom).
-3. Job ads on arbeidsplassen.nav.no for entities with registered employees or
-   a careers page.
+3. Job ads from NAV's vacancy feed (loaded once in the background), then the
+   employer homepage named in a verified ad if no website was verified yet.
 4. Synthesis, refresh diff, envelope, report and viewer.

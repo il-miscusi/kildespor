@@ -39,19 +39,21 @@ model. Expected third-party cost per official run: **$0**.
 | `out/envelopes.jsonl` | one terminal envelope per input, in input order |
 | `out/run-report.json` | validation checks, coverage by field family, request count, p50/p95 latency, runtime, cost |
 | `out/site/index.html` | self-contained viewer: search, filter, compare, verify each fact (desktop and mobile) |
-| `state/latest.jsonl`, `state/runs/<run_id>.jsonl` | snapshots used by the next run to refresh profiles |
+| `state/latest.jsonl`, `state/runs/<run_id>.jsonl` | envelope snapshots used by the next run to refresh profiles |
+| `state/snapshots/<sha[:2]>/<sha>.gz` | the raw source bodies behind every claim, content-addressed; each envelope's `source_snapshots` and each evidence record's `snapshot_path` point here |
 
 ### Time budget
 
-The agent keeps its own wall-clock budget (`--time-budget`, default 1500 s,
+The agent keeps its own wall-clock budget (`--time-budget`, default 900 s,
 or `KILDESPOR_TIME_BUDGET_S`). It reads the official registers for every
 company first and writes a complete output file straight away (a few seconds
 per 100 companies). Website, profile and job research then improves that file,
-and the complete file is rewritten atomically every 90 s. If the budget runs
+and the complete file is rewritten atomically every 90 s. Research stops at 88% of the budget. If the budget runs
 out, unfinished work is abandoned and its areas are reported as `failed` with
 the reason, so the output on disk always has exactly one envelope per input.
 Lower the budget if the evaluator's limit is shorter. `--workers` (default 32)
-sets concurrency.
+sets concurrency. `--max-requests` caps outbound requests for the whole run,
+redirects and retries included (default 19 per input company).
 
 ### Refresh
 
@@ -77,7 +79,7 @@ explicitly with `--previous old/envelopes.jsonl`.
 | Latest annual accounts and history | Brreg Register of Company Accounts API: up to three fiscal years, company and group accounts, 14 line items each | official figures only; missing items stay missing |
 | Leadership and registered workplaces | Brreg roles API (general manager, board, auditor, accountant); registered subunits with address, industry and employees | active roles only; birth dates are never stored |
 | Verified official website and company-owned profiles | register-listed website (entity and subunits), the employer homepage in a verified NAV ad, the register e-mail domain, then domains derived from the legal and subunit names; social and video profiles linked from the verified site, JSON-LD `sameAs`, or the verified ad's employer block | a derived or e-mail domain is published only when the site shows this organisation number (mod-11 checked); a listed site that shows only another entity's number is reported `ambiguous`, never published |
-| Hiring and dated public activity | arbeidsplassen.nav.no ads (also carries FINN ads); careers page and JSON-LD job postings on the verified site; dated posts from the site's own RSS/Atom feed or WordPress posts API; dated role-register changes and register update events | a job ad is published only when the ad page shows this entity's or one of its subunits' organisation number |
+| Hiring and dated public activity | NAV's official vacancy feed (pam-stilling-feed.nav.no, the last 45 days, read once per run); careers page and unexpired JSON-LD job postings on the verified site; dated posts from the site's own RSS/Atom feed, WordPress posts API or news listing (`<time datetime>`); dated role-register changes and register update events | a job ad is published only when the feed entry's own `employer.orgnr` is this entity's or one of its subunits' organisation number |
 | Claim-level evidence and availability | every claim → evidence (URL, retrieval time, sha256, span, method) | |
 | Refresh metadata and material changes | previous snapshot diff | |
 
