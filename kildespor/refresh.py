@@ -29,6 +29,7 @@ SINGLE_VALUED = {
     "share_capital", "statutory_purpose", "registered_activity", "vat_registered", "in_business_register", "part_of_group",
     "registry_status", "latest_filed_accounts_year", "registry_website", "official_website", "public_brand_name", "self_description",
 }
+FIELD_CHECKED = {"job_posting", "careers_page", "social_profile", "company_news", "website_phone", "website_email", "public_brand_name", "self_description", "official_website"}
 HIGH = {"legal_name", "registry_status", "registered_business_address", "official_website", "latest_filed_accounts_year", "legal_form"}
 CHANGE_NAMES = {
     "role": ("new_role", "ended_role"),
@@ -89,6 +90,13 @@ def diff(rec: CompanyRecord, previous: dict[str, Any] | None, run_id: str) -> tu
     # A family checked this run (including an explicit identity mismatch, "ambiguous") reports removals;
     # only a failed or blocked check carries the last supported value forward.
     family_ok = {family: (state.get("state") in ("available", "not_available", "not_applicable", "ambiguous")) for family, state in rec.family_state.items()}
+
+    def removable(claim: dict[str, Any]) -> bool:
+        # Fields fed by several sources are removed only when their own source was checked
+        # completely this run; a family that is "available" for another reason is not enough.
+        if claim["field"] in FIELD_CHECKED:
+            return claim["field"] in rec.checked_fields
+        return bool(family_ok.get(claim["family"]))
     changes: list[dict[str, Any]] = []
 
     def evidence_of(claim: dict[str, Any], pool: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -136,7 +144,7 @@ def diff(rec: CompanyRecord, previous: dict[str, Any] | None, run_id: str) -> tu
             changes.append({"change_type": f"new_{field}", "field": field, "family": a["family"], "previous": None, "current": a["value"], "current_claim_id": a["id"], "current_evidence_ids": a.get("evidence_ids", []), "previous_evidence_ids": [], "materiality": "medium" if field in HIGH else "low", "summary": f"{field.replace('_', ' ')} now found: {_short(a['value'])}", "detected_at": now})
         elif before and not after:
             b = before[0]
-            if family_ok.get(b["family"]):
+            if removable(b):
                 changes.append({"change_type": f"removed_{field}", "field": field, "family": b["family"], "previous": b["value"], "current": None, "previous_claim_id": b["id"], "previous_evidence_ids": b.get("evidence_ids", []), "previous_evidence": evidence_of(b, prev_evidence), "current_evidence_ids": [], "materiality": "high" if field in HIGH else "medium", "summary": f"{field.replace('_', ' ')} no longer found (was {_short(b['value'])})", "detected_at": now})
             else:
                 _carry(rec, b, prev_evidence)
@@ -164,7 +172,7 @@ def diff(rec: CompanyRecord, previous: dict[str, Any] | None, run_id: str) -> tu
             # Older filings roll out of the API's three-year window; keep them as history, not as removals.
             _carry(rec, claim, prev_evidence, stale=False)
             continue
-        if not family_ok.get(claim["family"]):
+        if not removable(claim):
             _carry(rec, claim, prev_evidence)
             continue
         change_type = CHANGE_NAMES.get(claim["field"], ("", f"removed_{claim['field']}"))[1]

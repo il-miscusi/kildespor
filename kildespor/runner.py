@@ -104,7 +104,7 @@ def official_phase(fetcher: Fetcher, rec: CompanyRecord, snapshot_row: dict[str,
         rec.runtime_ms += int((time.monotonic() - started) * 1000)
 
 
-def enrichment_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_company_s: float, request_cap: int | None = None, feed: "jobs.NavFeed | None" = None) -> None:
+def website_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_company_s: float, request_cap: int | None = None) -> None:
     if not rec.context.get("entity"):
         return
     started = time.monotonic()
@@ -118,8 +118,19 @@ def enrichment_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_
             rec.error("website", f"{type(exc).__name__}: {exc}")
             if rec.family_state.get("official_website", {}).get("state") != "available":
                 rec.set_state("official_website", "failed", f"website research stopped: {type(exc).__name__}: {str(exc)[:80]}")
-        # Job ads from NAV's vacancy feed; the feed loads in the background, so this waits for it at
-        # most until the run's enrichment deadline (not the per-company cap).
+    finally:
+        fetcher.begin_company(None)
+        rec.requests += fetcher.thread_requests() - before
+        rec.runtime_ms += int((time.monotonic() - started) * 1000)
+
+
+def jobs_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, request_cap: int | None, feed: "jobs.NavFeed | None") -> None:
+    """Runs only once the NAV feed has loaded, so no worker sits waiting for it."""
+    if not rec.context.get("entity"):
+        return
+    started = time.monotonic()
+    before = fetcher.thread_requests()
+    try:
         fetcher.begin_company(None if request_cap is None else max(6, request_cap // 2))
         try:
             jobs.research_jobs(fetcher, rec, deadline, feed)
@@ -134,8 +145,6 @@ def enrichment_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_
                 website.research_website(fetcher, rec, min(deadline, time.monotonic() + 30), only_nav=True)
             except Exception as exc:
                 rec.error("website", f"NAV homepage check stopped: {type(exc).__name__}: {exc}")
-        if not rec.claims_for("public_activity"):
-            rec.set_state("public_activity", "not_available", "no dated activity found in the register feeds or on the company's own channels")
     finally:
         fetcher.begin_company(None)
         rec.requests += fetcher.thread_requests() - before
@@ -151,6 +160,7 @@ def frozen_copy(rec: CompanyRecord) -> CompanyRecord:
             family_state=copy.deepcopy(rec.family_state),
             errors=list(rec.errors),
             context={},
+            checked_fields=set(rec.checked_fields),
             requests=rec.requests,
             runtime_ms=rec.runtime_ms,
         )
@@ -302,6 +312,8 @@ def run_batch(args: Any) -> int:
     feed = None
     if not args.official_only:
         feed = jobs.NavFeed(fetcher, max_seconds=max(60.0, min(300.0, budget * 0.35))).start()
+    # A complete, valid output exists before any network work starts.
+    checkpoint(final=False)
     workers = max(1, int(args.workers))
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kildespor")
     # Phase 1: official records (must finish well inside the budget).
@@ -315,22 +327,41 @@ def run_batch(args: Any) -> int:
     checkpoint(final=False)
     log(f"official phase done in {time.monotonic() - started:.0f}s; checkpoint written ({len(orgs)} envelopes)")
 
-    # Phase 2: website, profiles, jobs, news.
+    # Phase 2: website, profiles and news for every company; job ads are queued only once NAV's
+    # vacancy feed has loaded, so website workers never sit waiting for it.
     if not args.official_only:
         enrich_deadline = deadline - max(30.0, budget * 0.12)
         per_company = float(args.per_company_seconds)
         queue = [org for org in orgs if recs[org].context.get("entity")]
-        futures2 = {pool.submit(enrichment_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap, feed): org for org in queue}
-        pending2 = set(futures2)
+        site_futures = {pool.submit(website_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap): org for org in queue}
+        pending2 = set(site_futures)
+        jobs_queued = feed is None
+        jobs_total = 0
         last_checkpoint = time.monotonic()
-        while pending2 and time.monotonic() < enrich_deadline:
-            done, pending2 = wait(pending2, timeout=min(5.0, max(0.1, enrich_deadline - time.monotonic())), return_when=FIRST_COMPLETED)
+        while (pending2 or not jobs_queued) and time.monotonic() < enrich_deadline:
+            if not jobs_queued and feed is not None and feed.done.is_set():
+                job_futures = {pool.submit(jobs_phase, fetcher, recs[org], enrich_deadline, args.company_request_cap, feed): org for org in queue}
+                pending2 |= set(job_futures)
+                jobs_total = len(job_futures)
+                jobs_queued = True
+                log(f"NAV feed loaded ({feed.pages} pages, {len(feed.active)} active ads{', error: ' + feed.error if feed.error else ''}); job research queued")
+            if pending2:
+                done, pending2 = wait(pending2, timeout=min(5.0, max(0.1, enrich_deadline - time.monotonic())), return_when=FIRST_COMPLETED)
+            else:
+                time.sleep(min(2.0, max(0.1, enrich_deadline - time.monotonic())))
             if time.monotonic() - last_checkpoint > args.checkpoint_seconds:
                 checkpoint(final=False)
                 last_checkpoint = time.monotonic()
-                log(f"enrichment: {len(futures2) - len(pending2)}/{len(futures2)} companies done")
+                log(f"enrichment: {len(site_futures) + jobs_total - len(pending2)}/{len(site_futures) + jobs_total} tasks done")
+        if not jobs_queued:
+            for org in queue:
+                if not recs[org].claims_for("hiring"):
+                    recs[org].set_state("hiring", "failed", "NAV's vacancy feed had not loaded before the time budget ran out")
         if pending2:
-            log(f"enrichment: {len(pending2)} companies unfinished at the deadline; their open families are reported as failed")
+            log(f"enrichment: {len(pending2)} tasks unfinished at the deadline; their open families are reported as failed")
+        for org in queue:
+            if not recs[org].claims_for("public_activity"):
+                recs[org].set_state("public_activity", "not_available", "no dated activity found in the register feeds or on the company's own channels")
     pool.shutdown(wait=False, cancel_futures=True)
 
     envelopes = checkpoint(final=True)

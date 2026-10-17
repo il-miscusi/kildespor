@@ -102,6 +102,68 @@ def name_corroboration(legal_name: str, subunits: list[dict[str, Any]], page_tex
     return None
 
 
+OWNERSHIP_CONTEXT = re.compile(r"org\.?\s*-?\s*n|organisasjons|foretak|mva|vat|reg\.?\s*nr|registrering|company\s+(reg|no|number)", re.I)
+CREDIT_WORDS = re.compile(r"levert av|laget av|designet av|design av|utviklet av|utvikla av|nettside av|webside av|hjemmeside av|webdesign|web design|powered by|made by|website by|site by|developed by|designed by|built by|produsert av|\bbyrå\b", re.I)
+
+
+def _is_credit_link(anchor: Any) -> bool:
+    """A social link that belongs to the web agency credited in the footer, not to the company."""
+    node = anchor
+    for _ in range(2):
+        node = node.parent
+        if node is None:
+            return False
+        text = node.get_text(" ", strip=True)
+        if len(text) > 160:
+            return False
+        if CREDIT_WORDS.search(text):
+            return True
+    return False
+
+
+def _names_of(rec: CompanyRecord) -> list[str]:
+    entity = rec.context.get("entity") or {}
+    names = [entity.get("navn") or ""] + [s.get("name") or "" for s in rec.context.get("subunits") or []]
+    names += [c["value"] for c in rec.claims if c["field"] == "public_brand_name" and isinstance(c["value"], str)]
+    return [n for n in names if n]
+
+
+def _name_matches(candidate: str, rec: CompanyRecord) -> bool:
+    key = " ".join(_fold(t) for t in name_tokens(candidate))
+    if not key:
+        return False
+    for name in _names_of(rec):
+        other = " ".join(_fold(t) for t in name_tokens(name))
+        if other and (key == other or key.startswith(other + " ") or other.startswith(key + " ")):
+            return True
+    return False
+
+
+def _ld_numbers(item: dict[str, Any]) -> set[str]:
+    raw = json.dumps({k: item.get(k) for k in ("taxID", "vatID", "identifier", "leiCode", "duns", "globalLocationNumber")}, ensure_ascii=False)
+    return set(org_numbers_in(raw))
+
+
+def _ld_org_is_ours(item: dict[str, Any], rec: CompanyRecord) -> bool:
+    numbers = _ld_numbers(item)
+    if numbers:
+        own = {rec.organisation_number} | {s.get("organisation_number") for s in rec.context.get("subunits") or []}
+        return bool(numbers & own)
+    name = item.get("name") or item.get("legalName")
+    return not name or _name_matches(str(name), rec)
+
+
+def _ld_employer_is_ours(item: dict[str, Any], rec: CompanyRecord) -> bool:
+    employer = item.get("hiringOrganization")
+    if not employer:
+        return True
+    if isinstance(employer, str):
+        return _name_matches(employer, rec)
+    if isinstance(employer, dict):
+        return _ld_org_is_ours(employer, rec)
+    return False
+
+
 def safe_link(url: Any, site_host: str | None = None) -> str | None:
     """An http(s) URL on a public-looking host (and on the company's domain when given), else None."""
     if not isinstance(url, str):
@@ -481,6 +543,13 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         if origin in ("name_derived_domain", "registry_email_domain"):
             if not found:
                 continue
+            if not OWNERSHIP_CONTEXT.search(span or ""):
+                # The number appears, but not in the way a site states its own registration
+                # (org.nr / Foretaksregisteret / MVA): a customer or supplier reference.
+                rec.error("website", "organisation number found without an ownership label; not treated as this entity's site", snap.final_url)
+                rec.context["website_ambiguous"] = snap.final_url
+                rec.context["website_ambiguous_reason"] = f"{snap.final_url} mentions this organisation number but not as its own registration"
+                continue
             if len(foreign) >= 3:
                 rec.error("website", "guessed site shows this organisation number among several others; treated as ambiguous", snap.final_url)
                 rec.context["website_ambiguous"] = snap.final_url
@@ -522,6 +591,10 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
 
     if only_nav:
         return
+    if not (out_of_time or budget_hit or blocked_reason):
+        # Every candidate was checked and none is this entity's site: anything read from a
+        # previously verified site no longer stands.
+        rec.checked_fields.update({"official_website", "social_profile", "website_phone", "website_email", "public_brand_name", "self_description", "careers_page", "company_news"})
     if out_of_time and not rec.claims_for("official_website"):
         rec.set_state("official_website", "failed", "time budget ran out before every website candidate was checked", checked_sources=checked)
     elif budget_hit and not rec.claims_for("official_website"):
@@ -627,6 +700,7 @@ def _publish_site(
     )
     rec.context["website"] = {"url": site_url, "identity": identity, "exact": exact, "relationship": relationship}
     rec.set_state("official_website", "available", f"website verified ({identity})")
+    rec.checked_fields.add("official_website")
     if relationship in ("registry_listed_site_names_another_entity", "listed_site_names_another_entity"):
         rec.set_state("company_profiles", "ambiguous", "the register-listed site names a different organisation number; its profiles are not attributed to this entity")
         rec.set_state("public_brand", "ambiguous", "the register-listed site names a different organisation number; its brand is not attributed to this entity")
@@ -686,7 +760,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             profile = social_profile(absolute)
             if profile:
                 platform, url = profile
-                if platform not in socials:
+                if platform not in socials and not _is_credit_link(anchor):
                     socials[platform] = (url, snap, f"link on {snap.final_url}: {url}")
                 continue
             if registered_domain(urlsplit(absolute).hostname or "") == site_host and CAREER_HINTS.search(f"{label} {href}") and len(career_links) < 3:
@@ -712,7 +786,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                     description = (meta["content"].strip(), snap)
         for item in json_ld_items(soup):
             types = _types(item)
-            if types & {"Organization", "Corporation", "LocalBusiness", "ProfessionalService", "Store", "Restaurant", "AutomotiveBusiness", "HomeAndConstructionBusiness", "MedicalBusiness", "LegalService", "FinancialService"}:
+            if types & {"Organization", "Corporation", "LocalBusiness", "ProfessionalService", "Store", "Restaurant", "AutomotiveBusiness", "HomeAndConstructionBusiness", "MedicalBusiness", "LegalService", "FinancialService"} and _ld_org_is_ours(item, rec):
                 same_as = item.get("sameAs")
                 for url in same_as if isinstance(same_as, list) else [same_as] if same_as else []:
                     profile = social_profile(str(url))
@@ -728,7 +802,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                         emails.setdefault(address, (snap, f"JSON-LD email: {address}"))
                 if item.get("name") and snap is home:
                     brand_candidates.insert(0, (str(item["name"]).strip(), snap, f'JSON-LD {sorted(types)[0]} name = "{item["name"]}"'))
-            if "JobPosting" in types:
+            if "JobPosting" in types and _ld_employer_is_ours(item, rec):
                 jobs_ld.append((item, snap))
             if types & {"NewsArticle", "BlogPosting", "Article", "PressRelease"} and item.get("datePublished"):
                 news_ld.append((item, snap))
@@ -821,7 +895,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             continue
         c_snap, c_soup, _ = page
         for item in json_ld_items(c_soup):
-            if "JobPosting" in _types(item) and item.get("title"):
+            if "JobPosting" in _types(item) and item.get("title") and _ld_employer_is_ours(item, rec):
                 expires = str(item.get("validThrough") or "")[:10]
                 if expires and expires < today:
                     continue
@@ -847,6 +921,10 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         _read_wordpress_posts(rec, visit, home, company_label)
     if not any(c["field"] == "company_news" for c in rec.claims) and visit.time_left() > 5 and home_page is not None:
         _read_news_listing(rec, visit, home, home_page[1], company_label)
+    # The pages were read: these fields reflect the site as it is now.
+    rec.checked_fields.update({"social_profile", "website_phone", "website_email", "public_brand_name", "self_description", "careers_page"})
+    if visit.time_left() > 5:
+        rec.checked_fields.add("company_news")
 
 
 def _read_feed(rec: CompanyRecord, visit: SiteVisit, url: str, relationship: str | None) -> None:

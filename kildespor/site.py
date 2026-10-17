@@ -192,7 +192,8 @@ function dots(d){return '<span class="dots" aria-label="'+d._score+' of 5 areas 
 function renderList(){const r=rows();$('#count').textContent=`${r.length} of ${DATA.length} companies`;
   $('#list').innerHTML=r.slice(0,600).map(d=>`<button type="button" role="listitem" class="row ${current===d?'active':''}" data-i="${d._i}"><span><span class="n">${esc(d.id.legal_name||d.org)}</span><span class="m">${esc(d.org)} · ${esc((d.id.municipality||'').toString())} · ${esc(d.id.industry?d.id.industry.description:'')}</span></span>${dots(d)}</button>`).join('')+(r.length>600?'<div class="empty">Refine the search to see more.</div>':'');
   $('#list').querySelectorAll('.row').forEach(b=>b.onclick=()=>{open(DATA[b.dataset.i]);})}
-function src(d,ids){if(!ids||!ids.length)return'';return '<sup class="src">'+ids.slice(0,4).map(id=>`<a href="#ev-${esc(id)}" data-ev="${esc(id)}" title="${esc((d.ev[id]||{}).u||'')}">src</a>`).join(' ')+'</sup>'}
+function src(d,ids){if(!ids||!ids.length)return'';return '<sup class="src">'+ids.slice(0,4).map(id=>`<a href="#ev-${esc(id)}" data-ev="${esc(id)}" data-org="${esc(d.org)}" title="${esc((d.ev[id]||{}).u||'')}">src</a>`).join(' ')+'</sup>'}
+function openEvidence(org,id){const d=DATA.find(x=>x.org===org);if(!d)return;tab='evidence';open(d,false);const el=document.getElementById('ev-'+id);if(el){el.open=true;el.scrollIntoView({block:'center'})}}
 function evLink(d,ids){if(!ids||!ids.length)return'';const e=d.ev[ids[0]];if(!e)return'';return `<a class="small" href="${hesc(e.u)}" target="_blank" rel="noopener noreferrer">source</a> <span class="muted small">${esc((e.t||'').slice(0,10))}</span> ${src(d,ids)}`}
 function stateBadge(s){return `<span class="state ${esc(s)}">${esc((s||'').replace('_',' '))}</span>`}
 function famNote(d,fam){for(const [k] of SECTIONS){const f=d.sec[k]&&d.sec[k].f[fam];if(f)return f}return null}
@@ -261,7 +262,7 @@ function open(d,push=true){current=d;document.body.classList.add('viewing');cons
   $('#back').onclick=()=>{document.body.classList.remove('viewing');history.replaceState(null,'','#')};
   if(push)history.replaceState(null,'','#org='+d.org);renderList();window.scrollTo({top:0})}
 function renderTab(){const d=current;const t=TABS.find(x=>x[0]===tab)||TABS[0];$('#tabbody').innerHTML=t[2](d);
-  $('#tabbody').querySelectorAll('a[data-ev]').forEach(a=>a.onclick=e=>{e.preventDefault();tab='evidence';open(d,false);const el=document.getElementById('ev-'+a.dataset.ev);if(el){el.open=true;el.scrollIntoView({block:'center'})}})}
+  $('#tabbody').querySelectorAll('a[data-ev]').forEach(a=>a.onclick=e=>{e.preventDefault();openEvidence(a.dataset.org||d.org,a.dataset.ev)})}
 function toggleCompare(org){compare=compare.includes(org)?compare.filter(x=>x!==org):[...compare,org].slice(-4);renderTray()}
 function renderTray(){const t=$('#compareTray');if(!compare.length){t.style.display='none';return}t.style.display='flex';
   t.innerHTML='<b class="small">Compare:</b>'+compare.map(o=>{const d=DATA.find(x=>x.org===o);return `<span class="pill">${esc((d.id.legal_name||o).slice(0,28))}</span>`}).join('')+`<button class="btn primary" id="docmp" type="button" ${compare.length<2?'disabled':''}>Compare ${compare.length}</button><button class="btn" id="clrcmp" type="button">Clear</button>`;
@@ -280,6 +281,7 @@ function showCompare(){document.body.classList.add('viewing');const ds=compare.m
    ${row('Website',d=>{const s=d._by('official_website')[0];return s?`<a href="${hesc(s.v.url)}" target="_blank" rel="noopener noreferrer">${esc(s.v.url.replace(/^https?:\/\//,''))}</a>`:'—'})}${row('Social profiles',d=>d._by('social_profile').map(c=>esc(c.v.platform)).join(', ')||'—')}
    ${row('Active job ads',d=>d._jobs)}${row('Data areas',d=>d._score+' / 5')}</table></div></div>`;
   $('#view').querySelectorAll('a[data-open]').forEach(a=>a.onclick=e=>{e.preventDefault();open(DATA.find(x=>x.org===a.dataset.open))});
+  $('#view').querySelectorAll('a[data-ev]').forEach(a=>a.onclick=e=>{e.preventDefault();openEvidence(a.dataset.org,a.dataset.ev)});
   $('#back').onclick=()=>{document.body.classList.remove('viewing')};$('#copycmp').onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText(location.href.split('#')[0]+'#compare='+compare.join(','))};
   history.replaceState(null,'','#compare='+compare.join(','));}
 function route(){const h=location.hash.slice(1);const p=new URLSearchParams(h);if(p.get('org')){const d=DATA.find(x=>x.org===p.get('org'));if(d){open(d,false);return}}

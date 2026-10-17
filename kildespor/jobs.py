@@ -145,18 +145,22 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
     own_numbers = {rec.organisation_number} | {s.get("organisation_number") for s in subunits if s.get("organisation_number")}
     candidates = feed.candidates(names)
     published = 0
+    complete = True
     checked = [f"{FEED}/api/v1/feed (last {feed.days} days, {feed.pages} pages, {len(feed.active)} active ads)"]
     for uuid in candidates[: MAX_CANDIDATES * 3]:
         if published >= MAX_PUBLISHED or time.monotonic() > deadline - 2:
+            complete = False
             break
         try:
             snap = feed.entry(uuid)
         except Exception as exc:
+            complete = False
             rec.error("hiring", f"feed entry fetch failed: {type(exc).__name__}: {str(exc)[:100]}", f"{FEED}/api/v1/feedentry/{uuid}")
             if "budget" in str(exc):
                 break
             continue
         if not snap.ok:
+            complete = complete and snap.status == 404
             continue
         try:
             body = snap.json()
@@ -215,6 +219,8 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
                 "homepage", (homepage, snap, f'feedentry {uuid}: employer.homepage = "{homepage}" (employer orgnr {number})')
             )
         published += 1
+    if complete and len(candidates) <= MAX_CANDIDATES * 3 and not feed.error:
+        rec.checked_fields.add("job_posting")
     if published:
         rec.set_state("hiring", "available", f"{published} active job ad(s) in NAV's vacancy feed verified to this organisation number", checked_sources=checked)
     elif not rec.claims_for("hiring"):

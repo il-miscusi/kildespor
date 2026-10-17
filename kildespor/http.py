@@ -21,7 +21,10 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
+import urllib.request
+
 import requests
+from urllib3.util import connection as urllib3_connection
 
 from . import __version__
 
@@ -150,6 +153,57 @@ def resolve_public(host: str, timeout: float = 6.0) -> bool:
     return False
 
 
+_PROXIES = {k.lower(): v for k, v in urllib.request.getproxies().items()}
+_PROXY_HOSTS = {(urlsplit(v if "://" in v else "http://" + v).hostname or "").lower() for k, v in _PROXIES.items() if k != "no" and v}
+
+
+def _proxied(scheme: str, host: str) -> bool:
+    if not (_PROXIES.get(scheme) or _PROXIES.get("all")):
+        return False
+    try:
+        return not urllib.request.proxy_bypass(host)
+    except Exception:
+        return True
+
+
+def _public_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):  # type: ignore[no-untyped-def]
+    """urllib3's create_connection, but it only ever connects to a public address.
+
+    The address is resolved once and the socket connects to that exact address, so a
+    name that resolves publicly at check time and privately at connect time (DNS
+    rebinding) cannot reach an internal service. Configured proxy hosts are exempt.
+    """
+    host, port = address
+    host = host.strip("[]") if isinstance(host, str) else host
+    exempt = isinstance(host, str) and host.lower() in _PROXY_HOSTS
+    err: BaseException | None = None
+    for family, socktype, proto, _canon, sockaddr in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+        if not exempt and not _ip_is_public(sockaddr[0]):
+            err = UnsafeURL(f"refusing to connect to non-public address {sockaddr[0]} for {host}")
+            continue
+        sock = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            for option in socket_options or []:
+                sock.setsockopt(*option)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            err = exc
+            if sock is not None:
+                sock.close()
+    if err is not None:
+        raise err
+    raise OSError(f"getaddrinfo returned no addresses for {host}")
+
+
+urllib3_connection.create_connection = _public_create_connection
+
+
 def check_url(url: str) -> str:
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
@@ -160,12 +214,20 @@ def check_url(url: str) -> str:
         raise UnsafeURL("credentials in URL")
     if parts.port not in ALLOWED_PORTS:
         raise UnsafeURL(f"port not allowed: {parts.port}")
-    host = parts.hostname
+    host = parts.hostname.lower()
     try:
-        ipaddress.ip_address(host)
-        raise UnsafeURL("literal IP hosts are not fetched")
+        ipaddress.ip_address(host.strip("[]"))
+        is_literal = True
     except ValueError:
-        pass
+        is_literal = False
+    if is_literal:
+        raise UnsafeURL("literal IP hosts are not fetched")
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".lan", ".home.arpa")):
+        raise UnsafeURL(f"internal host name: {host}")
+    if _proxied(parts.scheme, host):
+        # Egress goes through a configured proxy, which resolves the name; the connection-level
+        # guard below still refuses any direct connection to a non-public address.
+        return host
     if not resolve_public(host):
         cached = _dns_cache.get(host)
         why = "DNS lookup timed out" if cached is None else ("no such host" if cached[1] == "nxdomain" else f"non-public address {cached[1]}")

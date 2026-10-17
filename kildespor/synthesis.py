@@ -163,7 +163,11 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     if accountant:
         s.append((f"Accountant: {accountant[0]['value']['name']}.", accountant[:1]))
     if not roles:
-        s.append(("The register lists no active public roles.", []))
+        state = rec.family_state.get("leadership", {}).get("state")
+        if state == "not_available":
+            s.append(("The register lists no active public roles.", []))
+        else:
+            s.append((f"Public roles could not be retrieved in this run ({state or 'not attempted'}).", []))
     b.add("Who runs it", s)
 
     # 3. Where it operates

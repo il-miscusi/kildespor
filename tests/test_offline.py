@@ -26,6 +26,7 @@ def sample_record(org: str = "938702675", employees: int = 10, job: bool = True)
     for family in FAMILIES:
         if not rec.claims_for(family):
             rec.set_state(family, "not_available", "checked, nothing found")
+    rec.checked_fields.add("job_posting")  # the job source was consulted completely
     rec.finalize_states()
     return rec
 
@@ -135,10 +136,64 @@ class RefreshTests(unittest.TestCase):
         first = envelope_for(sample_record(job=True), None, "r1")
         rec = sample_record(job=False)
         rec.family_state["hiring"] = {"state": "failed", "reason": "job board unreachable", "checked_sources": []}
+        rec.checked_fields.discard("job_posting")
         second = envelope_for(rec, json.loads(json.dumps(first)), "r2")
         self.assertNotIn("closed_job", {c["change_type"] for c in second["changes"]})
         stale = [c for c in second["claims"] if c.get("stale")]
         self.assertTrue(stale and stale[0]["field"] == "job_posting")
+
+    def test_other_hiring_source_does_not_close_unchecked_jobs(self) -> None:
+        """A careers link keeps the family available; that alone must not close jobs the feed did not re-check."""
+        first = envelope_for(sample_record(job=True), None, "r1")
+        rec = sample_record(job=False)
+        ev = next(iter(rec.evidence))
+        rec.add_claim(family="hiring", field_name="careers_page", value="https://example.no/karriere", evidence_ids=[ev], method="careers_link_on_verified_site")
+        rec.checked_fields.discard("job_posting")
+        rec.finalize_states()
+        second = envelope_for(rec, json.loads(json.dumps(first)), "r2")
+        self.assertNotIn("closed_job", {c["change_type"] for c in second["changes"]})
+
+
+class SafetyAndOwnershipTests(unittest.TestCase):
+    def test_literal_public_ip_refused(self) -> None:
+        with self.assertRaises(khttp.UnsafeURL):
+            khttp.check_url("http://93.184.216.34/")
+
+    def test_connect_guard_refuses_loopback(self) -> None:
+        with self.assertRaises(Exception):
+            khttp._public_create_connection(("127.0.0.1", 9), 1)
+
+    def test_sister_company_job_posting_rejected(self) -> None:
+        from kildespor.website import _ld_employer_is_ours
+        rec = CompanyRecord("926818317")
+        rec.context["entity"] = {"navn": "SPEDIFY AS"}
+        self.assertTrue(_ld_employer_is_ours({"hiringOrganization": {"name": "Spedify AS"}}, rec))
+        self.assertFalse(_ld_employer_is_ours({"hiringOrganization": {"name": "Other Sister AS"}}, rec))
+        self.assertFalse(_ld_employer_is_ours({"hiringOrganization": {"name": "Spedify AS", "taxID": "NO 938 702 675 MVA"}}, rec))
+
+    def test_agency_credit_link_is_not_a_company_profile(self) -> None:
+        from bs4 import BeautifulSoup
+        from kildespor.website import _is_credit_link
+        soup = BeautifulSoup('<div><p>Nettside levert av <a href="https://www.linkedin.com/company/byraa">Byrå</a></p></div>', "lxml")
+        self.assertTrue(_is_credit_link(soup.find("a")))
+
+    def test_roles_snapshot_is_stored_without_birth_dates(self) -> None:
+        import gzip
+        from kildespor import model
+        from kildespor.http import Snapshot
+        body = json.dumps({"rollegrupper": [{"roller": [{"person": {"fodselsdato": "1970-01-01", "navn": {"fornavn": "Kari"}}}]}]}).encode()
+        snap = Snapshot("https://data.brreg.no/enhetsregisteret/api/enheter/938702675/roller", "https://data.brreg.no/enhetsregisteret/api/enheter/938702675/roller", 200, "2026-10-17T00:00:00Z", "b" * 64, "application/json", body)
+        with tempfile.TemporaryDirectory() as tmp:
+            old_dir, old_label = model.SNAPSHOT_DIR, model.SNAPSHOT_LABEL
+            model.SNAPSHOT_DIR, model.SNAPSHOT_LABEL = tmp, "s"
+            try:
+                rel = model.store_body(snap)
+            finally:
+                model.SNAPSHOT_DIR, model.SNAPSHOT_LABEL = old_dir, old_label
+            stored = gzip.open(Path(tmp) / "bb" / ("b" * 64 + ".redacted.json.gz")).read().decode()
+        self.assertTrue(rel and rel.endswith(".redacted.json.gz"))
+        self.assertNotIn("1970-01-01", stored)
+        self.assertIn("Kari", stored)
 
 
 if __name__ == "__main__":

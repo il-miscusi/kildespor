@@ -24,20 +24,40 @@ SNAPSHOT_DIR = None  # type: ignore[var-annotated]
 SNAPSHOT_LABEL = "snapshots"
 
 
+PERSONAL_KEYS = {"fodselsdato"}
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _redact(v) for k, v in value.items() if k not in PERSONAL_KEYS}
+    if isinstance(value, list):
+        return [_redact(v) for v in value]
+    return value
+
+
 def store_body(snap: Snapshot) -> str | None:
+    """Store the body behind a claim; role responses are stored with birth dates removed."""
     if SNAPSHOT_DIR is None or not snap.body:
         return None
     import gzip
     from pathlib import Path
 
-    rel = f"{SNAPSHOT_LABEL}/{snap.sha256[:2]}/{snap.sha256}.gz"
-    path = Path(SNAPSHOT_DIR) / snap.sha256[:2] / f"{snap.sha256}.gz"
+    body = snap.body
+    suffix = ".gz"
+    if "/roller" in snap.requested_url:
+        try:
+            body = json.dumps(_redact(json.loads(body.decode("utf-8"))), ensure_ascii=False, sort_keys=True).encode("utf-8")
+            suffix = ".redacted.json.gz"
+        except (ValueError, UnicodeDecodeError):
+            return None  # never store an unredactable roles body
+    rel = f"{SNAPSHOT_LABEL}/{snap.sha256[:2]}/{snap.sha256}{suffix}"
+    path = Path(SNAPSHOT_DIR) / snap.sha256[:2] / f"{snap.sha256}{suffix}"
     try:
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
+            tmp = path.with_name(path.name + ".tmp")
             with gzip.open(tmp, "wb") as handle:
-                handle.write(snap.body)
+                handle.write(body)
             tmp.replace(path)
     except OSError:
         return None
@@ -71,6 +91,8 @@ class CompanyRecord:
     family_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     errors: list[dict[str, Any]] = field(default_factory=list)
     context: dict[str, Any] = field(default_factory=dict)
+    # Fields whose source was checked completely this run; refresh reports a removal only for these.
+    checked_fields: set[str] = field(default_factory=set)
     requests: int = 0
     started_monotonic: float = 0.0
     runtime_ms: int = 0
@@ -112,6 +134,8 @@ class CompanyRecord:
             stored = store_body(snapshot)
             if stored:
                 record["snapshot_path"] = stored
+                if stored.endswith(".redacted.json.gz"):
+                    record["snapshot_redaction"] = "birth dates (fodselsdato) removed before storage; content_sha256 is of the original response"
             if snapshot.final_url != source_url:
                 record["final_url"] = snapshot.final_url
             if snapshot.redirect_chain:
