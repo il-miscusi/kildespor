@@ -1487,10 +1487,12 @@ WIKIDATA_SOCIAL_PROPS = {
 
 
 def _wikidata_values(entity: dict[str, Any], prop: str) -> list[str]:
-    """Non-deprecated string values of one property in a Wikidata entity's claims."""
+    """Current string values of one property in a Wikidata entity's claims.
+
+    A deprecated statement, or one with an end time (qualifier P582), no longer holds and is skipped."""
     values = []
     for statement in (entity.get("claims") or {}).get(prop) or []:
-        if statement.get("rank") == "deprecated":
+        if statement.get("rank") == "deprecated" or (statement.get("qualifiers") or {}).get("P582"):
             continue
         snak = statement.get("mainsnak") or {}
         value = (snak.get("datavalue") or {}).get("value")

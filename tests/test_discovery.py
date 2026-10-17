@@ -345,6 +345,19 @@ class CacheSocialProfiles(unittest.TestCase):
         rec = self.publish(self.Fetcher(self.entity(orgnr=OTHER)))
         self.assertEqual([c for c in rec.claims if c["field"] == "social_profile"], [])
 
+    def test_ended_or_deprecated_statements_are_not_current(self) -> None:
+        ended = {"P582": [{"snaktype": "value", "datavalue": {"value": {"time": "+2020-01-01T00:00:00Z"}}}]}
+        entity = self.entity()
+        entity["claims"]["P2013"][0]["qualifiers"] = ended
+        rec = self.publish(self.Fetcher(entity))
+        self.assertEqual([c for c in rec.claims if c["field"] == "social_profile"], [])
+        entity = self.entity()
+        entity["claims"]["P2333"][0]["qualifiers"] = ended
+        self.assertEqual([c for c in self.publish(self.Fetcher(entity)).claims if c["field"] == "social_profile"], [])
+        entity = self.entity()
+        entity["claims"]["P2333"][0]["rank"] = "deprecated"
+        self.assertEqual([c for c in self.publish(self.Fetcher(entity)).claims if c["field"] == "social_profile"], [])
+
     def test_refused_or_absent_confirmation_publishes_nothing(self) -> None:
         rec = self.publish(self.Fetcher(refuse=True))
         self.assertEqual([c for c in rec.claims if c["field"] == "social_profile"], [])
