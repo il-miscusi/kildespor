@@ -530,10 +530,10 @@ def foreign_sibling(account: str, contains: set[str], own_text: str) -> bool:
 
 
 def foreign_page(url: str, own_text: str) -> bool:
-    """A URL whose host or path names another country (a sister company's careers site abroad)."""
-    parts = urlsplit(url)
-    words = _fold_a(f"{parts.hostname or ''} {unquote(parts.path)}")
-    return any(marker in words and marker not in own_text for marker in FOREIGN_MARKERS)
+    """A URL on a host that names another country (career-lithuania.kitron.com: a sister company's
+    site abroad). Only the host counts: a news slug naming a country is still the company's news."""
+    host = _fold_a(urlsplit(url).hostname or "")
+    return any(marker in host and marker not in own_text for marker in FOREIGN_MARKERS)
 
 
 def owned_profile(handle: str, contains: set[str], prefixes: set[str], *, allow_id: bool = True, own_text: str = "") -> bool:

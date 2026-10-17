@@ -209,6 +209,7 @@ class CareersTests(unittest.TestCase):
         self.assertTrue(harvest.foreign_page("https://career-lithuania.kitron.com/jobs/8313064-x", "kitron asa"))
         self.assertTrue(harvest.foreign_page("https://career-denmark.kitron.com/jobs/8450175-procestekniker", "kitron asa"))
         self.assertFalse(harvest.foreign_page("https://career.kitron.com/jobs/1-operator-arendal", "kitron asa"))
+        self.assertFalse(harvest.foreign_page("https://www.strongpoint.com/events/join-baltic-retail-forum-in-vilnius/", "strongpoint asa"))
 
     def test_ats_tenant(self) -> None:
         self.assertEqual(harvest.ats_tenant("https://fjordbygg.teamtailor.com/jobs"), "fjordbygg")
