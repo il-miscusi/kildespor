@@ -282,6 +282,8 @@ class NewsTests(unittest.TestCase):
         self.assertTrue(harvest.NOT_NEWS_PATH.search("/nettbutikk/74-hjem-fritid/2702-brannslukker"))
         self.assertTrue(harvest.NOT_NEWS_PATH.search("/blog/category/tips"))
         self.assertIsNone(harvest.NOT_NEWS_PATH.search("/nyheter/fjordbygg-vinner-kontrakt"))
+        self.assertTrue(harvest.NOT_NEWS_PATH.search("/jobs/8432212-warehouse-lead"))
+        self.assertTrue(harvest.NOT_NEWS_PATH.search("/oppskrifter/salater/proteinrik-pastasalat"))
 
     def test_sitemap_parse(self) -> None:
         xml = f"""<urlset xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"><url><loc>https://www.fjordbygg.no/karriere/</loc></url>
