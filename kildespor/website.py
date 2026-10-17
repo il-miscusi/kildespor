@@ -24,7 +24,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from .http import Fetcher, RobotsDisallowed, Snapshot, UnsafeURL, resolve_public
+from .http import Fetcher, RequestBudgetExhausted, RobotsDisallowed, Snapshot, UnsafeURL, resolve_public
 from .model import CompanyRecord
 
 LEGAL_SUFFIXES = {
@@ -53,6 +53,12 @@ SOCIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("pinterest", re.compile(r"^https?://(?:[a-z]{2}\.)?pinterest\.(?:com|no)/([A-Za-z0-9_]+)/?(?:\?.*)?$", re.I)),
     ("vimeo", re.compile(r"^https?://(?:www\.)?vimeo\.com/([A-Za-z][A-Za-z0-9_]+)/?(?:\?.*)?$", re.I)),
 ]
+FREE_MAIL = {
+    "gmail.com", "hotmail.com", "hotmail.no", "outlook.com", "live.com", "live.no", "yahoo.com", "yahoo.no", "icloud.com", "me.com",
+    "online.no", "frisurf.no", "start.no", "broadpark.no", "getmail.no", "c2i.net", "chello.no", "altibox.no", "lyse.net", "norpost.net",
+    "msn.com", "aol.com", "protonmail.com", "proton.me", "mail.com", "gmx.com", "gmx.net", "email.com", "telia.no", "hotmail.co.uk", "ymail.com",
+    "tele2.no", "kpnmail.no", "bluezone.no", "loqal.no", "netcom.no", "tdcadsl.no", "sensewave.com", "eunet.no", "nextgentel.com", "post.com",
+}
 WEIGHTS = (3, 2, 7, 6, 5, 4, 3, 2)
 ORG_CANDIDATE = re.compile(r"(?<![\d])(\d{3})[  .\-]?(\d{3})[  .\-]?(\d{3})(?![\d])")
 
@@ -98,7 +104,11 @@ def _ascii_variants(token: str) -> list[str]:
     return list(dict.fromkeys([a, b]))
 
 
+GEO_SUFFIXES = {"norge", "norway", "nordic", "norden", "scandinavia", "skandinavia"}
+
+
 def guess_domains(legal_name: str, limit: int = 6) -> list[str]:
+    """Candidate domains derived from a legal name, most likely first."""
     tokens = name_tokens(legal_name)
     if not tokens or any(token in SKIP_GUESS_WORDS for token in tokens):
         return []
@@ -106,29 +116,47 @@ def guess_domains(legal_name: str, limit: int = 6) -> list[str]:
         return []
     if len(tokens) > 4:
         return []
-    variants: list[list[str]] = []
-    for transform in (0, 1):
-        variants.append([(_ascii_variants(t) + _ascii_variants(t))[transform] for t in tokens])
+    token_sets = [tokens]
+    without_og = [t for t in tokens if t != "og"]
+    if without_og != tokens and len(without_og) >= 2:
+        token_sets.append(without_og)
+    if len(tokens) >= 2 and tokens[-1] in GEO_SUFFIXES and len("".join(tokens[:-1])) >= 4:
+        token_sets.append(tokens[:-1])
+
+    def ascii_words(token_set: list[str], transform: int) -> list[str]:
+        return [(_ascii_variants(t) + _ascii_variants(t))[transform] for t in token_set]
+
     out: list[str] = []
-    for words in variants:
-        joined = "".join(words)
-        if 3 <= len(joined) <= 40:
-            out.append(f"{joined}.no")
-            if len(words) > 1:
-                out.append(f"{'-'.join(words)}.no")
+
+    def add(domain: str) -> None:
+        label = domain.rsplit(".", 1)[0]
+        if 3 <= len(label) <= 40 and domain not in out:
+            out.append(domain)
+
+    primary = ascii_words(tokens, 0)
+    add("".join(primary) + ".no")
+    if len(primary) > 1:
+        add("-".join(primary) + ".no")
     unicode_joined = "".join(tokens)
     if re.search(r"[æøå]", unicode_joined):
         try:
-            out.append(unicode_joined.encode("idna").decode("ascii") + ".no")
+            add(unicode_joined.encode("idna").decode("ascii") + ".no")
         except UnicodeError:
             pass
-    first = variants[0]
-    joined = "".join(first)
-    if 3 <= len(joined) <= 30:
-        out.append(f"{joined}.com")
-    if len(first) >= 3:
-        out.append(f"{''.join(first[:2])}.no")
-    return list(dict.fromkeys(out))[:limit]
+    for token_set in token_sets[1:]:
+        words = ascii_words(token_set, 0)
+        add("".join(words) + ".no")
+    alt = ascii_words(tokens, 1)
+    if alt != primary:
+        add("".join(alt) + ".no")
+    add("".join(primary) + ".com")
+    for token_set in token_sets[1:]:
+        words = ascii_words(token_set, 0)
+        if len(words) > 1:
+            add("-".join(words) + ".no")
+    if len(without_og) >= 3:
+        add("".join(ascii_words(without_og[:2], 0)) + ".no")
+    return out[:limit]
 
 
 def normalise_site_url(value: str | None) -> str | None:
@@ -275,12 +303,26 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
 
     candidates: list[tuple[str, str]] = []
     registry_site = normalise_site_url(entity.get("hjemmeside"))
+    if registry_site and social_profile(registry_site):
+        _publish_registry_social(rec, registry_site)
+        registry_site = None
     if registry_site:
         candidates.append((registry_site, "registry_listed"))
     for unit in rec.context.get("subunits") or []:
         site = normalise_site_url(unit.get("website"))
-        if site and all(site != c[0] for c in candidates):
+        if site and not social_profile(site) and all(site != c[0] for c in candidates):
             candidates.append((site, "subunit_registry_listed"))
+    nav = rec.context.get("nav_employer") or {}
+    _publish_nav_profiles(rec, nav)
+    if nav.get("homepage"):
+        site = normalise_site_url(nav["homepage"][0])
+        if site and not social_profile(site) and all(registered_domain(urlsplit(site).hostname or "") != registered_domain(urlsplit(c[0]).hostname or "") for c in candidates):
+            candidates.append((site, "nav_employer_homepage"))
+    email = (entity.get("epostadresse") or "").strip().lower()
+    if "@" in email:
+        domain = email.rsplit("@", 1)[1]
+        if domain and domain not in FREE_MAIL and not is_directory(domain) and all(registered_domain(urlsplit(c[0]).hostname or "") != registered_domain(domain) for c in candidates):
+            candidates.append((f"https://{registered_domain(domain)}/", "registry_email_domain"))
     guessed = guess_domains(legal_name)
     for unit in rec.context.get("subunits") or []:
         unit_name = unit.get("name") or ""
@@ -295,13 +337,14 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
     checked: list[str] = []
     visit = SiteVisit(fetcher, rec, deadline)
     blocked_reason = None
+    budget_hit = False
     for url, origin in candidates:
         if visit.time_left() < 5:
             break
         host = urlsplit(url).hostname or ""
         if is_directory(host):
             continue
-        if origin == "name_derived_domain" and not resolve_public(host):
+        if origin in ("name_derived_domain", "registry_email_domain") and not resolve_public(host):
             continue
         checked.append(url)
         page = None
@@ -319,14 +362,20 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
             except RobotsDisallowed:
                 blocked_reason = f"robots.txt disallows {attempt_url}"
                 break
+            except RequestBudgetExhausted as exc:
+                rec.error("website", f"request budget: {exc}", attempt_url)
+                budget_hit = True
+                break
             except UnsafeURL as exc:
                 rec.error("website", f"unsafe or unresolvable URL skipped: {exc}", attempt_url)
                 continue
             except Exception as exc:
                 rec.error("website", f"fetch failed: {type(exc).__name__}: {str(exc)[:160]}", attempt_url)
                 continue
-            if page is not None:
-                break
+            # A reachable host that answered (even with an error page) needs no other variant.
+            break
+        if budget_hit:
+            break
         if page is None:
             continue
         snap, soup, text = page
@@ -363,7 +412,7 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
         foreign = {n for n in numbers if n not in own_numbers and n not in group_orgs}
         group_on_page = {n for n in numbers if n in group_orgs and n != org}
 
-        if origin == "name_derived_domain":
+        if origin in ("name_derived_domain", "registry_email_domain"):
             if not found:
                 continue
             if len(foreign) >= 3:
@@ -372,18 +421,21 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
                 continue
             identity = "organisation_number_on_site"
         else:
+            base = "nav_listed" if origin == "nav_employer_homepage" else "registry_listed"
             if found:
-                identity = "registry_listed_and_organisation_number_on_site"
+                identity = f"{base}_and_organisation_number_on_site"
             elif foreign and not group_on_page:
-                identity = "registry_listed_other_entity_on_site"
+                identity = f"{base}_other_entity_on_site"
             elif group_on_page:
-                identity = "registry_listed_group_site"
+                identity = f"{base}_group_site"
             else:
-                identity = "registry_listed"
+                identity = base
         _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
         return
 
-    if blocked_reason and not rec.claims_for("official_website"):
+    if budget_hit and not rec.claims_for("official_website"):
+        rec.set_state("official_website", "failed", "request budget reached before the website could be verified", checked_sources=checked)
+    elif blocked_reason and not rec.claims_for("official_website"):
         rec.set_state("official_website", "blocked", blocked_reason, checked_sources=checked)
     elif rec.context.get("website_ambiguous"):
         rec.set_state("official_website", "ambiguous", "a candidate site shows this organisation number among several unrelated ones", checked_sources=checked)
@@ -395,6 +447,50 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
     rec.set_state("public_brand", "not_available", "no verified company website to read a public brand or self-description from", checked_sources=checked)
     if not rec.claims_for("contact_channels"):
         rec.set_state("contact_channels", "not_available", "no phone in the register and no verified website", checked_sources=checked)
+
+
+def _publish_registry_social(rec: CompanyRecord, url: str) -> None:
+    platform, clean = social_profile(url) or (None, None)
+    if not platform:
+        return
+    evidence = [e for c in rec.claims_for("official_website") if c["field"] == "registry_website" for e in c["evidence_ids"]]
+    if not evidence:
+        return
+    rec.add_claim(
+        family="company_profiles",
+        field_name="social_profile",
+        value={"platform": platform, "url": clean, "handle": urlsplit(clean).path.strip("/")},
+        key=[platform, clean.lower()],
+        evidence_ids=evidence,
+        confidence=0.95,
+        method="registry_listed_profile",
+        label=f"{platform.title()} profile",
+    )
+    rec.set_state("company_profiles", "available", "profile listed as the website in the Entity Register")
+
+
+def _publish_nav_profiles(rec: CompanyRecord, nav: dict[str, Any]) -> None:
+    for key in ("facebookPage", "linkedinPage", "twitterAddress"):
+        if key not in nav:
+            continue
+        value, snap, span = nav[key]
+        url = value if value.startswith("http") else "https://" + value.lstrip("/")
+        profile = social_profile(url)
+        if not profile:
+            continue
+        platform, clean = profile
+        ev = rec.evidence_from_snapshot(snap, source_class="public_job_board", span=span, method="employer_profile_in_verified_job_ad", access_policy="arbeidsplassen.nav.no public ad page; robots.txt allows all")
+        rec.add_claim(
+            family="company_profiles",
+            field_name="social_profile",
+            value={"platform": platform, "url": clean, "handle": urlsplit(clean).path.strip("/")},
+            key=[platform, clean.lower()],
+            evidence_ids=[ev],
+            confidence=0.93,
+            method="employer_profile_in_verified_job_ad",
+            label=f"{platform.title()} profile",
+        )
+        rec.set_state("company_profiles", "available", "profile declared by the employer in an org-number-verified NAV job ad")
 
 
 def _publish_site(
@@ -418,13 +514,14 @@ def _publish_site(
     registry_claims = [c for c in rec.claims_for("official_website") if c["field"] == "registry_website"]
     for claim in registry_claims:
         evidence.extend(claim["evidence_ids"])
-    exact = identity in ("organisation_number_on_site", "registry_listed_and_organisation_number_on_site")
+    exact = identity.endswith("organisation_number_on_site")
+    declared = identity in ("registry_listed", "nav_listed")
     relationship = None
-    if identity == "registry_listed_group_site":
+    if identity.endswith("_group_site"):
         relationship = "group_site"
-    elif identity == "registry_listed_other_entity_on_site":
-        relationship = "registry_listed_site_names_another_entity"
-    confidence = 0.99 if exact else (0.9 if identity == "registry_listed" else 0.75)
+    elif identity.endswith("_other_entity_on_site"):
+        relationship = "registry_listed_site_names_another_entity" if identity.startswith("registry") else "listed_site_names_another_entity"
+    confidence = 0.99 if exact else (0.9 if declared else 0.75)
     rec.add_claim(
         family="official_website",
         field_name="official_website",
@@ -438,12 +535,12 @@ def _publish_site(
     )
     rec.context["website"] = {"url": site_url, "identity": identity, "exact": exact, "relationship": relationship}
     rec.set_state("official_website", "available", f"website verified ({identity})")
-    if relationship == "registry_listed_site_names_another_entity":
+    if relationship in ("registry_listed_site_names_another_entity", "listed_site_names_another_entity"):
         rec.set_state("company_profiles", "ambiguous", "the register-listed site names a different organisation number; its profiles are not attributed to this entity")
         rec.set_state("public_brand", "ambiguous", "the register-listed site names a different organisation number; its brand is not attributed to this entity")
         rec.set_state("contact_channels", "available" if rec.claims_for("contact_channels") else "ambiguous", "site contact details not attributed: the site names another entity")
         return
-    _extract_site_facts(rec, visit, home, exact or identity == "registry_listed", relationship)
+    _extract_site_facts(rec, visit, home, exact or declared, relationship)
 
 
 def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, exact: bool, relationship: str | None) -> None:
@@ -646,6 +743,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if visit.time_left() < 5:
             break
         _read_feed(rec, visit, feed, company_label)
+    is_wordpress = any("wp-content" in p[0].text()[:400000] or "wp-json" in p[0].text()[:400000] for p in pages[:1])
+    if is_wordpress and not any(c["field"] == "company_news" for c in rec.claims) and visit.time_left() > 5:
+        _read_wordpress_posts(rec, visit, home, company_label)
 
 
 def _read_feed(rec: CompanyRecord, visit: SiteVisit, url: str, relationship: str | None) -> None:
@@ -688,6 +788,48 @@ def _read_feed(rec: CompanyRecord, visit: SiteVisit, url: str, relationship: str
             confidence=0.92,
             method="rss_atom_feed",
             effective_date=date,
+            relationship=relationship,
+            label="Company news",
+        )
+
+
+def _read_wordpress_posts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, relationship: str | None) -> None:
+    parts = urlsplit(home.final_url)
+    url = urlunsplit((parts.scheme, parts.netloc, "/wp-json/wp/v2/posts", "per_page=10&_fields=date,link,title", ""))
+    try:
+        snap = visit.fetcher.get(url, retries=0, timeout=(5.0, 10.0), headers={"Accept": "application/json"})
+    except Exception as exc:
+        rec.error("public_activity", f"WordPress posts fetch failed: {type(exc).__name__}", url)
+        return
+    if not snap.ok:
+        return
+    try:
+        posts = snap.json()
+    except ValueError:
+        return
+    if not isinstance(posts, list):
+        return
+    for post in posts[:10]:
+        if not isinstance(post, dict):
+            continue
+        title = re.sub(r"<[^>]+>", "", str((post.get("title") or {}).get("rendered") or "")).strip()
+        title = BeautifulSoup(title, "lxml").get_text(" ", strip=True) if "&" in title else title
+        date = str(post.get("date") or "")
+        link = post.get("link")
+        if not title or not re.match(r"\d{4}-\d{2}-\d{2}", date):
+            continue
+        if link and registered_domain(urlsplit(link).hostname or "") != registered_domain(parts.hostname or ""):
+            continue
+        ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span=f'post "{title[:150]}" date {date}', method="wordpress_posts_api", url=url)
+        rec.add_claim(
+            family="public_activity",
+            field_name="company_news",
+            value={"title": title[:300], "url": link, "date": date[:10], "datetime": date, "source": "company_website"},
+            key=["news", title[:300], date[:10]],
+            evidence_ids=[ev],
+            confidence=0.92,
+            method="wordpress_posts_api",
+            effective_date=date[:10],
             relationship=relationship,
             label="Company news",
         )

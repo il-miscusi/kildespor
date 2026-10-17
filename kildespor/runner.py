@@ -104,27 +104,31 @@ def official_phase(fetcher: Fetcher, rec: CompanyRecord, snapshot_row: dict[str,
         rec.runtime_ms += int((time.monotonic() - started) * 1000)
 
 
-def enrichment_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_company_s: float) -> None:
+def enrichment_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, per_company_s: float, request_cap: int | None = None) -> None:
     if not rec.context.get("entity"):
         return
     started = time.monotonic()
     before = fetcher.thread_requests()
     company_deadline = min(deadline, started + per_company_s)
+    fetcher.begin_company(request_cap)
     try:
+        # Jobs first: a verified ad can name the employer's homepage and profiles.
         try:
-            website.research_website(fetcher, rec, company_deadline - 15)
-        except Exception as exc:
-            rec.error("website", f"{type(exc).__name__}: {exc}")
-            rec.set_state("official_website", "failed", f"website research crashed: {type(exc).__name__}")
-        try:
-            jobs.research_jobs(fetcher, rec, company_deadline)
+            jobs.research_jobs(fetcher, rec, min(company_deadline, started + per_company_s * 0.35))
         except Exception as exc:
             rec.error("hiring", f"{type(exc).__name__}: {exc}")
             if not rec.claims_for("hiring"):
-                rec.set_state("hiring", "failed", f"job research crashed: {type(exc).__name__}")
+                rec.set_state("hiring", "failed", f"job research stopped: {type(exc).__name__}: {str(exc)[:80]}")
+        try:
+            website.research_website(fetcher, rec, company_deadline - 5)
+        except Exception as exc:
+            rec.error("website", f"{type(exc).__name__}: {exc}")
+            if not rec.claims_for("official_website") or rec.family_state.get("official_website", {}).get("state") != "available":
+                rec.set_state("official_website", "failed", f"website research stopped: {type(exc).__name__}: {str(exc)[:80]}")
         if not rec.claims_for("public_activity"):
             rec.set_state("public_activity", "not_available", "no dated activity found in the register feeds or on the company's own channels")
     finally:
+        fetcher.begin_company(None)
         rec.requests += fetcher.thread_requests() - before
         rec.runtime_ms += int((time.monotonic() - started) * 1000)
 
@@ -267,6 +271,9 @@ def run_batch(args: Any) -> int:
             log(f"registry snapshot unreadable, live register only: {exc}")
 
     fetcher = Fetcher(per_host_limit=2, host_limits={"data.brreg.no": 10, "arbeidsplassen.nav.no": 4})
+    max_requests = int(args.max_requests) if args.max_requests else int(args.requests_per_company * max(1, len(orgs)))
+    fetcher.max_requests = max_requests
+    run["max_requests"] = max_requests
     recs = {org: CompanyRecord(org) for org in orgs}
     write_lock = threading.Lock()
 
@@ -297,7 +304,7 @@ def run_batch(args: Any) -> int:
         enrich_deadline = deadline - max(20.0, budget * 0.06)
         per_company = float(args.per_company_seconds)
         queue = [org for org in orgs if recs[org].context.get("entity")]
-        futures2 = {pool.submit(enrichment_phase, fetcher, recs[org], enrich_deadline, per_company): org for org in queue}
+        futures2 = {pool.submit(enrichment_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap): org for org in queue}
         pending2 = set(futures2)
         last_checkpoint = time.monotonic()
         while pending2 and time.monotonic() < enrich_deadline:

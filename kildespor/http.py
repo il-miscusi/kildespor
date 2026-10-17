@@ -44,6 +44,10 @@ class RobotsDisallowed(RuntimeError):
     pass
 
 
+class RequestBudgetExhausted(RuntimeError):
+    pass
+
+
 @dataclass
 class Snapshot:
     requested_url: str
@@ -107,6 +111,7 @@ def _ip_is_public(address: str) -> bool:
 
 
 _dns_cache: dict[str, tuple[bool, str]] = {}
+DNS_STATS = {"timeouts": 0}
 _dns_lock = threading.Lock()
 
 
@@ -137,8 +142,10 @@ def resolve_public(host: str, timeout: float = 6.0) -> bool:
             addresses = {item[4][0] for item in result}
             ok = bool(addresses) and all(_ip_is_public(address) for address in addresses)
             with _dns_lock:
-                _dns_cache[host] = (ok, ",".join(sorted(addresses)))
+                _dns_cache[host] = (ok, ",".join(sorted(addresses)) if addresses else "nxdomain")
             return ok
+    with _dns_lock:
+        DNS_STATS["timeouts"] += 1
     return False
 
 
@@ -159,7 +166,9 @@ def check_url(url: str) -> str:
     except ValueError:
         pass
     if not resolve_public(host):
-        raise UnsafeURL(f"host does not resolve to a public address: {host}")
+        cached = _dns_cache.get(host)
+        why = "DNS lookup timed out" if cached is None else ("no such host" if cached[1] == "nxdomain" else f"non-public address {cached[1]}")
+        raise UnsafeURL(f"{why}: {host}")
     return host.lower()
 
 
@@ -185,6 +194,8 @@ class Fetcher:
         self.requests = 0
         self.bytes = 0
         self.latencies: list[int] = []
+        self.max_requests: int | None = None
+        self.budget_refusals = 0
 
     # -- plumbing -----------------------------------------------------------------
     def _session(self) -> requests.Session:
@@ -255,6 +266,7 @@ class Fetcher:
         current = url
         started = time.monotonic()
         for _hop in range(MAX_REDIRECTS + 1):
+            self._charge()
             host = check_url(current)
             if check_robots and not self.robots_allows(current):
                 raise RobotsDisallowed(current)
@@ -313,7 +325,7 @@ class Fetcher:
                     time.sleep(min(1.5 * (attempt + 1), 6.0))
                     continue
                 return snap
-            except (UnsafeURL, RobotsDisallowed):
+            except (UnsafeURL, RobotsDisallowed, RequestBudgetExhausted):
                 raise
             except requests.RequestException as exc:
                 last = exc
@@ -321,6 +333,23 @@ class Fetcher:
                     time.sleep(0.8 * (attempt + 1))
         assert last is not None
         raise last
+
+    def _charge(self) -> None:
+        """Refuse a request that would exceed the run's or the company's request budget."""
+        count = getattr(self._local, "count", 0)
+        cap = getattr(self._local, "cap", None)
+        if cap is not None and count - getattr(self._local, "cap_start", 0) >= cap:
+            with self._lock:
+                self.budget_refusals += 1
+            raise RequestBudgetExhausted("per-company request cap reached")
+        if self.max_requests is not None and self.requests >= self.max_requests:
+            with self._lock:
+                self.budget_refusals += 1
+            raise RequestBudgetExhausted("run request budget reached")
+
+    def begin_company(self, cap: int | None) -> None:
+        self._local.cap = cap
+        self._local.cap_start = getattr(self._local, "count", 0)
 
     def thread_requests(self) -> int:
         return getattr(self._local, "count", 0)
@@ -332,4 +361,4 @@ class Fetcher:
             if not latencies:
                 return None
             return latencies[min(len(latencies) - 1, int(len(latencies) * p))]
-        return {"requests": self.requests, "bytes": self.bytes, "p50_ms": pct(0.5), "p95_ms": pct(0.95)}
+        return {"requests": self.requests, "bytes": self.bytes, "p50_ms": pct(0.5), "p95_ms": pct(0.95), "max_requests": self.max_requests, "budget_refusals": self.budget_refusals, "dns_timeouts": DNS_STATS["timeouts"]}

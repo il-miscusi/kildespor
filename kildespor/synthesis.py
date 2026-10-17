@@ -246,7 +246,12 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     s = []
     if site:
         method = site["value"].get("identity_method", "")
-        proof = "the site shows its organisation number" if "organisation_number" in method else "it is the website listed in the Entity Register"
+        if "organisation_number" in method:
+            proof = "the site shows its organisation number"
+        elif method.startswith("nav_listed"):
+            proof = "the employer gave it as its homepage in a job ad verified to this organisation number"
+        else:
+            proof = "it is the website listed in the Entity Register"
         rel = " It is labelled as a group site, not an entity-specific site." if site.get("relationship") == "group_site" else ""
         s.append((f"Official website {site['value']['url']} ({proof}).{rel}", [site]))
     if socials:

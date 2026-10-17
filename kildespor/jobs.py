@@ -39,6 +39,23 @@ def employer_matches(employer: str, legal_name: str, subunit_names: set[str]) ->
     return e in subunit_names
 
 
+EMPLOYER_FIELD = re.compile(r'"(homepage|linkedinPage|twitterAddress|facebookPage)":"([^"]+)"')
+
+
+def _employer_profile(rec: CompanyRecord, ad: Any, ad_text: str, at: int) -> None:
+    """The employer's own homepage and profile links as entered in an org-number-verified ad."""
+    window = ad_text[max(0, at - 40): at + 900].replace('\\"', '"').replace("\\/", "/")
+    found = {}
+    for key, value in EMPLOYER_FIELD.findall(window.split('"descriptionHtml"')[0]):
+        if value and value != "null":
+            found[key] = value.strip()
+    if not found:
+        return
+    store = rec.context.setdefault("nav_employer", {})
+    for key, value in found.items():
+        store.setdefault(key, (value, ad, f'employer.{key} = "{value}" in ad {ad.requested_url.rsplit("/", 1)[-1]}'))
+
+
 def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> None:
     entity = rec.context.get("entity") or {}
     legal_name = entity.get("navn") or ""
@@ -46,11 +63,13 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> None
     if not tokens:
         rec.set_state("hiring", "not_available", "legal name too short to search job ads")
         return
-    # harRegistrertAntallAnsatte false means no employees are registered in the Aa-register.
+    # harRegistrertAntallAnsatte false means no employees are registered in the Aa-register for the
+    # main unit; employees can still sit on its subunits (a parent's head office), so only skip when
+    # there is neither.
     employees = entity.get("antallAnsatte") if entity.get("harRegistrertAntallAnsatte") else 0
-    if not employees and not rec.context.get("career_pages"):
+    if not employees and not rec.context.get("subunits") and not rec.context.get("career_pages"):
         if not rec.claims_for("hiring"):
-            rec.set_state("hiring", "not_available", "no registered employees and no careers page; job boards not queried", checked_sources=["data.brreg.no antallAnsatte"])
+            rec.set_state("hiring", "not_available", "no registered employees, no registered workplaces and no careers page; job boards not queried", checked_sources=["data.brreg.no antallAnsatte"])
         return
     query = " ".join(tokens)
     url = SEARCH.format(query=quote(query))
@@ -76,8 +95,8 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> None
     candidates = []
     for hit in hits:
         source = hit.get("_source") or {}
-        employer = (source.get("employer") or {}).get("name") or source.get("businessName") or ""
-        if employer_matches(employer, legal_name, subunit_names):
+        names = [(source.get("employer") or {}).get("name") or "", source.get("businessName") or ""]
+        if any(employer_matches(name, legal_name, subunit_names) for name in names if name):
             candidates.append(source)
     published = 0
     checked = [url]
@@ -102,6 +121,7 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> None
             continue
         number = matches[0].group(1)
         excerpt = ad_text[max(0, matches[0].start() - 20): matches[0].end() + 60].replace('\\"', '"')
+        _employer_profile(rec, ad, ad_text, matches[0].start())
         location = ", ".join(
             dict.fromkeys(filter(None, [loc.get("city") or loc.get("municipal") for loc in source.get("locationList") or []]))
         ) or None
