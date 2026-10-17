@@ -207,14 +207,24 @@ def validate(envelopes: list[dict[str, Any]], orgs: list[str]) -> dict[str, Any]
         for c in e["claims"]
         if c.get("availability") not in STATES
     ]
+    dangling = [
+        (e["organisation_number"], c.get("field"), ev)
+        for e in envelopes
+        for ids in [{x["id"] for x in e.get("evidence", [])}]
+        for c in e["claims"]
+        if c.get("availability") == "available"
+        for ev in c.get("evidence_ids", [])
+        if ev not in ids
+    ]
     checks = {
         "exact_expected_count": len(envelopes) == len(orgs),
         "same_order_and_membership": got == orgs,
         "unique_organisation_numbers": len(set(got)) == len(got),
         "all_states_terminal": not bad_states and all(e["state"] in STATES for e in envelopes),
         "every_available_claim_has_evidence": all(c.get("evidence_ids") for e in envelopes for c in e["claims"] if c.get("availability") == "available"),
+        "every_evidence_id_resolves": not dangling,
     }
-    return {"passed": all(checks.values()), "checks": checks, "invalid_states": bad_states[:20]}
+    return {"passed": all(checks.values()), "checks": checks, "invalid_states": bad_states[:20], "dangling_evidence": dangling[:20]}
 
 
 def run_report(envelopes: list[dict[str, Any]], orgs: list[str], run: dict[str, Any], fetcher: Fetcher, started: float, recs: dict[str, CompanyRecord]) -> dict[str, Any]:

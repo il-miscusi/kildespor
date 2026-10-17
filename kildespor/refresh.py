@@ -95,6 +95,14 @@ def diff(rec: CompanyRecord, previous: dict[str, Any] | None, run_id: str) -> tu
     def removable(claim: dict[str, Any]) -> bool:
         # Fields fed by several sources are removed only when their own source was checked
         # completely this run; a family that is "available" for another reason is not enough.
+        if claim["field"] == "job_posting":
+            # A job is closed only by a complete check of the source that found it: an empty NAV
+            # lookup says nothing about a vacancy read on the company's own careers page.
+            value = claim.get("value") if isinstance(claim.get("value"), dict) else {}
+            from_nav = str(claim.get("extraction_method") or "").startswith("nav") or "arbeidsplassen" in str(value.get("url") or "") or value.get("board") == "arbeidsplassen.nav.no"
+            if from_nav:
+                return bool({"job_posting", "job_posting:nav"} & rec.checked_fields)
+            return "job_posting:site" in rec.checked_fields
         if claim["field"] in FIELD_CHECKED:
             return claim["field"] in rec.checked_fields
         return bool(family_ok.get(claim["family"]))
