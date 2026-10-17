@@ -57,6 +57,24 @@ It never fetches an evidence URL itself.
 
 ## Caches
 
-No external cache is used. The optional `--registry-snapshot` (a Brreg bulk
-CSV) is used only if the live Entity Register cannot be reached, and the
-evidence then names the bulk source.
+The agent ships declared discovery caches in `kildespor/data/`, read by
+`kildespor/caches.py` and documented in `CACHE.md` (source, release or query
+date, licence, row count, size and build command for each file):
+
+| file | source | licence |
+|---|---|---|
+| `candidates-wikidata.tsv.gz` | Wikidata P2333 items: website and social ids (queried 2026-10-17) | CC0-1.0 |
+| `candidates-overture.tsv.gz` | Overture Maps places, release 2026-09-23.1, matched to register companies | CDLA-Permissive-2.0 / Apache-2.0 / CC0-1.0 per place |
+| `shared-phones.tsv.gz`, `shared-email-domains.tsv.gz` | Brreg bulk register: phone numbers and e-mail domains held by five or more companies | NLOD 2.0 |
+| `register-contacts.tsv.gz` | Brreg bulk register: phones, e-mails and sub-unit websites per company | NLOD 2.0 |
+
+They hold candidates and screening counts, never published facts or
+precomputed profiles, and are built over the whole public universe, not an
+evaluation draw. A candidate website is fetched live and published only after
+the identity checks; a row used as a source is cited by its dataset record
+(`https://www.wikidata.org/wiki/<QID>#<property>` or
+`overture:<release>:<place id>`) with its licence. The agent runs correctly
+with every cache file deleted.
+
+The optional `--registry-snapshot` (a Brreg bulk CSV) is used only if the live
+Entity Register cannot be reached, and the evidence then names the bulk source.
