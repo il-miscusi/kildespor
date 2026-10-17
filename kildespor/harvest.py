@@ -508,13 +508,35 @@ def resembles(account: str, contains: set[str], prefixes: set[str]) -> bool:
     return any(account.startswith(p) for p in prefixes)
 
 
-def owned_profile(handle: str, contains: set[str], prefixes: set[str], *, allow_id: bool = True) -> bool:
+FOREIGN_MARKERS = (
+    "sweden", "sverige", "svenska", "danmark", "denmark", "finland", "suomi", "germany", "deutschland", "polska", "poland",
+    "estonia", "eesti", "latvia", "lithuania", "lietuva", "netherlands", "nederland", "france", "spain", "espana", "italia",
+    "italy", "unitedkingdom", "brasil", "brazil", "india", "china", "iceland", "island", "baltic", "baltics",
+)
+FOREIGN_CODES = ("se", "dk", "fi", "de", "uk", "us", "usa", "pl", "ee", "lt", "lv", "nl", "fr", "es", "it", "is")
+
+
+def foreign_sibling(account: str, contains: set[str], own_text: str) -> bool:
+    """An account for a sister company abroad (headenergysweden, acmedk) on a group's shared site."""
+    for marker in FOREIGN_MARKERS:
+        if marker in account and marker not in own_text:
+            return True
+    for token in contains:
+        if len(token) >= 4 and account.startswith(token):
+            rest = account[len(token):].removesuffix("as").removesuffix("ab")
+            if rest in FOREIGN_CODES and rest not in own_text.split():
+                return True
+    return False
+
+
+def owned_profile(handle: str, contains: set[str], prefixes: set[str], *, allow_id: bool = True, own_text: str = "") -> bool:
     """A profile the company's site links is published as the company's own only when its account
-    name resembles the company's names or domain (an id-only account cannot be compared and is kept
-    when it came from a link the company placed)."""
+    name resembles the company's names or domain and does not name a sister company abroad (an
+    id-only account cannot be compared and is kept when it came from a link the company placed)."""
     if id_like(handle) or not account_name(handle):
         return allow_id
-    return resembles(account_name(handle), contains, prefixes)
+    account = account_name(handle)
+    return resembles(account, contains, prefixes) and not foreign_sibling(account, contains, own_text)
 
 
 _SCRIPT_PROFILE_RE = re.compile(
@@ -548,7 +570,7 @@ class Found:
     via: str
 
 
-def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: set[str], prefixes: set[str], rec: CompanyRecord | None = None) -> list[Found]:
+def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: set[str], prefixes: set[str], rec: CompanyRecord | None = None, own_text: str = "") -> list[Found]:
     """Company profiles a page of the company's own site links, in page order."""
     base = snap.final_url
     found: list[Found] = []
@@ -564,7 +586,7 @@ def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: s
         if profile is None:
             return
         platform, canonical, handle = profile
-        if not owned_profile(handle, contains, prefixes, allow_id=allow_id):
+        if not owned_profile(handle, contains, prefixes, allow_id=allow_id, own_text=own_text):
             return
         found.append(Found(platform, canonical, handle, snap, span or raw.strip()[:300], via))
 
@@ -772,11 +794,22 @@ class Role:
     method: str
 
 
+_TITLE_CLASS = re.compile(r"title|heading|name|tittel|overskrift", re.I)
+
+
 def _role_title(anchor: Any) -> str | None:
+    for tag in anchor.find_all(class_=_TITLE_CLASS):
+        text = tag.get_text(" ", strip=True)
+        if 4 <= len(text) <= 120:
+            return text
     for tag in anchor.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "strong", "b"]):
         text = tag.get_text(" ", strip=True)
         if 4 <= len(text) <= 120:
             return text
+    if anchor.find(["p", "div", "li", "ul", "br"]) is not None:
+        # A whole card: its first line is the title, the rest is place, unit and deadline.
+        first = next((line.strip() for line in anchor.get_text("\n", strip=True).split("\n") if line.strip()), "")
+        return first if 4 <= len(first) <= 120 and not ROLE_NAV_TEXT.match(first) else None
     text = anchor.get_text(" ", strip=True)
     if text and not ROLE_NAV_TEXT.match(text) and 4 <= len(text) <= 120:
         return text
@@ -893,6 +926,9 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
             if expires and expires < today:
                 continue
         location = LOCATION.search(card)
+        located = anchor.find(class_=re.compile(r"location|sted|place|city", re.I))
+        if located is not None and not location and 2 <= len(located.get_text(" ", strip=True)) <= 60:
+            location = re.match(r"(.+)", located.get_text(" ", strip=True))
         source = ats[0] if ats else ("company_careers_page" if own_site else "ats_listing")
         links.append(Role(title, _clean_url(url), None, expires, location.group(1).strip() if location else None, source, title, "careers_page_role_link"))
     off_site = [r for r in links if _site(r.url) != page_site]
@@ -1298,6 +1334,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     names = _names_of(rec) + brand_names
     rec.context["site_brand_names"] = brand_names
     contains, prefixes = identity_tokens(names, home.final_url)
+    own_text = " ".join(_fold_a(n) for n in names) + " " + " ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)) for n in names)
 
     # -- page plan -----------------------------------------------------------------------------------
     sitemap, sitemap_snaps = read_sitemaps(plan, home, site_host, wordpress)
@@ -1438,7 +1475,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     profiles: dict[str, Found] = {}
     per_platform: dict[str, int] = {}
     for snap, soup, _ in own_pages():
-        for found in profiles_on_page(snap, soup, snap.text(), contains, prefixes, rec):
+        for found in profiles_on_page(snap, soup, snap.text(), contains, prefixes, rec, own_text):
             key = found.url.lower()
             if key in profiles or per_platform.get(found.platform, 0) >= MAX_PROFILES_PER_PLATFORM:
                 continue

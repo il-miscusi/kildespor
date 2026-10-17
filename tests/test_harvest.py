@@ -107,6 +107,17 @@ class SocialTests(unittest.TestCase):
         self.assertNotIn("https://facebook.com/somepartner", found)
         self.assertFalse(any("linkedin.com/in" in u for u in found))
 
+    def test_sister_company_abroad_is_not_ours(self) -> None:
+        contains, prefixes = harvest.identity_tokens(["HEAD ENERGY NORGRID AS", "Head Energy"], "https://www.headenergy.no/")
+        own = "head energy norgrid as head energy"
+        self.assertFalse(harvest.owned_profile("headenergysweden", contains, prefixes, own_text=own))
+        self.assertFalse(harvest.owned_profile("company/headenergydanmarkas", contains, prefixes, own_text=own))
+        self.assertFalse(harvest.owned_profile("headenergyse", contains, prefixes, own_text=own))
+        self.assertTrue(harvest.owned_profile("company/head-energy-norgrid", contains, prefixes, own_text=own))
+        self.assertTrue(harvest.owned_profile("headenergy", contains, prefixes, own_text=own))
+        swe = harvest.identity_tokens(["NORDIC SWEDEN AS"], "https://nordicsweden.no/")
+        self.assertTrue(harvest.owned_profile("nordicsweden", *swe, own_text="nordic sweden as"))
+
     def test_resemblance_folds_norwegian_letters(self) -> None:
         contains, prefixes = harvest.identity_tokens(["Bjørkås Rørleggerservice AS"], "https://bjorkas.no/")
         self.assertTrue(harvest.resembles("bjorkasror", contains, prefixes))
@@ -161,6 +172,15 @@ class CareersTests(unittest.TestCase):
         self.assertIn("Lærling tømrerfaget", titles)
         self.assertNotIn("Gammel stilling", titles)  # deadline passed
         self.assertFalse(any("Anna" in t for t in titles))
+
+    def test_card_anchor_title_is_its_first_line(self) -> None:
+        html = """<html><body><h1>Ledige stillinger</h1>
+        <a class="vacancy-card" href="/karriere/ledige-stillinger/2026/10/planleggingsleder/"><div><p class="vacancy-card__title">Planleggingsleder</p>
+        <ul><li><span>Råde</span></li><li><span>Bygg, AF Bygg Øst</span></li><li><span>14.11.2026</span></li></ul></div></a>
+        <a href="/karriere/ledige-stillinger/2026/10/bas/"><div><p>BAS for rørleggerfaget</p><p>Oslo</p></div></a></body></html>"""
+        page = snap("https://www.afgruppen.no/karriere/ledige-stillinger/", html)
+        roles = harvest.roles_on_page(page, soup_of(html), record("AF GRUPPEN ASA"), own_site=True, tenant_ok=True)
+        self.assertEqual([r.title for r in roles], ["Planleggingsleder", "BAS for rørleggerfaget"])
 
     def test_single_team_link_is_not_a_role(self) -> None:
         html = '<html><body><h1>Karriere</h1><a href="/karriere/stilling/historien-om-oss">Historien om oss</a></body></html>'
