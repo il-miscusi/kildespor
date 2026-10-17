@@ -67,14 +67,14 @@ def rows_from(result: dict, universe: set[str], date: str) -> list[tuple[str, ..
         for w in vals("w"):
             m = re.match(r"^https?://(?:www\.)?([^/\s:]+\.[^/\s:]+)", w, re.I)
             if m:  # one URL per host: language paths (/en, /de/) are the same site
-                row = (org, "website", "", w, RULE, f"{item}#P856", date)
+                row = (org, "website", "", w, RULE, f"{item}#P856", date, "CC0-1.0")
                 key = (org, m.group(1).lower())
                 if key not in seen_hosts or len(w) < len(seen_hosts[key][3]):
                     seen_hosts[key] = row
         for key, platform, fmt, prop in SOCIAL:
             for v in vals(key):
                 if re.fullmatch(r"[A-Za-z0-9._\-%@]+", v):
-                    out.append((org, "social", platform, fmt.format(v), RULE, f"{item}#{prop}", date))
+                    out.append((org, "social", platform, fmt.format(v), RULE, f"{item}#{prop}", date, "CC0-1.0"))
     return out + list(seen_hosts.values())
 
 

@@ -21,10 +21,10 @@ class CachesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
-        head = "orgnr\tkind\tplatform\turl\tmatch_rule\tsource_record\trelease_date"
+        head = "orgnr\tkind\tplatform\turl\tmatch_rule\tsource_record\trelease_date\tlicence"
         _write(d / "candidates-wikidata.tsv.gz", head, [
-            "923609016\twebsite\t\thttps://equinor.com\twikidata_p2333_exact_orgnr\thttps://www.wikidata.org/wiki/Q1776022#P856\t2026-10-17",
-            "923609016\tsocial\tfacebook\thttps://facebook.com/Equinor\twikidata_p2333_exact_orgnr\thttps://www.wikidata.org/wiki/Q1776022#P2013\t2026-10-17",
+            "923609016\twebsite\t\thttps://equinor.com\twikidata_p2333_exact_orgnr\thttps://www.wikidata.org/wiki/Q1776022#P856\t2026-10-17\tCC0-1.0",
+            "923609016\tsocial\tfacebook\thttps://facebook.com/Equinor\twikidata_p2333_exact_orgnr\thttps://www.wikidata.org/wiki/Q1776022#P2013\t2026-10-17\tCC0-1.0",
         ])
         # an older six-column file must still load
         _write(d / "candidates-overture.tsv.gz", head, [
@@ -49,9 +49,11 @@ class CachesTest(unittest.TestCase):
         web = [c for c in got if c["kind"] == "website"][0]
         self.assertIsNone(web["platform"])
         self.assertEqual(web["release_date"], "2026-10-17")
+        self.assertEqual(web["licence"], "CC0-1.0")
         self.assertTrue(web["source_record"].startswith("https://www.wikidata.org/wiki/Q"))
         insta = [c for c in got if c["platform"] == "instagram"][0]
         self.assertIsNone(insta["release_date"])
+        self.assertIsNone(insta["licence"])
         self.assertEqual(caches.candidates("999999999"), [])
         got[0]["url"] = "mutated"
         self.assertNotEqual(caches.candidates("923609016")[0]["url"], "mutated")

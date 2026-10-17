@@ -9,7 +9,7 @@ empty result.
 
 Files (gzipped TSV, first line is the header):
 
-* ``candidates-<source>.tsv.gz``: ``orgnr kind platform url match_rule source_record release_date``
+* ``candidates-<source>.tsv.gz``: ``orgnr kind platform url match_rule source_record release_date licence``
 * ``shared-phones.tsv.gz``: ``phone8 count`` (last eight digits, held by >= 5 register entities)
 * ``shared-email-domains.tsv.gz``: ``domain count`` (held by >= 5 entities, or a generic mailbox provider)
 * ``register-contacts.tsv.gz``: ``orgnr phones emails websites`` (``|``-separated; main entity plus its sub-units)
@@ -80,7 +80,8 @@ def _build_candidates() -> dict[str, list[tuple[str, ...]]]:
                 continue
             orgnr, kind, platform, url, rule, record = fields[:6]
             date = fields[6] if len(fields) > 6 else ""
-            index.setdefault(orgnr, []).append((url, kind, platform, source, rule, record, date))
+            licence = fields[7] if len(fields) > 7 else ""
+            index.setdefault(orgnr, []).append((url, kind, platform, source, rule, record, date, licence))
             n += 1
         _rows_loaded[path.name] = n
     return index
@@ -113,17 +114,18 @@ def candidates(orgnr: str) -> list[dict[str, Any]]:
     """Candidate website and social URLs for one company, from every cache present.
 
     Each item: ``{"url", "kind": "website"|"social", "platform", "source", "match_rule",
-    "source_record", "release_date"}``. ``platform`` is None for websites. ``source_record``
+    "source_record", "release_date", "licence"}``. ``platform`` is None for websites. ``source_record``
     is a citable record: ``https://www.wikidata.org/wiki/<QID>#<property>`` for Wikidata,
     ``overture:<release>:<place id>`` for Overture. ``release_date`` is the dataset's
-    release or query date (YYYY-MM-DD). Candidates only: verify each one live before
+    release or query date (YYYY-MM-DD); ``licence`` the SPDX id(s) of the record's source
+    dataset (``+``-joined when several). Candidates only: verify each one live before
     publishing it as found on the web.
     """
     rows = _load("candidates", _build_candidates).get(_orgnr(orgnr), ())
     return [
         {"url": url, "kind": kind, "platform": platform or None, "source": source, "match_rule": rule,
-         "source_record": record, "release_date": date or None}
-        for url, kind, platform, source, rule, record, date in rows
+         "source_record": record, "release_date": date or None, "licence": licence or None}
+        for url, kind, platform, source, rule, record, date, licence in rows
     ]
 
 

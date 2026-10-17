@@ -11,7 +11,7 @@ from typing import Iterable
 
 UNIVERSE_URL = "https://builderr.ai/signalpost-company-universe-2025.jsonl.gz"
 DATA = Path(__file__).resolve().parents[1] / "kildespor" / "data"
-CANDIDATE_HEADER = ("orgnr", "kind", "platform", "url", "match_rule", "source_record", "release_date")
+CANDIDATE_HEADER = ("orgnr", "kind", "platform", "url", "match_rule", "source_record", "release_date", "licence")
 UA = "kildespor-cache-builder/1.0 (+https://github.com/il-miscusi/kildespor)"
 
 
