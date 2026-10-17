@@ -8,11 +8,13 @@ or social handle is a candidate until it is tied back to the exact entity.
 | candidate | accepted when | otherwise |
 |---|---|---|
 | register-listed website (entity or subunit) | it is the company's own declaration in the Entity Register, the site is reachable and not parked | `not_available` (unreachable or parked) |
-| register-listed website showing other organisation numbers only | published with relationship `registry_listed_site_names_another_entity`; its contacts, brand and profiles are **not** attributed | brand and profiles marked `ambiguous` |
-| register-listed website of a group member | published with relationship `group_site` | |
+| register-listed website showing other organisation numbers only (for example a housing co-operative's umbrella association) | **not published** as this entity's website; `official_website` is `ambiguous` with the other number in the reason, and the next candidate is tried | brand and profiles marked `ambiguous` |
+| register-listed website that shows another group member's number and not this one | **not published** (a parent's or sister's site is not an exact match); `ambiguous` | the group's top parent is the exception: its own site lists its subsidiaries |
+| employer homepage in an org-number-verified NAV job ad | treated like a register-listed site (the employer declared it) | same rules as above |
+| domain of the e-mail address in the Entity Register (free-mail providers excluded) | only when the site shows this organisation number | skipped |
 | domain derived from the legal or subunit name | the site (home, contact, about or privacy page) shows **this** organisation number, checked with the mod-11 checksum, and does not list three or more unrelated organisation numbers | `ambiguous` (several numbers) or skipped |
 | NAV job ad | employer name equals the legal name or a subunit name, **and** the ad page shows the organisation number of this entity or one of its subunits | not published |
-| social or video profile | linked from a verified company website (anchors or JSON-LD `sameAs`); share buttons, personal profiles and post links are rejected | `not_available` |
+| social or video profile | linked from a verified company website (anchors or JSON-LD `sameAs`), listed as the website in the Entity Register, or entered by the employer in an org-number-verified NAV ad; share buttons, personal profiles and post links are rejected | `not_available` |
 
 Directory and aggregator hosts (proff.no, gulesider.no, 1881.no, finn.no and
 similar) are never accepted as a company website.

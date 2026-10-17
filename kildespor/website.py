@@ -411,6 +411,10 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
                     break
         foreign = {n for n in numbers if n not in own_numbers and n not in group_orgs}
         group_on_page = {n for n in numbers if n in group_orgs and n != org}
+        if rec.context.get("group_root") == org:
+            # The group's parent: its own site naturally lists its subsidiaries.
+            group_on_page = set()
+            foreign = {n for n in foreign if n not in group_orgs}
 
         if origin in ("name_derived_domain", "registry_email_domain"):
             if not found:
@@ -430,6 +434,15 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
                 identity = f"{base}_group_site"
             else:
                 identity = base
+        if identity.endswith("_other_entity_on_site") or identity.endswith("_group_site"):
+            # The listed site names another entity (an umbrella association, a parent or a sister
+            # company). Publishing it as this entity's website risks a wrong-company match, so it is
+            # reported as ambiguous and its facts are not attributed.
+            other = sorted(foreign or group_on_page)[:3]
+            reason = f"the listed site {snap.final_url} shows organisation number(s) {', '.join(other)} and not this one" + (" (a member of the same corporate group)" if identity.endswith("_group_site") else "")
+            rec.context["website_ambiguous"] = snap.final_url
+            rec.context["website_ambiguous_reason"] = reason
+            continue
         _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
         return
 
@@ -438,13 +451,14 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float) -> N
     elif blocked_reason and not rec.claims_for("official_website"):
         rec.set_state("official_website", "blocked", blocked_reason, checked_sources=checked)
     elif rec.context.get("website_ambiguous"):
-        rec.set_state("official_website", "ambiguous", "a candidate site shows this organisation number among several unrelated ones", checked_sources=checked)
+        rec.set_state("official_website", "ambiguous", rec.context.get("website_ambiguous_reason") or "a candidate site shows this organisation number among several unrelated ones", checked_sources=checked)
     elif registry_site:
         rec.set_state("official_website", "not_available", "the register lists a website but it could not be reached or is parked", checked_sources=checked)
     else:
         rec.set_state("official_website", "not_available", "no register-listed website and no name-derived domain shows this organisation number", checked_sources=checked)
-    rec.set_state("company_profiles", "not_available", "no verified company website to read company-owned profiles from", checked_sources=checked)
-    rec.set_state("public_brand", "not_available", "no verified company website to read a public brand or self-description from", checked_sources=checked)
+    unverified = "ambiguous" if rec.context.get("website_ambiguous") else "not_available"
+    rec.set_state("company_profiles", unverified, "no verified company website to read company-owned profiles from", checked_sources=checked)
+    rec.set_state("public_brand", unverified, "no verified company website to read a public brand or self-description from", checked_sources=checked)
     if not rec.claims_for("contact_channels"):
         rec.set_state("contact_channels", "not_available", "no phone in the register and no verified website", checked_sources=checked)
 
@@ -453,7 +467,7 @@ def _publish_registry_social(rec: CompanyRecord, url: str) -> None:
     platform, clean = social_profile(url) or (None, None)
     if not platform:
         return
-    evidence = [e for c in rec.claims_for("official_website") if c["field"] == "registry_website" for e in c["evidence_ids"]]
+    evidence = [e for c in rec.claims if c["field"] == "registry_website" for e in c["evidence_ids"]]
     if not evidence:
         return
     rec.add_claim(
@@ -511,7 +525,7 @@ def _publish_site(
         evidence.append(rec.evidence_from_snapshot(identity_snap, source_class="company_owned_website", span=span, method="organisation_number_on_page", url=identity_snap.final_url))
     else:
         evidence.append(rec.evidence_from_snapshot(home, source_class="company_owned_website", span=f"homepage reached: {home.final_url}", method="registry_listed_site_fetch", url=home.final_url))
-    registry_claims = [c for c in rec.claims_for("official_website") if c["field"] == "registry_website"]
+    registry_claims = [c for c in rec.claims if c["field"] == "registry_website"] if origin in ("registry_listed",) else []
     for claim in registry_claims:
         evidence.extend(claim["evidence_ids"])
     exact = identity.endswith("organisation_number_on_site")

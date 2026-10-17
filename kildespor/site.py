@@ -133,7 +133,7 @@ details.ev{margin:6px 0;border:1px solid var(--line);border-radius:10px;padding:
 .empty{padding:30px;color:var(--muted);text-align:center}
 .backbtn{display:none}
 .timeline li{margin:4px 0}
-@media (max-width:860px){.layout{grid-template-columns:1fr;padding:10px}.listpanel{position:static;max-height:none}#list{max-height:none}
+@media (max-width:860px){header.top{position:static}header.top a.btn{display:none}.layout{grid-template-columns:1fr;padding:10px}.listpanel{position:static;max-height:none}#list{max-height:none}
  body.viewing .listpanel{display:none} body.viewing .backbtn{display:inline-block} body:not(.viewing) main{display:none}
  .profile{padding:14px}.ph h2{font-size:19px}.kv{grid-template-columns:1fr 1fr}}
 @media print{header.top,.listpanel,#compareTray,.actions{display:none}.layout{display:block}}

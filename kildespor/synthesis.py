@@ -205,10 +205,10 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
             if cur["equity"]["value"]["amount"] < 0:
                 b.signal(f"Negative equity in {latest} ({label})", [cur["equity"]], "negative")
         if "annual_result" in cur and cur["annual_result"]["value"]["amount"] < 0:
-            b.signal(f"Loss of {_nok(cur['annual_result']['value']['amount'])} in {latest} ({label})", [cur["annual_result"]], "negative")
+            b.signal(f"Annual loss of {_nok(-cur['annual_result']['value']['amount'])} in {latest} ({label})", [cur["annual_result"]], "negative")
         if len(years) >= 2:
             prev = stmts[(account_type, years[-2])]
-            if "revenue" in cur and "revenue" in prev and prev["revenue"]["value"]["amount"]:
+            if "revenue" in cur and "revenue" in prev and prev["revenue"]["value"]["amount"] > 0 and cur["revenue"]["value"]["amount"] >= 0:
                 growth = cur["revenue"]["value"]["amount"] / prev["revenue"]["value"]["amount"] - 1
                 s.append((f"Revenue changed {_pct(growth)} from {years[-2]} ({_nok(prev['revenue']['value']['amount'])}) to {latest}.", [cur["revenue"], prev["revenue"]]))
                 if abs(growth) >= 0.2:
@@ -217,7 +217,7 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
                 a, p = cur["annual_result"]["value"]["amount"], prev["annual_result"]["value"]["amount"]
                 if (a < 0) != (p < 0):
                     s.append((f"The annual result moved from {_nok(p)} in {years[-2]} to {_nok(a)} in {latest}.", [cur["annual_result"], prev["annual_result"]]))
-        if "revenue" in cur and "operating_result" in cur and cur["revenue"]["value"]["amount"]:
+        if "revenue" in cur and "operating_result" in cur and cur["revenue"]["value"]["amount"] > 0:
             margin = cur["operating_result"]["value"]["amount"] / cur["revenue"]["value"]["amount"]
             s.append((f"Operating margin {margin * 100:.1f}% in {latest}.", [cur["operating_result"], cur["revenue"]]))
     if not s:
@@ -264,14 +264,56 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         s.append((f"Most recent register change: {ev['value'].get('event')} on {ev['value'].get('date')}.", [ev]))
     b.add("Public footprint and recent activity", s)
 
-    # 7. Changes since the previous run
+    # 7. What changed: since the previous run, and dated changes visible in the sources themselves.
+    dated: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for c in b.claims("registry_role_change"):
+        dated.append((c["value"].get("date") or "", f"{c['value'].get('event')} ({c['value'].get('date')})", [c]))
+    for c in b.claims("registered_workplace"):
+        started = c["value"].get("started")
+        if started:
+            dated.append((started, f"workplace {c['value'].get('name')} registered as started {started}", [c]))
+    for c in b.claims("former_name"):
+        if c["value"].get("to"):
+            dated.append((c["value"]["to"], f"name changed from {c['value'].get('name')} ({c['value'].get('to')})", [c]))
+    cap = b.first("share_capital")
+    if cap and cap.get("effective_date"):
+        dated.append((cap["effective_date"], f"share capital registered as {_nok(cap['value'].get('amount'), cap['value'].get('currency') or 'NOK')} from {cap['effective_date']}", [cap]))
+    if employees_c and employees_c.get("effective_date"):
+        dated.append((employees_c["effective_date"], f"registered employee count updated to {employees_c['value']} ({employees_c['effective_date']})", [employees_c]))
+    for c in b.claims("job_posting"):
+        when = c["value"].get("published") or c["value"].get("date_posted")
+        if when:
+            dated.append((when, f"job ad published: {c['value'].get('title', '')[:60]} ({when})", [c]))
+    for c in b.claims("company_news"):
+        if c["value"].get("date"):
+            dated.append((c["value"]["date"], f"news: {c['value'].get('title', '')[:70]} ({c['value']['date']})", [c]))
+    filed = sorted({(t, y) for (t, y) in stmts})
+    for account_type in ("KONSERN", "SELSKAP"):
+        years = sorted(y for (t, y) in filed if t == account_type)
+        if len(years) >= 2:
+            cur, prev = stmts[(account_type, years[-1])], stmts[(account_type, years[-2])]
+            parts, used = [], []
+            for metric, word in (("revenue", "revenue"), ("annual_result", "annual result"), ("equity", "equity")):
+                if metric in cur and metric in prev:
+                    a, p_ = cur[metric]["value"]["amount"], prev[metric]["value"]["amount"]
+                    parts.append(f"{word} {_nok(p_)} → {_nok(a)}")
+                    used += [cur[metric], prev[metric]]
+            if parts:
+                label = "group" if account_type == "KONSERN" else "company"
+                dated.append((f"{years[-1]}-12-31", f"{years[-1]} {label} accounts vs {years[-2]}: " + ", ".join(parts), used))
+                break
+    dated.sort(key=lambda item: item[0], reverse=True)
+    s = []
     if changes:
         material = [c for c in changes if c.get("materiality") in ("high", "medium")]
         lines = [c.get("summary") for c in (material or changes)[:5] if c.get("summary")]
-        text = f"{len(changes)} change(s) since the previous run" + (f": {'; '.join(lines)}." if lines else ".")
-        b.sections.append({"heading": "What changed", "text": text, "sentences": [{"text": text, "claim_ids": [], "evidence_ids": sorted({e for c in changes for e in c.get("current_evidence_ids", []) + c.get("previous_evidence_ids", [])})}], "claim_ids": [], "evidence_ids": sorted({e for c in changes for e in c.get("current_evidence_ids", []) + c.get("previous_evidence_ids", [])})})
-    else:
-        b.sections.append({"heading": "What changed", "text": "No previous run was supplied for this company, so no changes are reported; this run is the baseline snapshot.", "sentences": [], "claim_ids": [], "evidence_ids": []})
+        ev_ids = sorted({e for c in changes for e in c.get("current_evidence_ids", []) + c.get("previous_evidence_ids", [])})
+        s.append((f"Since the previous run: {len(changes)} change(s)" + (f" — {'; '.join(lines)}." if lines else "."), [{"id": c.get("current_claim_id") or c.get("previous_claim_id") or "", "evidence_ids": ev_ids} for c in changes[:1]]))
+    elif rec.context.get("refresh_baseline", True):
+        s.append(("This run is the first snapshot for this company, so no run-to-run changes are reported yet.", []))
+    if dated:
+        s.append(("Recent dated changes in the sources: " + "; ".join(text for _, text, _ in dated[:6]) + ".", [c for _, _, cs in dated[:6] for c in cs]))
+    b.add("What changed", s)
 
     # 8. Unknowns
     unknown = []

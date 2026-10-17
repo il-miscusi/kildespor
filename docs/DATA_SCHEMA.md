@@ -43,13 +43,13 @@ order.
 
 | family | fields |
 |---|---|
-| `legal_identity` | `organisation_number`, `legal_name`, `legal_form`, `registered_business_address`, `postal_address`, `municipality`, `industry_code`, `registered_employees`, `founded_date`, `registered_date`, `share_capital`, `statutory_purpose`, `registered_activity`, `vat_registered`, `in_business_register`, `part_of_group`, `registry_status`, `former_name`, `group_relationship` |
+| `legal_identity` | `organisation_number`, `legal_name`, `legal_form`, `registered_business_address`, `postal_address`, `municipality`, `industry_code`, `registered_employees`, `founded_date`, `registered_date`, `share_capital`, `statutory_purpose`, `registered_activity`, `vat_registered`, `in_business_register`, `part_of_group`, `registry_status`, `former_name`, `group_relationship`, `registry_website` (the website string as registered, unverified) |
 | `public_brand` | `public_brand_name`, `self_description` |
 | `annual_accounts` | `latest_filed_accounts_year`, `financial.<metric>` for revenue, operating_expenses, operating_result, net_financial_items, profit_before_tax, tax_expense, annual_result, total_assets, fixed_assets, current_assets, equity, total_debt, short_term_debt, long_term_debt; `financial.audit_opt_out` |
 | `leadership` | `role` |
 | `workplaces` | `registered_workplace` |
-| `official_website` | `registry_website`, `official_website` |
-| `company_profiles` | `social_profile` (facebook, instagram, linkedin, youtube, x, tiktok, pinterest, vimeo) |
+| `official_website` | `official_website` (verified: identity method and discovery route in the value) |
+| `company_profiles` | `social_profile` (facebook, instagram, linkedin, youtube, x, tiktok, pinterest, vimeo), from the verified site, the register's website field, or the employer block of an org-number-verified NAV ad |
 | `contact_channels` | `registry_phone`, `website_phone`, `website_email` |
 | `hiring` | `job_posting`, `careers_page` |
 | `public_activity` | `company_news`, `registry_role_change`, `registry_update` |
