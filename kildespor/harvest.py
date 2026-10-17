@@ -1358,10 +1358,16 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     candidates = _careers_candidates(anchors, sitemap, sitemap_snaps, site_host)
     own = next((c for c in candidates if c[0] in (0, 2)), None)
     ats_links = [c for c in candidates if c[0] == 1]
+    # True only when every careers source this site points to was read in full this run: refresh
+    # may then close a site-found role that is gone ("job_posting:site").
+    jobs_complete: bool | None = None
     if own is not None:
         rank, url, snap, span, _text = own
         page = plan.page(url)
+        if page is None:
+            jobs_complete = False
         if page is not None and _is_careers_page(page, rank, site_host):
+            jobs_complete = True
             c_snap, c_soup, _ = page
             title = (c_soup.title.get_text(" ", strip=True) if c_soup.title else "") or url
             careers.append((_clean_url(c_snap.final_url), c_snap, f"careers page: {title[:200]}", "careers_page_on_verified_site"))
@@ -1370,10 +1376,15 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             if listing and listing.endswith(".rss") and plan.can(1, 6.0):
                 feed = plan.raw(listing, headers={"Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.5"})
                 roles += [(r, feed) for r in rss_roles(feed, c_snap.final_url)] if feed is not None else []
+                jobs_complete = feed is not None
             elif listing and plan.can(1, 6.0):
                 l_page = plan.page(listing)
                 if l_page is not None and _site(l_page[0].final_url) == _site(c_snap.final_url):
                     roles += [(r, l_page[0]) for r in roles_on_page(l_page[0], l_page[1], rec, own_site=True, tenant_ok=True, site_wide=site_wide)]
+                else:
+                    jobs_complete = False
+            elif listing:
+                jobs_complete = False  # the job list was not read: the budget ran out
             for a in c_soup.find_all(["a", "iframe"]):
                 href = a.get("href") or a.get("src")
                 if not href:
@@ -1400,6 +1411,10 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if ats_name != "finn" and not fetched_ats and plan.can(2, 6.0):
             fetched_ats = True
             page = plan.page(url)
+        if ats_name != "finn" and (page is None or ERROR_PAGE.search(page[0].final_url)):
+            jobs_complete = False  # an ATS listing this site points to was not read
+        elif ats_name != "finn" and jobs_complete is None:
+            jobs_complete = True
         if page is not None and not ERROR_PAGE.search(page[0].final_url + " " + ((page[1].title.get_text(" ", strip=True) if page[1].title else "")[:200])):
             a_snap, a_soup, _ = page
             careers.append((_clean_url(a_snap.final_url), a_snap, f"applicant-tracking page ({ats_name}): {(a_soup.title.get_text(' ', strip=True) if a_soup.title else '')[:160]}", "ats_page_linked_from_verified_site"))
@@ -1488,6 +1503,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     _publish_news(rec, list(news.values()), company_label)
 
     _note_pages(rec, own_pages(), home, careers, news, site_host)
+    if jobs_complete:
+        rec.checked_fields.add("job_posting:site")
     rec.checked_fields.update({"social_profile", "website_phone", "website_email", "public_brand_name", "self_description", "careers_page"})
     if visit.time_left() > 5:
         rec.checked_fields.add("company_news")

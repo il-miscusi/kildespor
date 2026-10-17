@@ -383,6 +383,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(len(claim["evidence_ids"]), 1, claim)
         self.assertLessEqual(rec.context["harvest"]["requests"], harvest.HARVEST_REQUESTS)
         self.assertEqual(rec.family_state["hiring"]["state"], "available")
+        self.assertIn("job_posting:site", rec.checked_fields)  # careers page and its ATS list were read
         if hasattr(rec, "pages_checked"):
             purposes = {p["url"]: p["purpose"] for p in rec.pages_checked}
             self.assertEqual(purposes["https://www.fjordbygg.no/"], "home")
@@ -393,3 +394,17 @@ class EndToEndTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SiteJobsCheckedTests(unittest.TestCase):
+    def test_failed_careers_fetch_does_not_close_site_jobs(self) -> None:
+        home_html = '<html><head><title>Fjordbygg</title></head><body><a href="/karriere/">Karriere</a><footer>Org.nr 923 609 016</footer></body></html>'
+        fetcher = FakeFetcher({}, robots="User-agent: *\nAllow: /\n")  # every page 404s
+        rec = record()
+        visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.fjordbygg.no/", home_html)
+        soup, _html, text = parse(home)
+        visit.pages.append((home, soup, text))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+        self.assertNotIn("job_posting:site", rec.checked_fields)
+        self.assertEqual([c["value"] for c in rec.claims if c["field"] == "careers_page"], ["https://www.fjordbygg.no/karriere/"])
