@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "export": "KILDESPOR_STATIC_EXPORT=1 next build",
     "start": "next start",
     "lint": "eslint"
   },

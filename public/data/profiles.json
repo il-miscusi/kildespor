@@ -1,0 +1,2824 @@
+{
+  "run": {
+    "runId": "demo-2026-10-01",
+    "completedAt": "2026-10-01T12:00:00Z",
+    "count": 8
+  },
+  "companies": [
+    {
+      "org": "DEMO-001",
+      "name": "Fjordlight Demo AS",
+      "brand": "Fjordlight",
+      "legalForm": "AS",
+      "municipality": "Bergen",
+      "industry": "Energy technology",
+      "employees": 24,
+      "website": "https://example.com/demo-001",
+      "revenue": 12000000,
+      "coverage": {
+        "identity": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "accounts": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "people": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "web": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "hiring": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Fjordlight Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is energy technology.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Bergen",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Energy technology",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": 24,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": "https://example.com/demo-001",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": 12000000,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 9120000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 1680000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 1200000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 42,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 10560000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 1680000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 1200000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 42,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 12000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 1680000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 1200000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 42,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "role": "General manager",
+          "name": "Ingrid Example",
+          "since": "2023-05-01",
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "role": "Chair",
+          "name": "Lars Example",
+          "since": "2022-01-01",
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "workplaces": [
+        {
+          "name": "Main office (fictional)",
+          "org": "DEMO-001-W1",
+          "address": "Example street 1, Bergen",
+          "employees": 24,
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "profiles": [
+        {
+          "platform": "LinkedIn (example)",
+          "url": "https://example.com/social/DEMO-001",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "jobs": [
+        {
+          "title": "Example engineer — fictional vacancy",
+          "url": "https://example.com/jobs/DEMO-001",
+          "location": "Bergen",
+          "published": "2026-01-01",
+          "expires": "2099-12-31",
+          "sources": [
+            "jobs-1"
+          ]
+        },
+        {
+          "title": "Previous example role — expired",
+          "url": "https://example.com/jobs/expired",
+          "location": "Bergen",
+          "published": "2024-01-01",
+          "expires": "2024-06-01",
+          "sources": [
+            "jobs-1"
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-001",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "available",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-001/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "49127122e57d37c08283294250766b436592458b48dcb81848e5375a2ebf194c",
+          "span": "SYNTHETIC FIXTURE: Fjordlight Demo AS, DEMO-001, AS, Bergen, Energy technology, employees 24. Website https://example.com/demo-001. Fictional manager Ingrid Example and chair Lars Example; main workplace in Bergen.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-001/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "215d61a30be921e7d3e28a1a1a732156b888188042151784608628a9cd2df98e",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Fjordlight Demo AS. Revenue 12000000 NOK in 2025, operating result 1680000 NOK, annual result 1200000 NOK, equity ratio 42%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-001/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "4be20d32eb950cdacdad1c668b3e2bd9d7172b92f93d166387051af2199462fe",
+          "span": "SYNTHETIC FIXTURE: Fjordlight Demo AS describes its example service in Energy technology. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-001/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "b81ece32eaa05b511ddf5cf49b76ddc9976ef420def762f079fc700b22ddf4c9",
+          "span": "SYNTHETIC FIXTURE: Fjordlight Demo AS advertises an example engineer role in Bergen, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    },
+    {
+      "org": "DEMO-002",
+      "name": "Nordverk Demo AS",
+      "brand": "Nordverk",
+      "legalForm": "AS",
+      "municipality": "Trondheim",
+      "industry": "Industrial manufacturing",
+      "employees": 37,
+      "website": "https://example.com/demo-002",
+      "revenue": 20000000,
+      "coverage": {
+        "identity": {
+          "state": "not_available",
+          "reason": "No matching records were included in this example."
+        },
+        "accounts": {
+          "state": "ambiguous",
+          "reason": "More than one potential match; identity could not be confirmed."
+        },
+        "people": {
+          "state": "blocked",
+          "reason": "The example source refused automated retrieval."
+        },
+        "web": {
+          "state": "failed",
+          "reason": "The example retrieval did not complete."
+        },
+        "hiring": {
+          "state": "not_applicable",
+          "reason": "This area does not apply to this example company."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Nordverk Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is industrial manufacturing.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Trondheim",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Industrial manufacturing",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": 37,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": "https://example.com/demo-002",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": 20000000,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 15200000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 2800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 2000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 43,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 17600000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 2800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 2000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 43,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 20000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 2800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 2000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 43,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "role": "General manager",
+          "name": "Ingrid Example",
+          "since": "2023-05-01",
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "role": "Chair",
+          "name": "Lars Example",
+          "since": "2022-01-01",
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "workplaces": [
+        {
+          "name": "Main office (fictional)",
+          "org": "DEMO-002-W1",
+          "address": "Example street 1, Trondheim",
+          "employees": 37,
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "profiles": [
+        {
+          "platform": "LinkedIn (example)",
+          "url": "https://example.com/social/DEMO-002",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "jobs": [],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-002",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "failed",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-002/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "f97f6b477da9a84b0ef4cf7d68e10edbe55f806260e8688fe78de09c4f454de3",
+          "span": "SYNTHETIC FIXTURE: Nordverk Demo AS, DEMO-002, AS, Trondheim, Industrial manufacturing, employees 37. Website https://example.com/demo-002. Fictional manager Ingrid Example and chair Lars Example; main workplace in Trondheim.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-002/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "770a781dc0dd28f16afd3ab91b0dbfbffc5e704846bec8ebb11c479132a678c8",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Nordverk Demo AS. Revenue 20000000 NOK in 2025, operating result 2800000 NOK, annual result 2000000 NOK, equity ratio 43%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-002/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "860f445a2f9c6af234ff3f3ea1f65222014939f6e087158c0cdf0a41e7e38a4c",
+          "span": "SYNTHETIC FIXTURE: Nordverk Demo AS describes its example service in Industrial manufacturing. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-002/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "38d26bb87da6ddd27c1445879ee5ebcbb06bb06973877eb863455d6f13475b07",
+          "span": "SYNTHETIC FIXTURE: Nordverk Demo AS advertises an example engineer role in Trondheim, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    },
+    {
+      "org": "DEMO-003",
+      "name": "Havlinje Demo AS",
+      "brand": "Havlinje",
+      "legalForm": "AS",
+      "municipality": "Ålesund",
+      "industry": "Maritime services",
+      "employees": 50,
+      "website": "https://example.com/demo-003",
+      "revenue": 28000000,
+      "coverage": {
+        "identity": {
+          "state": "ambiguous",
+          "reason": "More than one potential match; identity could not be confirmed."
+        },
+        "accounts": {
+          "state": "blocked",
+          "reason": "The example source refused automated retrieval."
+        },
+        "people": {
+          "state": "failed",
+          "reason": "The example retrieval did not complete."
+        },
+        "web": {
+          "state": "not_applicable",
+          "reason": "This area does not apply to this example company."
+        },
+        "hiring": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Havlinje Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is maritime services.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Ålesund",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Maritime services",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": 50,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": "https://example.com/demo-003",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": 28000000,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 21280000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 3920000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 2800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 44,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 24640000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 3920000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 2800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 44,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 28000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 3920000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 2800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 44,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "role": "General manager",
+          "name": "Ingrid Example",
+          "since": "2023-05-01",
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "role": "Chair",
+          "name": "Lars Example",
+          "since": "2022-01-01",
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "workplaces": [
+        {
+          "name": "Main office (fictional)",
+          "org": "DEMO-003-W1",
+          "address": "Example street 1, Ålesund",
+          "employees": 50,
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "profiles": [
+        {
+          "platform": "LinkedIn (example)",
+          "url": "https://example.com/social/DEMO-003",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "jobs": [],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-003",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "not_applicable",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-003/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "01192f9e1c9e417cd790ca4b1fc3570a38daae58926e51be246b3edcc8fcfc18",
+          "span": "SYNTHETIC FIXTURE: Havlinje Demo AS, DEMO-003, AS, Ålesund, Maritime services, employees 50. Website https://example.com/demo-003. Fictional manager Ingrid Example and chair Lars Example; main workplace in Ålesund.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-003/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "0ba57dc20011419a380c2b9b2fdbc40d0f3701e0e40b92229a82dbda8b2c94a8",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Havlinje Demo AS. Revenue 28000000 NOK in 2025, operating result 3920000 NOK, annual result 2800000 NOK, equity ratio 44%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-003/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "2b23a3bcd729a8587ef961273e00f5c19ef2962009d684db64976bf660b3576d",
+          "span": "SYNTHETIC FIXTURE: Havlinje Demo AS describes its example service in Maritime services. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-003/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "61420fc8d2ff81e801f8fc6f48cc02f2e6b27afed036fe45d2c50967f70896ff",
+          "span": "SYNTHETIC FIXTURE: Havlinje Demo AS advertises an example engineer role in Ålesund, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    },
+    {
+      "org": "DEMO-004",
+      "name": "Skogform Demo AS",
+      "brand": "Skogform",
+      "legalForm": "AS",
+      "municipality": "Oslo",
+      "industry": "Architecture & design",
+      "employees": 63,
+      "website": "https://example.com/demo-004",
+      "revenue": 36000000,
+      "coverage": {
+        "identity": {
+          "state": "blocked",
+          "reason": "The example source refused automated retrieval."
+        },
+        "accounts": {
+          "state": "failed",
+          "reason": "The example retrieval did not complete."
+        },
+        "people": {
+          "state": "not_applicable",
+          "reason": "This area does not apply to this example company."
+        },
+        "web": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "hiring": {
+          "state": "not_available",
+          "reason": "No matching records were included in this example."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Skogform Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is architecture & design.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Oslo",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Architecture & design",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": 63,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": "https://example.com/demo-004",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": 36000000,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 27360000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 5040000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 3600000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 45,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 31680000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 5040000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 3600000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 45,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 36000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 5040000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 3600000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 45,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "role": "General manager",
+          "name": "Ingrid Example",
+          "since": "2023-05-01",
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "role": "Chair",
+          "name": "Lars Example",
+          "since": "2022-01-01",
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "workplaces": [
+        {
+          "name": "Main office (fictional)",
+          "org": "DEMO-004-W1",
+          "address": "Example street 1, Oslo",
+          "employees": 63,
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "profiles": [
+        {
+          "platform": "LinkedIn (example)",
+          "url": "https://example.com/social/DEMO-004",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "jobs": [
+        {
+          "title": "Example engineer — fictional vacancy",
+          "url": "https://example.com/jobs/DEMO-004",
+          "location": "Oslo",
+          "published": "2026-01-01",
+          "expires": "2099-12-31",
+          "sources": [
+            "jobs-1"
+          ]
+        },
+        {
+          "title": "Previous example role — expired",
+          "url": "https://example.com/jobs/expired",
+          "location": "Oslo",
+          "published": "2024-01-01",
+          "expires": "2024-06-01",
+          "sources": [
+            "jobs-1"
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-004",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "available",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-004/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "41481947ac92186815e297faaf730108e6a0f9bf75672f02d2fd47b22db54544",
+          "span": "SYNTHETIC FIXTURE: Skogform Demo AS, DEMO-004, AS, Oslo, Architecture & design, employees 63. Website https://example.com/demo-004. Fictional manager Ingrid Example and chair Lars Example; main workplace in Oslo.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-004/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "5b43c1ef4b7b000ee5a12083008dbcc09fbd2fc95d7a7dac08f435ab16991b4c",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Skogform Demo AS. Revenue 36000000 NOK in 2025, operating result 5040000 NOK, annual result 3600000 NOK, equity ratio 45%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-004/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "faebd7a1d0fc04522a3f59eb86b7f093d4b53a353d6fef2d65a55eec5946c7be",
+          "span": "SYNTHETIC FIXTURE: Skogform Demo AS describes its example service in Architecture & design. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-004/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "55666884c9e4527cef3fb44ebe0a97ab389dfd7f33c0a316d27cbe513bb9ab59",
+          "span": "SYNTHETIC FIXTURE: Skogform Demo AS advertises an example engineer role in Oslo, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    },
+    {
+      "org": "DEMO-005",
+      "name": "Vestpunkt Demo AS",
+      "brand": "Vestpunkt",
+      "legalForm": "AS",
+      "municipality": "Stavanger",
+      "industry": "Software development",
+      "employees": null,
+      "website": "",
+      "revenue": null,
+      "coverage": {
+        "identity": {
+          "state": "failed",
+          "reason": "The example retrieval did not complete."
+        },
+        "accounts": {
+          "state": "not_applicable",
+          "reason": "This area does not apply to this example company."
+        },
+        "people": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "web": {
+          "state": "not_available",
+          "reason": "No matching records were included in this example."
+        },
+        "hiring": {
+          "state": "ambiguous",
+          "reason": "More than one potential match; identity could not be confirmed."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Vestpunkt Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is software development.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Stavanger",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Software development",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": null,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": null,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": null,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [],
+      "roles": [],
+      "workplaces": [],
+      "profiles": [],
+      "jobs": [],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-005",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "not_available",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-005/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "d5c6657e7f2ee96f3d638cb577c78a4839edaef54997be3fc311260748782a48",
+          "span": "SYNTHETIC FIXTURE: Vestpunkt Demo AS, DEMO-005, AS, Stavanger, Software development, employees null. Website . Fictional manager Ingrid Example and chair Lars Example; main workplace in Stavanger.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-005/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "58c751e32d32275ea327e6a7eb895f68643135d0343154cefe0a54d1d446fd3d",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Vestpunkt Demo AS. Revenue null NOK in 2025, operating result 0 NOK, annual result 0 NOK, equity ratio 46%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-005/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "97bcb40bf9da0d1c0a7eeac1b6ad2e14b4c78b35aae9ab4cf5d90e8ac7fa3548",
+          "span": "SYNTHETIC FIXTURE: Vestpunkt Demo AS describes its example service in Software development. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-005/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "01b876ba0ac2ea971557de3ceaa6d12474c8cfd6e2a893f3adb2317374b70bab",
+          "span": "SYNTHETIC FIXTURE: Vestpunkt Demo AS advertises an example engineer role in Stavanger, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    },
+    {
+      "org": "DEMO-006",
+      "name": "Polarspor Demo AS",
+      "brand": "Polarspor",
+      "legalForm": "AS",
+      "municipality": "Tromsø",
+      "industry": "Logistics",
+      "employees": 89,
+      "website": "https://example.com/demo-006",
+      "revenue": 52000000,
+      "coverage": {
+        "identity": {
+          "state": "not_applicable",
+          "reason": "This area does not apply to this example company."
+        },
+        "accounts": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "people": {
+          "state": "not_available",
+          "reason": "No matching records were included in this example."
+        },
+        "web": {
+          "state": "ambiguous",
+          "reason": "More than one potential match; identity could not be confirmed."
+        },
+        "hiring": {
+          "state": "blocked",
+          "reason": "The example source refused automated retrieval."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Polarspor Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is logistics.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Tromsø",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Logistics",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": 89,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": "https://example.com/demo-006",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": 52000000,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 39520000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 7280000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 5200000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 47,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 45760000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 7280000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 5200000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 47,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 52000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 7280000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 5200000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 47,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "role": "General manager",
+          "name": "Ingrid Example",
+          "since": "2023-05-01",
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "role": "Chair",
+          "name": "Lars Example",
+          "since": "2022-01-01",
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "workplaces": [
+        {
+          "name": "Main office (fictional)",
+          "org": "DEMO-006-W1",
+          "address": "Example street 1, Tromsø",
+          "employees": 89,
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "profiles": [
+        {
+          "platform": "LinkedIn (example)",
+          "url": "https://example.com/social/DEMO-006",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "jobs": [],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-006",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "ambiguous",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-006/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "48e0e41c3732c6c8df19bc4d2c5ecbda8c7ffdc41cea0a56d1cf7d64b9e5730e",
+          "span": "SYNTHETIC FIXTURE: Polarspor Demo AS, DEMO-006, AS, Tromsø, Logistics, employees 89. Website https://example.com/demo-006. Fictional manager Ingrid Example and chair Lars Example; main workplace in Tromsø.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-006/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "73f210b07b3a73575eaa9e22a714c196376a81099c4c6ecde6cd9faacaa06e85",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Polarspor Demo AS. Revenue 52000000 NOK in 2025, operating result 7280000 NOK, annual result 5200000 NOK, equity ratio 47%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-006/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "ec204b8fa381c1c8c94107551597159748318ecdbe0a7140070d97eb48eeea6a",
+          "span": "SYNTHETIC FIXTURE: Polarspor Demo AS describes its example service in Logistics. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-006/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "d46fe76049dc28211d5ef8a1aecaac9a37fa57f1413efeadf18e0b81a139fb46",
+          "span": "SYNTHETIC FIXTURE: Polarspor Demo AS advertises an example engineer role in Tromsø, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    },
+    {
+      "org": "DEMO-007",
+      "name": "Bergdata Demo AS",
+      "brand": "Bergdata",
+      "legalForm": "AS",
+      "municipality": "Oslo",
+      "industry": "Data & analytics",
+      "employees": 102,
+      "website": "https://example.com/demo-007",
+      "revenue": 60000000,
+      "coverage": {
+        "identity": {
+          "state": "available",
+          "reason": "Synthetic example records supplied for this area."
+        },
+        "accounts": {
+          "state": "not_available",
+          "reason": "No matching records were included in this example."
+        },
+        "people": {
+          "state": "ambiguous",
+          "reason": "More than one potential match; identity could not be confirmed."
+        },
+        "web": {
+          "state": "blocked",
+          "reason": "The example source refused automated retrieval."
+        },
+        "hiring": {
+          "state": "failed",
+          "reason": "The example retrieval did not complete."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Bergdata Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is data & analytics.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Oslo",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Data & analytics",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": 102,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": "https://example.com/demo-007",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": 60000000,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 45600000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 8400000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 6000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 48,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 52800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 8400000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 6000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 48,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 60000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 8400000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 6000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 48,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "role": "General manager",
+          "name": "Ingrid Example",
+          "since": "2023-05-01",
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "role": "Chair",
+          "name": "Lars Example",
+          "since": "2022-01-01",
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "workplaces": [
+        {
+          "name": "Main office (fictional)",
+          "org": "DEMO-007-W1",
+          "address": "Example street 1, Oslo",
+          "employees": 102,
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "profiles": [
+        {
+          "platform": "LinkedIn (example)",
+          "url": "https://example.com/social/DEMO-007",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "jobs": [
+        {
+          "title": "Example engineer — fictional vacancy",
+          "url": "https://example.com/jobs/DEMO-007",
+          "location": "Oslo",
+          "published": "2026-01-01",
+          "expires": "2099-12-31",
+          "sources": [
+            "jobs-1"
+          ]
+        },
+        {
+          "title": "Previous example role — expired",
+          "url": "https://example.com/jobs/expired",
+          "location": "Oslo",
+          "published": "2024-01-01",
+          "expires": "2024-06-01",
+          "sources": [
+            "jobs-1"
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-007",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "blocked",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-007/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "7ecb204901494a35c88a62bc0c88097882b3898a12f66320a8a01437afb3cc81",
+          "span": "SYNTHETIC FIXTURE: Bergdata Demo AS, DEMO-007, AS, Oslo, Data & analytics, employees 102. Website https://example.com/demo-007. Fictional manager Ingrid Example and chair Lars Example; main workplace in Oslo.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-007/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "8dc59da4f6004e578ffef405a39f9f4a34890ec195f986ab52fe4db6ea1b65c4",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Bergdata Demo AS. Revenue 60000000 NOK in 2025, operating result 8400000 NOK, annual result 6000000 NOK, equity ratio 48%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-007/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "960b44229379115d3e5699679b4c9d8299396b4a2f1a2b4ebaad4dadd8a5f332",
+          "span": "SYNTHETIC FIXTURE: Bergdata Demo AS describes its example service in Data & analytics. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-007/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "b2eff1a1295dc5f84bb50252cbce271f72f732e54061dc359fb9c9b10e025d60",
+          "span": "SYNTHETIC FIXTURE: Bergdata Demo AS advertises an example engineer role in Oslo, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    },
+    {
+      "org": "DEMO-008",
+      "name": "Solvik Demo AS",
+      "brand": "Solvik",
+      "legalForm": "AS",
+      "municipality": "Kristiansand",
+      "industry": "Business consulting",
+      "employees": 0,
+      "website": "https://example.com/demo-008",
+      "revenue": 68000000,
+      "coverage": {
+        "identity": {
+          "state": "not_available",
+          "reason": "No matching records were included in this example."
+        },
+        "accounts": {
+          "state": "ambiguous",
+          "reason": "More than one potential match; identity could not be confirmed."
+        },
+        "people": {
+          "state": "blocked",
+          "reason": "The example source refused automated retrieval."
+        },
+        "web": {
+          "state": "failed",
+          "reason": "The example retrieval did not complete."
+        },
+        "hiring": {
+          "state": "not_applicable",
+          "reason": "This area does not apply to this example company."
+        }
+      },
+      "brief": [
+        {
+          "heading": "What the company does",
+          "text": "Solvik Demo AS is a fictional company used to demonstrate an evidence-backed profile. Its example focus is business consulting.",
+          "sources": [
+            "identity-1",
+            "web-1"
+          ]
+        },
+        {
+          "heading": "What the evidence says",
+          "text": "These records are synthetic examples, not statements about a real business. Open the numbered source links to inspect the supplied text.",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "signals": [
+        {
+          "text": "Illustrative public activity was included in this dataset; this is not a business recommendation.",
+          "tone": "neutral",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "area": "identity",
+          "field": "legalForm",
+          "label": "Legal form",
+          "value": "AS",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "municipality",
+          "label": "Municipality",
+          "value": "Kristiansand",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "identity",
+          "field": "industry",
+          "label": "Industry",
+          "value": "Business consulting",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "people",
+          "field": "employees",
+          "label": "Employees",
+          "value": 0,
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "web",
+          "field": "website",
+          "label": "Website",
+          "value": "https://example.com/demo-008",
+          "date": "2026-10-01",
+          "period": null,
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "area": "accounts",
+          "field": "revenue",
+          "label": "Revenue",
+          "value": 68000000,
+          "date": "2026-10-01",
+          "period": "2025",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "accounts": [
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 51680000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 9520000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 6800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2023,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 49,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 59840000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 9520000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 6800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2024,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 49,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "revenue",
+          "label": "Revenue",
+          "amount": 68000000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "operating_result",
+          "label": "Operating result",
+          "amount": 9520000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "annual_result",
+          "label": "Annual result",
+          "amount": 6800000,
+          "currency": "NOK",
+          "sources": [
+            "accounts-1"
+          ]
+        },
+        {
+          "type": "annual",
+          "year": 2025,
+          "metric": "equity_ratio",
+          "label": "Equity ratio",
+          "amount": 49,
+          "currency": "%",
+          "sources": [
+            "accounts-1"
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "role": "General manager",
+          "name": "Ingrid Example",
+          "since": "2023-05-01",
+          "sources": [
+            "identity-1"
+          ]
+        },
+        {
+          "role": "Chair",
+          "name": "Lars Example",
+          "since": "2022-01-01",
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "workplaces": [
+        {
+          "name": "Main office (fictional)",
+          "org": "DEMO-008-W1",
+          "address": "Example street 1, Kristiansand",
+          "employees": 0,
+          "sources": [
+            "identity-1"
+          ]
+        }
+      ],
+      "profiles": [
+        {
+          "platform": "LinkedIn (example)",
+          "url": "https://example.com/social/DEMO-008",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "jobs": [],
+      "activity": [
+        {
+          "date": "2026-09-20",
+          "title": "Illustrative company update",
+          "url": "https://example.com/activity/DEMO-008",
+          "kind": "website update",
+          "sources": [
+            "web-1"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "type": "coverage",
+          "summary": "Example website coverage changed",
+          "before": "not_available",
+          "after": "failed",
+          "materiality": "low"
+        }
+      ],
+      "unknowns": [
+        {
+          "area": "ownership",
+          "state": "not_available",
+          "reason": "Ownership is not part of this fictional dataset."
+        }
+      ],
+      "evidence": [
+        {
+          "id": "identity-1",
+          "url": "https://example.com/evidence/DEMO-008/identity-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "44a5adabc9422d291361fb2f9557e4d6086b0e0666a317dc720e72904f0221cd",
+          "span": "SYNTHETIC FIXTURE: Solvik Demo AS, DEMO-008, AS, Kristiansand, Business consulting, employees 0. Website https://example.com/demo-008. Fictional manager Ingrid Example and chair Lars Example; main workplace in Kristiansand.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "accounts-1",
+          "url": "https://example.com/evidence/DEMO-008/accounts-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "f8cde8a1eb41c34bc1b36c927d8afe088e04c20948267689a8174388fe6e206b",
+          "span": "SYNTHETIC FIXTURE: Annual figures for Solvik Demo AS. Revenue 68000000 NOK in 2025, operating result 9520000 NOK, annual result 6800000 NOK, equity ratio 49%.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "web-1",
+          "url": "https://example.com/evidence/DEMO-008/web-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "fbbd3fe8935f020992e1c9f885e375095481fd5a352b82cfa499ac3e357e0833",
+          "span": "SYNTHETIC FIXTURE: Solvik Demo AS describes its example service in Business consulting. Example LinkedIn profile and activity notice.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        },
+        {
+          "id": "jobs-1",
+          "url": "https://example.com/evidence/DEMO-008/jobs-1",
+          "retrievedAt": "2026-10-01T10:30:00Z",
+          "sourceClass": "synthetic_demo",
+          "sha256": "2466ee85d63f6de76b93104de534f507facc2381536b6a858720fc6ff300b7b3",
+          "span": "SYNTHETIC FIXTURE: Solvik Demo AS advertises an example engineer role in Kristiansand, published 2026-01-01 and expiring 2099-12-31. These are not real vacancies.",
+          "method": "Synthetic fixture; hash covers this quoted fixture text only. No external retrieval occurred."
+        }
+      ]
+    }
+  ]
+}
