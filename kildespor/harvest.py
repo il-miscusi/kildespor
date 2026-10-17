@@ -567,6 +567,91 @@ def _credit_link(anchor: Any) -> bool:
     return False
 
 
+# Words beside a link that say it belongs to someone related, not to the company itself
+# (matched on folded text, after the company's own names are removed from it).
+RELATION_LABEL = re.compile(
+    r"soster(?:selskap|bedrift|firma)|morselskap|datterselskap|konsern|samarbeidspartner|\bpartner|\bkunde(?:r|n|ne)?\b|levert av|"
+    r"leverandor|medlem av|member of|sister[- ]?compan|parent[- ]?compan|subsidiar|\bgroup\b|\bgruppen\b|owned by|\beid av\b|\bdel av\b|part of",
+    re.I,
+)
+# What may surround the company's own name in its own account name: legal form, country,
+# "official", a number, or a Norwegian place (a regional account).
+ALLOWED_AFFIXES = {
+    "as", "asa", "ab", "da", "ans", "sa", "ks", "ba", "no", "nor", "norge", "norway", "norden", "nordic", "scandinavia", "official",
+    "offisiell", "offisielt", "hq", "go", "the", "team", "tv", "film", "films", "media", "inc", "ltd", "oslo", "bergen", "trondheim",
+    "stavanger", "tromso", "kristiansand", "drammen", "fredrikstad", "sandnes", "bodo", "alesund", "haugesund", "tonsberg", "moss",
+    "hamar", "lillehammer", "molde", "harstad", "gjovik", "larvik", "halden", "sandefjord", "arendal", "skien", "porsgrunn",
+    "kongsberg", "narvik", "steinkjer", "levanger", "namsos", "elverum", "kongsvinger", "honefoss", "asker", "baerum", "sandvika",
+    "lillestrom", "jessheim", "ski", "viken", "vestland", "rogaland", "agder", "nordland", "troms", "finnmark", "innlandet",
+    "trondelag", "vestfold", "telemark", "ostfold", "akershus", "sunnmore", "romerike", "hordaland", "sorlandet", "vestlandet",
+    "ostlandet", "nordnorge", "midtnorge",
+}
+
+
+# Words that name a separate legal entity beside the company's own name (Fjordbygg Eiendom AS,
+# Fjordbygg Holding AS): an account "fjordbygg-eiendom" on Fjordbygg AS's site is the sister's.
+SISTER_ENTITY_WORDS = (
+    "eiendom", "eiendommer", "eiendomsutvikling", "boligutvikling", "holding", "holdings", "invest", "investering",
+    "investment", "property", "properties", "kapital", "capital", "finans", "utleie", "drift", "entreprenor", "entreprenoer",
+    "bygg", "anlegg", "maskin", "transport", "logistikk", "elektro", "regnskap", "consulting", "konsult", "utvikling",
+    "prosjekt", "prosjekter", "shipping", "marine", "energi", "eiendomsforvaltning", "forvaltning", "barnehage", "stiftelse",
+)
+
+
+def names_other_company(account: str, contains: set[str], prefixes: set[str], own_words: set[str]) -> bool:
+    """True when the account is the company's name plus a word that names a separate legal entity
+    (eiendom, holding, invest, ...) and that word is not in the company's own legal, former, brand
+    or domain name."""
+    matched = max((t for t in contains if len(t) >= 4 and t in account), key=len, default=None)
+    if matched is None:
+        matched = max((p for p in prefixes if account.startswith(p)), key=len, default=None)
+    if matched is None:
+        return False
+    rest = account.replace(matched, " ", 1)
+    for word in SISTER_ENTITY_WORDS:
+        if word in rest and word not in own_words and not any(word in w for w in own_words if len(w) > len(word)):
+            return True
+    return False
+
+
+def _related_link(anchor: Any, own_names: list[str]) -> bool:
+    """A link labelled as a sister, parent, partner or customer company's ("Vårt søsterselskap")."""
+    texts = [anchor.get_text(" ", strip=True), str(anchor.get("title") or ""), str(anchor.get("aria-label") or "")]
+    node = anchor
+    for _ in range(3):
+        node = node.parent
+        if node is None or node.name in ("body", "html", "footer", "header", "nav", "main"):
+            break
+        if len({a.get("href") for a in node.find_all("a", href=True)}) > 3:
+            break
+        text = node.get_text(" ", strip=True)
+        if len(text) > 200:
+            break
+        texts.append(text)
+    joined = " " + _fold_a(" ".join(texts)) + " "
+    for name in own_names:
+        if len(name) >= 3:
+            joined = joined.replace(name, " ")
+    return bool(RELATION_LABEL.search(joined))
+
+
+_CHROME_IDENT = re.compile(r"footer|header|social|sosial|\bsome\b|follow|folg|\bnav|menu|topbar|toolbar", re.I)
+
+
+def _in_site_chrome(node: Any) -> bool:
+    """Inside the site's header, footer, menu or social-icon block (not in body content)."""
+    for parent in node.parents:
+        name = getattr(parent, "name", None)
+        if name in ("footer", "header", "nav"):
+            return True
+        if name in (None, "[document]", "html", "body"):
+            return False
+        ident = " ".join(parent.get("class") or []) + " " + str(parent.get("id") or "")
+        if _CHROME_IDENT.search(ident):
+            return True
+    return False
+
+
 @dataclass
 class Found:
     platform: str
@@ -577,10 +662,27 @@ class Found:
     via: str
 
 
-def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: set[str], prefixes: set[str], rec: CompanyRecord | None = None, own_text: str = "") -> list[Found]:
-    """Company profiles a page of the company's own site links, in page order."""
+def profiles_on_page(
+    snap: Snapshot,
+    soup: BeautifulSoup,
+    html: str,
+    contains: set[str],
+    prefixes: set[str],
+    rec: CompanyRecord | None = None,
+    own_text: str = "",
+    own_names: list[str] | None = None,
+    own_words: set[str] | None = None,
+) -> list[Found]:
+    """Company profiles a page of the company's own site links, in page order.
+
+    A named account must resemble the company and carry no other company's name; an account
+    known only by an id must sit in the site's header/footer social block or in the sameAs of
+    the site's own Organization; a link labelled as a sister, parent, partner or customer
+    company's is never the company's."""
     base = snap.final_url
     found: list[Found] = []
+    own_names = own_names or []
+    own_words = own_words or set()
 
     def take(raw: str, via: str, *, allow_id: bool = True, span: str | None = None) -> None:
         if not raw or raw.startswith(("#", "mailto:", "tel:", "javascript:")):
@@ -595,15 +697,22 @@ def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: s
         platform, canonical, handle = profile
         if not owned_profile(handle, contains, prefixes, allow_id=allow_id, own_text=own_text):
             return
+        account = account_name(handle)
+        if account and not id_like(handle) and names_other_company(account, contains, prefixes, own_words):
+            return
         found.append(Found(platform, canonical, handle, snap, span or raw.strip()[:300], via))
 
     for anchor in soup.find_all("a", href=True):
-        if _credit_link(anchor):
+        if _credit_link(anchor) or _related_link(anchor, own_names):
             continue
-        take(anchor["href"], "anchor")
+        take(anchor["href"], "anchor", allow_id=_in_site_chrome(anchor))
     for node in soup.find_all(attrs={"data-href": True}):
-        take(str(node.get("data-href") or ""), "data_href")
+        if _related_link(node, own_names):
+            continue
+        take(str(node.get("data-href") or ""), "data_href", allow_id=_in_site_chrome(node))
     for frame in soup.find_all("iframe", src=True):
+        if _related_link(frame, own_names):
+            continue
         src = str(frame.get("src") or "")
         try:
             params = parse_qs(urlsplit(urljoin(base, src)).query)
@@ -611,7 +720,7 @@ def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: s
             continue
         for key in ("href", "u", "url"):
             for value in params.get(key, [])[:1]:
-                take(value, "embed_iframe", span=src[:300])
+                take(value, "embed_iframe", span=src[:300], allow_id=_in_site_chrome(frame))
     for item in json_ld_items(soup):
         if _types(item) & {"Person", "Product", "Event", "Offer", "JobPosting", "Review"}:
             continue
@@ -620,7 +729,7 @@ def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: s
         same_as = item.get("sameAs")
         for url in same_as if isinstance(same_as, list) else [same_as] if same_as else []:
             if isinstance(url, str):
-                take(url, "json_ld_sameAs")
+                take(url, "json_ld_sameAs", allow_id=bool(_types(item) & ORG_TYPES))
     for script in soup.find_all("script"):
         if "ld+json" in (script.get("type") or "").lower():
             continue
@@ -1344,7 +1453,11 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
 
     # -- brand, description, contacts (homepage and the pages the identity check read) ------------
     brand_names = _brand_and_contacts(rec, home, own_pages(), exact, company_label)
-    names = _names_of(rec) + brand_names
+    entity = rec.context.get("entity") or {}
+    former = [h.get("navn") for h in entity.get("historiskeNavn") or [] if isinstance(h, dict) and h.get("navn")]
+    names = _names_of(rec) + brand_names + former
+    own_names = sorted({" ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)).split()) for n in names} | {" ".join(_fold_a(t) for t in name_tokens(n)) for n in names}, key=len, reverse=True)
+    own_words = {re.sub(r"[^a-z0-9]", "", f(w)) for n in names for w in name_tokens(n) for f in (_fold_a, _fold_b)} | set(re.split(r"[^a-z0-9]+", _site(home.final_url).split(".")[0]))
     rec.context["site_brand_names"] = brand_names
     contains, prefixes = identity_tokens(names, home.final_url)
     own_text = " ".join(_fold_a(n) for n in names) + " " + " ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)) for n in names)
@@ -1506,7 +1619,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     profiles: dict[str, Found] = {}
     per_platform: dict[str, int] = {}
     for snap, soup, _ in own_pages():
-        for found in profiles_on_page(snap, soup, snap.text(), contains, prefixes, rec, own_text):
+        for found in profiles_on_page(snap, soup, snap.text(), contains, prefixes, rec, own_text, own_names, own_words):
             key = found.url.lower()
             if key in profiles or per_platform.get(found.platform, 0) >= MAX_PROFILES_PER_PLATFORM:
                 continue

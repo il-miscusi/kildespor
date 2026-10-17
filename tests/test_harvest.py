@@ -107,6 +107,47 @@ class SocialTests(unittest.TestCase):
         self.assertNotIn("https://facebook.com/somepartner", found)
         self.assertFalse(any("linkedin.com/in" in u for u in found))
 
+    def _profiles(self, html: str, names: list[str] = ["FJORDBYGG AS"]) -> dict[str, str]:
+        rec = record(names[0])
+        page = snap("https://www.fjordbygg.no/", html)
+        contains, prefixes = harvest.identity_tokens(names, page.final_url)
+        own_names = [" ".join(harvest._fold_a(t) for t in harvest.name_tokens(n)) for n in names]
+        own_words = {"fjordbygg"}
+        return {f.url: f.via for f in harvest.profiles_on_page(page, soup_of(html), html, contains, prefixes, rec, "fjordbygg as", own_names, own_words)}
+
+    def test_sister_company_link_is_not_ours(self) -> None:
+        """Codex review rc1 finding 4: a link labelled as a sister company, or an account that is our
+        name plus another entity's word, is not the company's profile."""
+        html = """<html><body><main><p>Vårt søsterselskap: <a href="https://www.linkedin.com/company/fjordbygg-utleie/">Fjordbygg Utleie</a></p>
+        <div><span>Morselskap</span> <a href="https://www.facebook.com/fjordbyggkonsernet">Fjordbygg-konsernet</a></div></main>
+        <footer><a href="https://www.linkedin.com/company/fjordbygg/">LinkedIn</a>
+        <a href="https://www.facebook.com/fjordbygg.eiendom">Facebook</a></footer></body></html>"""
+        found = self._profiles(html)
+        self.assertEqual(list(found), ["https://linkedin.com/company/fjordbygg"])
+
+    def test_id_only_accounts_need_the_site_social_block(self) -> None:
+        """Codex review rc1 finding 4: a numeric Facebook/YouTube account in body content is not
+        published; in the footer social block or the site's own Organization sameAs it is."""
+        html = """<html><head><script type="application/ld+json">{"@type":"Organization","name":"Fjordbygg AS","sameAs":["https://www.linkedin.com/company/7654321/"]}</script>
+        <script type="application/ld+json">{"@type":"WebPage","name":"Fjordbygg AS","sameAs":["https://www.facebook.com/profile.php?id=100099999999999"]}</script></head>
+        <body><article><p>Les om prosjektet <a href="https://www.facebook.com/profile.php?id=100012345678901">her</a> og
+        <a href="https://www.youtube.com/channel/UCbodybodybodybodybody12">se videoen</a>.</p></article>
+        <div class="social-icons"><a href="https://www.facebook.com/profile.php?id=100055555555555">Facebook</a></div></body></html>"""
+        found = self._profiles(html)
+        self.assertIn("https://facebook.com/profile.php?id=100055555555555", found)
+        self.assertIn("https://linkedin.com/company/7654321", found)
+        self.assertNotIn("https://facebook.com/profile.php?id=100012345678901", found)
+        self.assertNotIn("https://youtube.com/channel/UCbodybodybodybodybody12", found)
+        self.assertNotIn("https://facebook.com/profile.php?id=100099999999999", found)
+
+    def test_own_regional_and_group_accounts_stay(self) -> None:
+        contains, prefixes = harvest.identity_tokens(["CONSTO AS"], "https://consto.no/")
+        self.assertFalse(harvest.names_other_company("constokonsern", contains, prefixes, {"consto"}))
+        contains, prefixes = harvest.identity_tokens(["PACHAMAMA AS"], "https://pachamama.no/")
+        self.assertFalse(harvest.names_other_company("pachamamaoslo", contains, prefixes, {"pachamama"}))
+        contains, prefixes = harvest.identity_tokens(["FJORDBYGG EIENDOM AS"], "https://fjordbygg.no/")
+        self.assertFalse(harvest.names_other_company("fjordbyggeiendom", contains, prefixes, {"fjordbygg", "eiendom"}))
+
     def test_sister_company_abroad_is_not_ours(self) -> None:
         contains, prefixes = harvest.identity_tokens(["HEAD ENERGY NORGRID AS", "Head Energy"], "https://www.headenergy.no/")
         own = "head energy norgrid as head energy"
