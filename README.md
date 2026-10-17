@@ -1,11 +1,35 @@
-# Kildespor — Signalpost company-research agent
+# Kildespor: Norwegian company research agent (Builderr Signalpost)
 
-Kildespor ("source trail") takes a batch of Norwegian organisation numbers and
-returns one evidence-backed company profile per input. Every published fact
-names its source URL, retrieval time, content hash and the span it was read
-from. Anything the agent could not establish is reported as `not_available`,
-`blocked`, `ambiguous`, `not_applicable` or `failed`, with the reason. It is
-never filled in, and absence is never written as zero.
+Give it Norwegian organisation numbers; it returns one profile per company
+(register identity, filed accounts, people, verified website, social profiles,
+hiring signals and dated news), a plain-English brief, and what changed since
+the last run, with a source URL, retrieval time and quoted span for every fact.
+
+```bash
+pip install -r requirements.txt
+python -m kildespor --input companies.jsonl --output out/envelopes.jsonl
+```
+
+**Viewer:** every run writes `out/site/index.html`. Open it in a browser
+straight from disk (no server, no network, nothing to install), or serve it
+with `python -m http.server -d out/site 8000`. The committed 100-company smoke
+run is in [`smoke-test/site/index.html`](smoke-test/site/index.html).
+
+| task | route in the viewer |
+|---|---|
+| **Find** companies: search by name, org. no., town or industry; filter by website, social profile, hiring, news, accounts, revenue and employee ranges; or ask "hiring companies in Oslo", "revenue over 10 MNOK", "who is the CEO of …" | `#/research` |
+| **Read** one company: a 20-second brief, financials by year, people, web and hiring, changes, what is unknown, all facts | `#/companies/<organisation_number>` |
+| **Compare** up to four companies side by side, on the same financial year | `#/compare?orgs=<org>,<org>,<org>` |
+| **Verify** any fact: each numbered button opens the source URL, retrieval time, quoted span, extraction method and SHA-256 | on every page |
+| **Refresh**: what changed in this run, both sides with their evidence; facts that could not be re-checked are marked | `#/refresh` |
+
+The same questions work from the command line:
+`python -m kildespor.ask --envelopes out/envelopes.jsonl "hiring companies in Oslo"`.
+
+Every published fact names its source URL, retrieval time, content hash and
+the span it was read from. Anything the agent could not establish is reported
+as `not_available`, `blocked`, `ambiguous`, `not_applicable` or `failed`, with
+the reason. It is never filled in, and absence is never written as zero.
 
 Entry for the Builderr Signalpost challenge. Author: miscusi
 (il.miscusi@gmail.com).
@@ -38,7 +62,8 @@ model. Expected third-party cost per official run: **$0**.
 |---|---|
 | `out/envelopes.jsonl` | one terminal envelope per input, in input order |
 | `out/run-report.json` | validation checks, coverage by field family, request count, p50/p95 latency, runtime, cost |
-| `out/site/index.html` | self-contained viewer: search, filter, compare, verify each fact (desktop and mobile) |
+| `out/site/index.html` | the viewer (routes above); it loads `out/site/data/index.json` and one `data/companies/<org>.json` per company on demand (`.js` twins make it work from `file://`) |
+| `out/profiles.json` | the same run in the JBOX web app's format (see "Web app") |
 | `state/latest.jsonl`, `state/runs/<run_id>.jsonl` | envelope snapshots used by the next run to refresh profiles |
 | `state/snapshots/<sha[:2]>/<sha>.gz` | the raw source bodies behind every claim, content-addressed; each envelope's `source_snapshots` and each evidence record's `snapshot_path` point here |
 
@@ -83,10 +108,18 @@ explicitly with `--previous old/envelopes.jsonl`.
 | Claim-level evidence and availability | every claim → evidence (URL, retrieval time, sha256, span, method) | |
 | Refresh metadata and material changes | previous snapshot diff | |
 
-Each envelope also carries a `synthesis` brief: what the company does, who
-runs it, where it operates, the latest filed numbers with year-on-year change
-and equity ratio, hiring, footprint and activity, what changed, and what
-remains unknown. Every sentence lists the claim and evidence ids it rests on.
+Each envelope also carries a `synthesis` brief written for a buyer, investor
+or applicant: a lead sentence in plain English on what the company does (its
+own website's description when verified, else its legal form, town, founding
+year and Statistics Norway's English industry label), who runs and owns it,
+size and finances (latest filed revenue, operating and net result, equity,
+with the change from the year before in NOK and %, and a computed equity ratio
+labelled as such), what changed (dated events newest first, plus run-to-run
+changes and carried-forward facts), hiring and web presence (hiring is claimed
+only from job ads or a careers page), and what remains unknown, each gap with
+its state and reason. Every sentence carries the claim ids, evidence ids and
+source URLs it rests on; the template is deterministic and uses no model.
+`docs/DATA_SCHEMA.md` describes the fields.
 
 See [`docs/AGENT.md`](docs/AGENT.md) for the research and abstention policy,
 [`docs/SOURCES.md`](docs/SOURCES.md) for source rights, secrets and the
@@ -109,18 +142,24 @@ repository. Its history is kept: the commits "Initialize JBOX sandbox base"
 
 It has no login, database or secrets, and makes no external calls. It reads
 `public/data/profiles.json` at runtime. Every agent run writes that dataset
-next to its output (`out/profiles.json`), or wherever `--app-data` points:
+next to its output (`out/profiles.json`), or wherever `--app-data` points, so
+to show the run you just made:
 
 ```bash
 python -m kildespor --input companies.jsonl --output runs/latest/envelopes.jsonl --app-data public/data/profiles.json
 pnpm install && pnpm export        # static site in out/; see STATIC-DATA.md
 ```
 
+or convert an existing run:
+`python -m kildespor.export_profiles --input runs/latest/envelopes.jsonl --output public/data/profiles.json`.
 `pnpm export` writes to `out/`, so give the agent another output folder (as
 above) when you use both. The committed `public/data/profiles.json` is the
-100-company smoke run below. `kildespor/export_profiles.py` defines the
-mapping. The equity ratio it adds is labelled as computed from equity and total
-assets, and it cites both figures.
+100-company smoke run below (run id `smoke-100-a`, shown in the app header),
+not demo data. `kildespor/export_profiles.py` defines the mapping: each of the
+app's five areas is decided by its own facts (the Hiring area needs a job ad
+or a careers page), carried-forward facts keep their marker, and both sides of
+a change keep their evidence. The equity ratio it adds is labelled as computed
+from equity and total assets, and it cites both figures.
 
 The agent itself needs none of this. The evaluator's install step and run
 command are only `pip install -r requirements.txt` and `python -m kildespor ...`.
@@ -131,7 +170,10 @@ command are only `pip install -r requirements.txt` and `python -m kildespor ...`
 machine (fresh virtualenv, only `pip install -r requirements.txt`, then the run
 command), plus a refresh re-run of the same batch:
 `smoke-test/run-report.json`, `smoke-test/envelopes.jsonl`,
-`smoke-test/refresh-report.json` and the viewer `smoke-test/site/index.html`.
+`smoke-test/refresh-report.json` and the viewer `smoke-test/site/index.html`
+(rebuilt with the current viewer by `python -m kildespor.site --input
+smoke-test/envelopes.jsonl --output smoke-test/site`). Screenshots of the
+viewer's tasks at 375 px and 1280 px are in [`smoke-test/ux/`](smoke-test/ux/).
 [`smoke-test/SUMMARY.md`](smoke-test/SUMMARY.md) summarises it.
 
 ## Tests
@@ -142,8 +184,10 @@ python -m unittest discover -s tests
 
 Offline tests cover the organisation-number checksum and page matching, domain
 guessing, social-link parsing, the URL safety policy, the one-envelope-per-input
-contract, evidence resolution, refresh idempotency, change detection and
-stale carry-forward.
+contract, evidence resolution, refresh idempotency, change detection,
+stale carry-forward, the brief (every sentence cited with real ids, hiring
+only from job evidence, states kept apart), the viewer's data files and
+script, the app export and the question answering.
 
 ## Licences
 

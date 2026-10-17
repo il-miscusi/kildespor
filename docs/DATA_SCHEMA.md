@@ -34,13 +34,56 @@ order.
      "retrieved_at": "...", "content_sha256": "...", "claim_span": "SELSKAP 2025 driftsinntekter/sumDriftsinntekter = 914000000.0",
      "extraction_method": "brreg_accounts_api", "reporting_period": "2025-01-01/2025-12-31", "http_status": 200, "access_policy": "NLOD 2.0 open data, data.brreg.no", "snapshot_path": "state/snapshots/ab/abcd....gz"}
   ],
-  "synthesis": {"headline": "...", "sections": [{"heading": "What the company does", "text": "...", "sentences": [{"text": "...", "claim_ids": [], "evidence_ids": []}], "claim_ids": [], "evidence_ids": []}], "signals": [], "unknowns": [], "method": "..."},
+  "synthesis": {"headline": "...", "summary": "...", "summary_sentences": [{"text": "...", "claim_ids": [], "evidence_ids": [], "sources": [{"url": "...", "retrieved_at": "...", "evidence_id": "ev-..."}], "basis": "fact"}],
+                "sections": [{"key": "what", "heading": "What the company does", "question": "What does the company do?", "text": "...", "sentences": [...], "claim_ids": [], "evidence_ids": []}],
+                "timeline": [{"date": "2026-09-20", "text": "...", "kind": "news", "claim_ids": [], "evidence_ids": []}],
+                "signals": [{"key": "hiring", "text": "...", "tone": "positive", "claim_ids": [], "evidence_ids": []}],
+                "unknowns": [{"family": "official_website", "label": "official website", "state": "not_available", "state_words": "checked, none found", "reason": "...", "checked_sources": []}],
+                "coverage": {"score": 3, "total": 5, "areas": [{"key": "company", "label": "Company record", "available": true}]}, "method": "..."},
   "changes": [{"change_type": "new_job", "field": "job_posting", "previous": null, "current": {...}, "previous_evidence_ids": [], "current_evidence_ids": ["ev-..."], "previous_evidence": [], "materiality": "medium", "summary": "...", "detected_at": "..."}],
   "refresh": {"previous_run_id": null, "baseline": true, "history": ["..."]},
   "errors": [{"module": "website", "error": "...", "url": "...", "at": "..."}],
   "operations": {"requests": 14, "runtime_ms": 8120, "third_party_cost_usd": 0.0, "agent_version": "1.0.0"}
 }
 ```
+
+## The brief (`synthesis`)
+
+Six sections, always in this order and each answering one question:
+`what` (what does the company do?), `who` (who runs and owns it?), `money`
+(how big is it and how is it doing?), `changed` (what changed recently?),
+`signals` (is it hiring, and where is it online?) and `unknown` (what could
+not be established?). `summary` is a five-to-six sentence version of the
+same for a 20-second read.
+
+Every sentence carries `claim_ids`, `evidence_ids` and up to four `sources`
+(URL and retrieval time), and a `basis`:
+
+| basis | meaning |
+|---|---|
+| `fact` | stated by the cited sources |
+| `computed` | arithmetic on cited filed figures (year-on-year change, equity ratio) |
+| `carried_forward` | rests on a claim kept from the previous run because its source could not be re-checked |
+| `run_to_run` | a comparison with the previous run (or the statement that this run is the baseline) |
+| `absence` | what the checked sources did not contain; `checked_sources` lists them |
+| `unknown` | the list of gaps, each with its state and reason |
+
+`coverage` counts the five data areas of Builderr's sample viewer: company
+record, financials, people and locations, company website, and public
+footprint (social profiles, job ads, careers page or dated news; register
+update events do not count). `timeline` lists dated events from the sources,
+newest first.
+
+## Published claim shape
+
+On disk (`kildespor/contract.py`), each website, social profile, hiring
+signal and news claim carries a scalar `value` and keeps the full record in
+`detail`: `official_website` (value: the site URL), `social_profile` (value:
+the canonical profile URL), `hiring_signal` (value: the careers page or job
+ad URL; `signal_type` is `careers_page` or `job_posting`) and `dated_news`
+(value: `"<title> (<published>)"`). `internal_field` names the agent's
+internal field. Readers that need the record use `detail` when present, else
+`value`.
 
 ## Field families and fields
 
