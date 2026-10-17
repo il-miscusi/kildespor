@@ -106,7 +106,7 @@ class Run:
             for name in (r.get("n"), r.get("b")):
                 if not name:
                     continue
-                core = re.sub(r"\b(as|asa|ans|da|sa|enk|nuf)\b", "", name.lower())
+                core = re.sub(r"\b(as|asa|ans|da|sa|enk|nuf|iks|ks|ba|sti|fli|brl|esek|bbl|kf|sf)\b", "", name.lower())
                 core = re.sub(r"[^a-z0-9æøåéü&]+", " ", core).strip()
                 if len(core) >= 3 and f" {core} " in ql and len(core) > score:
                     best, score = r, len(core)
