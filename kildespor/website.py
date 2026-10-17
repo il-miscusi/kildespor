@@ -966,7 +966,15 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
         # So does a site whose identity text carries only the first part of our name ("Head Energy" for
         # HEAD ENERGY NORGRID AS, "Sjø-Sport" for SJØ-SPORT MANDAL AS): that is the umbrella brand.
         need_name = sig.holding or sig.in_group or origin == "former_name_domain" or (origin in EMAIL_ORIGINS and not screen["email"]) or _umbrella_brand(sig, parts)
-        if not need_name or name_hit or stem_full:
+        # One coincidence is not enough (a reassigned number, a shared family mailbox): a second
+        # register signal, or a word of our name in the site's identity text or domain, must agree.
+        same = ("phone",) if contact_hit is contacts.get("phone") else ("email", "email_domain")
+        others = [k for k in ("email", "phone", "street", "postcode_town", "person", "email_domain") if k in contacts and k not in same]
+        legal_core = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
+        id_words = set(" ".join(_norm_part(part) for _, part in parts).replace("|", " ").split())
+        stem = site_domain.split(".")[0].replace("-", "")
+        affinity = any(len(t) >= 4 and t not in GENERIC_NAME_WORDS and (t in id_words or t in stem) for t in legal_core)
+        if (not need_name or name_hit or stem_full) and (others or affinity or name_hit or stem_full):
             return "register_contact_on_site", contact_hit[0], contact_hit[1]
     # Rule 2: the whole legal name in the homepage's identity text, plus one register signal on the site.
     if name_hit:

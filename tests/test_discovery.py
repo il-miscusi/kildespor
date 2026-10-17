@@ -103,9 +103,14 @@ def html(title: str, body: str, extra_head: str = "") -> str:
 class RegisterContactRule(unittest.TestCase):
     def test_registered_phone_on_brand_site_is_accepted(self) -> None:
         rec = make_rec(name="HANDVERKER MOXNESS AS", phone="41 22 33 44")
-        pages = {"https://snekkersentralen.no/": html("Snekkersentralen", "Vi bygger terrasser. Ring 412 23 344 i dag.")}
+        pages = {"https://snekkersentralen.no/": html("Snekkersentralen", "Vi bygger terrasser. Ring 412 23 344 i dag. Strandgaten 1, 5013 Bergen")}
         out = run(rec, pages, guesses=["snekkersentralen.no"])
         self.assertEqual(out, [("register_contact_on_site", "https://snekkersentralen.no/")])
+
+    def test_a_lone_phone_match_is_not_enough(self) -> None:
+        rec = make_rec(name="HANDVERKER MOXNESS AS", phone="41 22 33 44")
+        pages = {"https://snekkersentralen.no/": html("Snekkersentralen", "Vi bygger terrasser. Ring 412 23 344 i dag.")}
+        self.assertEqual(run(rec, pages, guesses=["snekkersentralen.no"]), [])
 
     def test_accountants_page_with_shared_phone_is_refused(self) -> None:
         rec = make_rec(name="OLSEN HOLDING AS", phone="22 00 11 22", email="post@regnskapshuset.no")
