@@ -756,9 +756,11 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     found, missing = [x for x in found if x], [x for x in missing if x]
     text = ("Online: " + _list(found, 5) + ("; not found: " + _list(missing, 5) if missing else "") + ".") if found else "No verified website, social profile, job ad or dated news item was found (see what remains unknown)."
     summary_sentences.append(b.sentence(text, ([site_c] if site_c else []) + socials[:3] + jobs[:3] + careers[:1] + news[:2], checked=[] if found else [u for x in unknowns for u in x["checked_sources"]]))
+    headline = " · ".join(x for x in headline_bits if x)
     return {
-        "headline": " · ".join(x for x in headline_bits if x),
+        "headline": headline,
         "summary": " ".join(x["text"] for x in summary_sentences),
+        "markdown": _markdown(headline, summary_sentences, b.sections),
         "summary_sentences": summary_sentences,
         "sections": b.sections,
         "timeline": timeline,
@@ -767,6 +769,31 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         "coverage": coverage,
         "method": "deterministic template over this run's published claims; every sentence cites its claims, evidence and source URLs; computed figures are labelled; no language model",
     }
+
+
+def _markdown(headline: str, summary: list[dict[str, Any]], sections: list[dict[str, Any]]) -> str:
+    """The brief as plain text with numbered source references, readable without the viewer."""
+    refs: dict[str, tuple[int, str]] = {}
+
+    def mark(sentence: dict[str, Any]) -> str:
+        nums = []
+        for src in sentence.get("sources", []):
+            refs.setdefault(src["url"], (len(refs) + 1, f"retrieved {src.get('retrieved_at') or 'time not recorded'}"))
+            nums.append(refs[src["url"]][0])
+        for url in sentence.get("checked_sources", []):
+            refs.setdefault(url, (len(refs) + 1, "checked"))
+            nums.append(refs[url][0])
+        tag = "".join(f"[{n}]" for n in sorted(set(nums)))
+        carried = " (carried forward from the previous run; not re-checked)" if sentence.get("basis") == "carried_forward" and "carried forward" not in sentence["text"] else ""
+        return sentence["text"] + carried + (f" {tag}" if tag else "")
+
+    lines = [f"**{headline}**", "", "In short: " + " ".join(mark(s) for s in summary), ""]
+    for sec in sections:
+        lines += [f"**{sec.get('question') or sec.get('heading')}** " + " ".join(mark(s) for s in sec["sentences"]), ""]
+    if refs:
+        lines.append("Sources:")
+        lines += [f"[{n}] {url} ({note})" for url, (n, note) in sorted(refs.items(), key=lambda kv: kv[1][0])]
+    return "\n".join(lines)
 
 
 FIELD_WORDS = {
