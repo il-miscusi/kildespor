@@ -1,6 +1,6 @@
 # 100-company smoke test
 
-Code commit: `fa5939efe813718b9a90b38f176d79dcde418838` (this folder was added in the following commit; it changes no code).
+Code commit: `47dfad2d7e12527db0049385e40d74b49f579c02` (this folder was added in the following commit; it changes no code).
 
 Run on a clean Kaggle CPU machine: fresh checkout of that commit, `pip install -r requirements.txt`,
 then the documented run command on 100 organisation numbers drawn at random (seed
@@ -12,7 +12,7 @@ The same batch was then run a second time in the same folder to check refresh.
 - Inputs: 100; envelopes emitted: 100; validation: **passed**
 - Checks: exact_expected_count = True, same_order_and_membership = True, unique_organisation_numbers = True, all_states_terminal = True, every_available_claim_has_evidence = True
 - Envelope states: {'available': 100}
-- Wall clock: 46.7 s; requests: 830 (8.3 per company); request latency p50 479 ms, p95 1726 ms
+- Wall clock: 27.5 s; requests: 826 (8.3 per company); request latency p50 194 ms, p95 1281 ms
 - Third-party cost: $0.00; language-model calls: 0
 - Evidence-backed claims: 7000; evidence records: 7000
 
