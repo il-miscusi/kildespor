@@ -51,7 +51,9 @@ URLs taken from web pages are only fetched when they stay on the verified
 company's registered domain (contact, careers and feed links). Social links
 are recorded, never fetched. Any URL published in a claim must be `http(s)` on
 a public host (and on the company's domain for company-owned items); the viewer
-renders only `http(s)` links.
+renders only `http(s)` links, opens them with `rel="noopener noreferrer"`, and
+makes no network request except for its own data files under `site/data/`.
+It never fetches an evidence URL itself.
 
 ## Caches
 
