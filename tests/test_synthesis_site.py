@@ -280,5 +280,41 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr[:500])
 
 
+class ExportTests(unittest.TestCase):
+    def test_app_dataset_from_either_shape(self) -> None:
+        from kildespor.export_profiles import build
+
+        for shape in ("internal", "published"):
+            envs = [envelope_of(rich_record()), envelope_of(bare_holding())]
+            if shape == "published":
+                envs = [published(e) for e in envs]
+            data = build(envs)
+            rich, bare = data["companies"]
+            self.assertEqual(rich["website"], "https://fjorddata.no/", shape)
+            self.assertEqual([j["title"] for j in rich["jobs"]], ["Senior utvikler"], shape)
+            self.assertEqual(rich["careersPages"][0]["url"], "https://fjorddata.no/karriere", shape)
+            self.assertEqual(rich["profiles"][0]["platform"], "linkedin", shape)
+            self.assertEqual(rich["coverage"]["hiring"]["state"], "available")
+            self.assertTrue(any(a["kind"].startswith("dated news") for a in rich["activity"]))
+            # no hiring badge without a job ad or careers page, whatever else the activity family holds
+            self.assertNotEqual(bare["coverage"]["hiring"]["state"], "available")
+            self.assertEqual(rich["brief"][0]["heading"], "In 20 seconds")
+            ids = {e["id"] for e in rich["evidence"]}
+            for item in rich["brief"] + rich["facts"] + rich["jobs"]:
+                self.assertTrue(set(item["sources"]) <= ids)
+
+    def test_stale_and_change_sides_survive(self) -> None:
+        from kildespor.export_profiles import company
+
+        env = envelope_of(rich_record())
+        site = next(c for c in env["claims"] if c["field"] == "official_website")
+        site["stale"] = True
+        env["claims"].append(dict(next(c for c in env["claims"] if c["field"] == "legal_name"), stale=True, id="cl-stale"))
+        env["changes"] = [{"change_type": "changed_legal_name", "previous": "OLD AS", "current": "FJORD DATA AS", "previous_evidence_ids": ["ev-old"], "current_evidence_ids": ["ev-new"], "materiality": "high"}]
+        out = company(env)
+        self.assertTrue(any(f["stale"] and "not re-checked" in f["label"] for f in out["facts"]))
+        self.assertEqual(out["changes"][0]["sources"], ["ev-new", "ev-old"])
+
+
 if __name__ == "__main__":
     unittest.main()
