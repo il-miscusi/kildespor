@@ -820,12 +820,23 @@ class SiteVisit:
         self.rec = rec
         self.deadline = deadline
         self.pages: list[tuple[Snapshot, BeautifulSoup, str]] = []
+        # Set when the verified site is a section of a larger domain (https://group.no/berg-bygg/):
+        # pages on that host outside the section belong to someone else and are not read.
+        self.section: str | None = None
 
     def time_left(self) -> float:
         return self.deadline - time.monotonic()
 
+    def in_section(self, url: str) -> bool:
+        if not self.section:
+            return True
+        parts, sec = urlsplit(url), urlsplit(self.section)
+        if (parts.hostname or "").removeprefix("www.") != (sec.hostname or "").removeprefix("www."):
+            return True  # another host is the harvester's own decision (ATS, social, CDN)
+        return (parts.path or "/").startswith(sec.path or "/")
+
     def fetch_page(self, url: str) -> tuple[Snapshot, BeautifulSoup, str] | None:
-        if self.time_left() < 3:
+        if self.time_left() < 3 or not self.in_section(url):
             return None
         snap = self.fetcher.get(url, retries=0, timeout=(5.0, min(12.0, max(3.0, self.time_left()))))
         if not snap.ok or "html" not in snap.content_type.lower() and not snap.body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
@@ -1395,6 +1406,45 @@ def _publish_nav_profiles(rec: CompanyRecord, nav: dict[str, Any]) -> None:
         rec.set_state("company_profiles", "available", "profile declared by the employer in an org-number-verified NAV job ad")
 
 
+ROOT_EQUIVALENT_SEGMENTS = {
+    "index.html", "index.htm", "index.php", "default.aspx", "default.asp", "hjem", "home", "forside", "start", "startside",
+    "no", "nb", "nn", "en", "nb-no", "no-nb", "en-us", "en-gb", "sv", "da", "de", "norsk", "norwegian", "web", "site",
+}
+
+
+def _section_path(path: str) -> str | None:
+    """The path of a site that lives below a domain's root, or None for the root itself (a language
+    or landing segment such as /no/ or /hjem still counts as the root)."""
+    segments = [seg for seg in (path or "/").split("/") if seg]
+    if not segments or (len(segments) == 1 and segments[0].lower() in ROOT_EQUIVALENT_SEGMENTS):
+        return None
+    return "/" + "/".join(segments) + ("/" if (path or "").endswith("/") else "")
+
+
+def _root_names_another_entity(rec: CompanyRecord, visit: SiteVisit, root: str) -> str | None:
+    """Read the domain's root page once: the other legal entity or organisation number it names, if any."""
+    page = next((p for p in visit.pages if p[0].final_url.rstrip("/") == root.rstrip("/")), None)
+    if page is None:
+        section, visit.section = visit.section, None
+        try:
+            page = visit.fetch_page(root)
+        except Exception:
+            page = None
+        finally:
+            visit.section = section
+    if page is None:
+        return None
+    snap, soup, text = page
+    own = {rec.organisation_number} | {s.get("organisation_number") for s in rec.context.get("subunits") or []}
+    owners = [n for n, (kind, _) in number_contexts(text).items() if kind == "owner" and n not in own]
+    if owners:
+        return owners[0]
+    sig = RegisterSignals(rec)
+    ours = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
+    mentions = [m for m in entity_mentions(identity_parts(soup, text, registered_domain(urlsplit(root).hostname or ""))) if m not in ours]
+    return mentions[0] if mentions else None
+
+
 def _publish_site(
     rec: CompanyRecord,
     visit: SiteVisit,
@@ -1410,7 +1460,14 @@ def _publish_site(
     netloc = (parts.hostname or "").lower()
     if parts.port and not ((parts.scheme == "https" and parts.port == 443) or (parts.scheme == "http" and parts.port == 80)):
         netloc = f"{netloc}:{parts.port}"
-    site_url = urlunsplit((parts.scheme, netloc, "/", "", ""))
+    section = _section_path(parts.path)
+    # A site verified on a section of a larger domain is published as that section, never as the
+    # domain's root, which was not verified and is often a parent's or another company's homepage.
+    site_url = urlunsplit((parts.scheme, netloc, section or "/", parts.query if section else "", ""))
+    root_owner = None
+    if section:
+        visit.section = site_url
+        root_owner = _root_names_another_entity(rec, visit, urlunsplit((parts.scheme, netloc, "/", "", "")))
     evidence = []
     if span:
         evidence.append(rec.evidence_from_snapshot(identity_snap, source_class="company_owned_website", span=span, method=identity, url=identity_snap.final_url))
@@ -1425,6 +1482,8 @@ def _publish_site(
         relationship = "group_site"
     elif identity.endswith("_other_entity_on_site"):
         relationship = "registry_listed_site_names_another_entity" if identity.startswith("registry") else "listed_site_names_another_entity"
+    elif root_owner:
+        relationship = "group_site"
     confidence = 0.99 if exact else 0.96 if "organisation_number" in identity else 0.93 if "register_contact_on_site" in identity else 0.92 if "name_and_register_signal" in identity else 0.9 if identity.endswith("name_on_site") else 0.88 if identity.endswith(("name_in_metadata", "domain_spells_name")) else 0.8
     rec.add_claim(
         family="official_website",
@@ -1437,7 +1496,7 @@ def _publish_site(
         relationship=relationship,
         label="Official website",
     )
-    rec.context["website"] = {"url": site_url, "identity": identity, "exact": exact, "relationship": relationship}
+    rec.context["website"] = {"url": site_url, "identity": identity, "exact": exact, "relationship": relationship, "section": bool(section), "root_owner": root_owner}
     rec.set_state("official_website", "available", f"website verified ({identity})")
     rec.checked_fields.add("official_website")
     if relationship in ("registry_listed_site_names_another_entity", "listed_site_names_another_entity"):

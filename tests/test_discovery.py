@@ -387,7 +387,8 @@ class SuccessorsAndUmbrellas(unittest.TestCase):
         visit = website.SiteVisit(None, rec, time.monotonic() + 30)
         with patch("kildespor.harvest._extract_site_facts", lambda *a, **k: None):
             website._publish_site(rec, visit, home, home, "registry_listed_name_on_site", "registry_listed", "Peab Bygg", set(), set())
-        self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://peab.no/")
+        # The port is dropped; the verified section (/bygg/) is kept rather than the unverified root.
+        self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://peab.no/bygg/")
 
 
 class LabelsAndBareNumbers(unittest.TestCase):
@@ -534,3 +535,45 @@ class EmployerNames(unittest.TestCase):
         rec = make_rec(name="FJORDBYGG AS")
         self.assertTrue(website._ld_employer_is_ours({"hiringOrganization": {"name": "Fjordbygg AS"}}, rec))
         self.assertTrue(website._ld_employer_is_ours({"hiringOrganization": {"name": "Fjordbygg Eiendom AS", "taxID": ORG}}, rec))
+
+
+class SectionSites(unittest.TestCase):
+    def publish(self, home_url: str, pages: dict[str, str]):
+        rec = make_rec(name="BERG BYGG AS", phone=None)
+        fixtures = {url: page(url, body) for url, body in pages.items()}
+        visit = website.SiteVisit(None, rec, time.monotonic() + 30)
+        fetched = []
+
+        def fetch(self_, url):
+            fetched.append(url)
+            if not self_.in_section(url):
+                return None
+            got = fixtures.get(url)
+            if got:
+                self_.pages.append(got)
+            return got
+
+        harvested = []
+        with patch.object(website.SiteVisit, "fetch_page", fetch), \
+             patch("kildespor.harvest._extract_site_facts", lambda r, v, home, exact, rel: harvested.append((v.section, rel))):
+            home = fixtures[home_url][0]
+            website._publish_site(rec, visit, home, home, "registry_listed_and_organisation_number_on_site", "registry_listed", f"Org.nr {ORG}", set(), set())
+        return rec, harvested, visit
+
+    def test_verified_section_is_published_with_its_path_not_the_root(self) -> None:
+        rec, harvested, visit = self.publish("https://berggruppen.no/berg-bygg/", {
+            "https://berggruppen.no/berg-bygg/": html("Berg Bygg", f"Berg Bygg AS org.nr {ORG}"),
+            "https://berggruppen.no/": html("Berg Gruppen AS", f"Berg Gruppen AS. Org.nr {OTHER} MVA"),
+        })
+        claim = rec.claims_for("official_website")[0]
+        self.assertEqual(claim["value"]["url"], "https://berggruppen.no/berg-bygg/")
+        self.assertEqual(claim["value"]["domain"], "berggruppen.no")
+        self.assertEqual(claim["relationship"], "group_site")
+        self.assertEqual(harvested, [("https://berggruppen.no/berg-bygg/", "group_site")])
+        self.assertFalse(visit.in_section("https://berggruppen.no/om-konsernet/"))
+        self.assertTrue(visit.in_section("https://berggruppen.no/berg-bygg/kontakt"))
+
+    def test_language_landing_path_is_still_the_root(self) -> None:
+        rec, harvested, visit = self.publish("https://bergbygg.no/no/", {"https://bergbygg.no/no/": html("Berg Bygg", f"Org.nr {ORG}")})
+        self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://bergbygg.no/")
+        self.assertIsNone(visit.section)
