@@ -5,8 +5,8 @@
     "run_id": "smoke-100-b",
     "agent": "kildespor",
     "agent_version": "1.0.0",
-    "started_at": "2026-10-17T12:55:42Z",
-    "completed_at": "2026-10-17T12:56:41Z",
+    "started_at": "2026-10-17T19:59:11Z",
+    "completed_at": "2026-10-17T20:00:20Z",
     "terminal_status": "completed",
     "time_budget_s": 900.0,
     "input_count": 100,
@@ -93,11 +93,11 @@
       }
     },
     "hiring": {
-      "available": 3,
-      "share_available": 0.03,
+      "available": 2,
+      "share_available": 0.02,
       "states": {
-        "not_available": 97,
-        "available": 3
+        "not_available": 98,
+        "available": 2
       }
     },
     "public_activity": {
@@ -108,9 +108,9 @@
       }
     }
   },
-  "available_claims": 7041,
+  "available_claims": 7040,
   "claims_by_field": {
-    "careers_page": 3,
+    "careers_page": 2,
     "company_news": 29,
     "financial.annual_result": 283,
     "financial.audit_opt_out": 283,
@@ -160,29 +160,29 @@
     "website_email": 16,
     "website_phone": 6
   },
-  "evidence_records": 7062,
+  "evidence_records": 7061,
   "changes_detected": 0,
   "operations": {
-    "requests": 1011,
-    "bytes": 71150626,
-    "p50_ms": 207,
-    "p95_ms": 1253,
+    "requests": 1009,
+    "bytes": 73362379,
+    "p50_ms": 452,
+    "p95_ms": 1993,
     "max_requests": 1900,
     "budget_refusals": 0,
     "rate_limited_responses": 1,
     "dns_timeouts": 0,
-    "wall_clock_s": 58.4,
+    "wall_clock_s": 68.7,
     "per_company_runtime_ms": {
-      "p50": 4271,
-      "p95": 31680
+      "p50": 6487,
+      "p95": 36268
     },
     "third_party_cost_usd": 0.0,
     "language_model_calls": 0
   },
   "nav_feed": {
     "days": 45,
-    "pages": 92,
-    "active_ads": 9362,
+    "pages": 91,
+    "active_ads": 9366,
     "error": null,
     "loaded": true
   }

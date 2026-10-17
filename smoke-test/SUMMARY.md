@@ -1,6 +1,6 @@
 # 100-company smoke test
 
-Code commit: `b1c5416b5bedd89962efd7297628933306a3870f` (this folder was added in the following commit; it changes no code).
+Code commit: `f94c04d1639cf1d0afbb1345dd15ddf0a727bb33` (this folder was added in the following commit; it changes no code).
 
 Run on a Kaggle CPU machine: the repository at that commit in a fresh directory, an empty
 virtualenv, `pip install -r requirements.txt`, the unit tests, then the documented run command
@@ -16,9 +16,9 @@ companies return exactly what the full files return.
 - Inputs: 100; envelopes emitted: 100; validation: **passed**
 - Checks: exact_expected_count = True, same_order_and_membership = True, unique_organisation_numbers = True, all_states_terminal = True, every_available_claim_has_evidence = True, every_evidence_id_resolves = True
 - Envelope states: {'available': 100}
-- Wall clock: 61.3 s; requests: 1011 (10.1 per company); request latency p50 209 ms, p95 1400 ms
+- Wall clock: 67.9 s; requests: 1009 (10.1 per company); request latency p50 448 ms, p95 1713 ms
 - Third-party cost: $0.00; language-model calls: 0
-- Evidence-backed claims: 7041; evidence records: 7062
+- Evidence-backed claims: 7040; evidence records: 7061
 
 ## Coverage (companies with at least one evidence-backed fact)
 
@@ -32,16 +32,16 @@ companies return exactly what the full files return.
 | official_website | 13 / 100 |
 | company_profiles | 8 / 100 |
 | contact_channels | 30 / 100 |
-| hiring | 3 / 100 |
+| hiring | 2 / 100 |
 | public_activity | 100 / 100 |
 
 | external fact | companies | facts |
 |---|---|---|
 | official_website | 13 | 13 |
 | social_profile | 8 | 19 |
-| hiring_signal (all) | 3 | 3 |
+| hiring_signal (all) | 2 | 2 |
 | hiring_signal: job ad | 0 | 0 |
-| hiring_signal: careers page | 3 | 3 |
+| hiring_signal: careers page | 2 | 2 |
 | dated_news | 3 | 29 |
 
 ## Refresh re-run
