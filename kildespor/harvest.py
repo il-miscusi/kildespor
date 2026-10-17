@@ -973,6 +973,22 @@ def _ld_location(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _title_key(title: Any) -> str:
+    return " ".join(re.sub(r"[^\w ]", " ", _clean(title).lower()).split())
+
+
+def _rejected_title(title: str, rejected: set[str]) -> bool:
+    """The title is, or starts with, the title of a posting already refused (expired or another
+    employer's): "Snekker – Bergen" after "Snekker" was refused."""
+    key = _title_key(title)
+    for entry in rejected:
+        if entry.startswith("title:"):
+            refused = entry[6:]
+            if refused and (key == refused or key.startswith(refused + " ")):
+                return True
+    return False
+
+
 def roles_on_page(
     snap: Snapshot,
     soup: BeautifulSoup,
@@ -1010,7 +1026,7 @@ def roles_on_page(
         if refused:
             if item_url and _norm_url(item_url) != _norm_url(page_url):
                 rejected.add(_norm_url(item_url))
-            rejected.add("title:" + _clean(item["title"]).lower())
+            rejected.add("title:" + _title_key(item["title"]))
             continue
         if not employer and not (own_site or tenant_ok):
             continue
@@ -1050,7 +1066,7 @@ def roles_on_page(
         if not title or ROLE_NAV_TEXT.match(title) or ROLE_BOILERPLATE.search(title) or ROLE_SECTION.match(title) or re.fullmatch(r"[\d.\s/:-]+", title):
             continue
         key = _norm_url(url)
-        if key in rejected or "title:" + title.lower() in rejected:
+        if key in rejected or _rejected_title(title, rejected):
             continue  # refused by the structured data in this or an earlier pass
         if key in seen or title.lower() in {r.title.lower() for r in links} or (site_wide and key in site_wide):
             continue  # a link the homepage also carries is navigation, not a listed role
@@ -1649,7 +1665,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             careers.append((_clean_url(url), snap, span, "ats_link_on_verified_site"))
 
     # A group careers site also lists its foreign subsidiaries' roles (career-lithuania.kitron.com).
-    roles = [(r, s) for r, s in roles if not foreign_page(r.url, own_text) and _norm_url(r.url) not in rejected_roles and "title:" + r.title.lower() not in rejected_roles]
+    roles = [(r, s) for r, s in roles if not foreign_page(r.url, own_text) and _norm_url(r.url) not in rejected_roles and not _rejected_title(r.title, rejected_roles)]
 
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}

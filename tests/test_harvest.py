@@ -250,6 +250,14 @@ class CareersTests(unittest.TestCase):
         roles = harvest.roles_on_page(snap("https://www.fjordbygg.no/karriere/alle", later), soup_of(later), record(), own_site=True, tenant_ok=True, rejected=rejected)
         self.assertEqual([r.title for r in roles], ["Tømrer", "Maler"])
 
+    def test_anchor_starting_with_a_refused_title_is_refused(self) -> None:
+        """Codex review rc2, finding 5 partial: an expired posting with no url, title "Snekker",
+        does not come back through an anchor "Snekker – Bergen"."""
+        html = """<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"Snekker","validThrough":"2020-01-01","hiringOrganization":{"@type":"Organization","name":"Fjordbygg AS"}}</script></head>
+        <body><a href="/jobb/stilling/11-snekker-bergen">Snekker – Bergen</a><a href="/jobb/stilling/12-snekkerlaerling">Snekkerlærling</a><a href="/jobb/stilling/13-maler">Maler</a></body></html>"""
+        roles = harvest.roles_on_page(snap("https://www.fjordbygg.no/jobb/", html), soup_of(html), record(), own_site=True, tenant_ok=True, rejected=set())
+        self.assertEqual([r.title for r in roles], ["Snekkerlærling", "Maler"])
+
     def test_page_naming_another_employer_lends_anchors_nothing(self) -> None:
         html = """<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"Sjåfør","hiringOrganization":{"@type":"Organization","name":"Annet Firma AS"}}</script></head>
         <body><a href="/karriere/stilling/2-tomrer">Tømrer</a><a href="/karriere/stilling/3-maler">Maler</a></body></html>"""
