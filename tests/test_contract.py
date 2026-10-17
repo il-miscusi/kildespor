@@ -107,3 +107,37 @@ class SharedProfileTest(unittest.TestCase):
         socials = [c for c in out["claims"] if c["field"] == "social_profile" and c["availability"] == "available"]
         self.assertEqual(len(socials), 1)
         self.assertEqual(set(socials[0]["evidence_ids"]), {"ev-1", "ev-wd"})
+
+
+class RefreshAndProfileTest(unittest.TestCase):
+    def test_withheld_shared_profile_is_not_carried_back_by_refresh(self):
+        from kildespor.envelope import build_envelope
+        from kildespor.model import CompanyRecord
+        from kildespor.refresh import diff
+        from kildespor.runner import frozen_copy, shared_profiles, withhold_shared_profiles
+
+        def rec_with(org, url):
+            rec = CompanyRecord(org)
+            rec.add_evidence(source_url="https://a.no/", source_class="company_owned_website", retrieved_at="t", content_sha256="a" * 64, claim_span="x", extraction_method="fixture")
+            ev = list(rec.evidence)[0]
+            rec.add_claim(family="company_profiles", field_name="social_profile", value={"platform": "facebook", "url": url}, evidence_ids=[ev], method="fixture")
+            rec.set_state("company_profiles", "available", "fixture")
+            return rec
+        prev = build_envelope(rec_with("111111111", "https://facebook.com/shared"), run={"run_id": "a"}, synthesis={}, changes=[], refresh_meta={})
+        recs = {"111111111": rec_with("111111111", "https://facebook.com/shared"), "222222222": rec_with("222222222", "https://facebook.com/shared")}
+        shared = shared_profiles(recs)
+        snap = frozen_copy(recs["111111111"])
+        withhold_shared_profiles(snap, shared)
+        snap.family_state["company_profiles"] = {"state": "failed", "reason": "x"}  # social check incomplete -> refresh would carry
+        diff(snap, prev, "b")
+        withhold_shared_profiles(snap, shared)
+        self.assertEqual([c for c in snap.claims if c["field"] == "social_profile"], [])
+
+    def test_kit_website_record_pairs_homepage_with_its_own_hash(self):
+        env = _envelope()
+        env["evidence"].append({"id": "ev-k", "source_url": "https://spedify.no/kontakt", "source_class": "company_owned_website", "content_sha256": "k" * 64, "retrieved_at": "t"})
+        env["claims"][0]["evidence_ids"] = ["ev-k"]  # identity proven on /kontakt only
+        site = publish(env)["profile"]["evidence"]["website"]
+        self.assertEqual(site["source_url"], "https://spedify.no/")
+        self.assertNotEqual(site["content_sha256"], "k" * 64)
+        self.assertIn("https://spedify.no/kontakt", [p["url"] for p in site["value"]["pages"]])

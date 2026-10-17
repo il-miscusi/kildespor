@@ -196,6 +196,26 @@ def shared_profiles(recs: dict[str, CompanyRecord]) -> set[str]:
     return {key for key, holders in owners.items() if len(holders) > 1}
 
 
+def merge_duplicate_profiles(snap: CompanyRecord) -> None:
+    """One internal claim per canonical profile (site link and Wikidata can name the same page), before keys,
+    refresh and synthesis see it, so the published claim id, the brief's references and refresh agree."""
+    kept: dict[str, dict[str, Any]] = {}
+    out = []
+    for claim in snap.claims:
+        key = _profile_key(claim)
+        if key is None:
+            out.append(claim)
+            continue
+        first = kept.get(key)
+        if first is None:
+            kept[key] = claim
+            out.append(claim)
+            continue
+        first["evidence_ids"] = sorted(set(first["evidence_ids"]) | set(claim.get("evidence_ids", [])))
+        first["confidence"] = max(first.get("confidence") or 0, claim.get("confidence") or 0)
+    snap.claims = out
+
+
 def withhold_shared_profiles(snap: CompanyRecord, shared: set[str]) -> None:
     dropped = [c for c in snap.claims if _profile_key(c) in shared]
     if not dropped:
@@ -214,6 +234,7 @@ def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str
     for org in orgs:
         try:
             snap = frozen_copy(recs[org])
+            merge_duplicate_profiles(snap)
             withhold_shared_profiles(snap, shared)
             if final:
                 snap.finalize_states()
@@ -222,6 +243,8 @@ def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str
                     if family not in snap.family_state and not snap.claims_for(family):
                         snap.set_state(family, "failed", "research still in progress at this checkpoint")
             changes, meta = diff(snap, previous.get(org), run["run_id"])
+            # A profile withheld as shared is never carried back from the previous run.
+            withhold_shared_profiles(snap, shared)
             synthesis = build_synthesis(snap, changes if meta.get("previous_run_id") else None, baseline=bool(meta.get("baseline")))
             out.append(build_envelope(snap, run=run, synthesis=synthesis, changes=changes, refresh_meta=meta))
         except Exception as exc:

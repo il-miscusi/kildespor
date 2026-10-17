@@ -189,8 +189,19 @@ def kit_profile(envelope: dict[str, Any]) -> dict[str, Any]:
         status = {"blocked": "blocked", "not_available": "not_found", "ambiguous": "not_found", "failed": "source_error"}.get(row.get("availability"), "not_found")
         return {"organisation_number": org, "evidence": {"website": {"field": "website", "status": status, "source_type": "company_website", "source_class": "company_website", "source_url": None, "retrieved_at": None, "value": None, "note": row.get("reason")}}}
     value = site["value"]
-    site_ev = next((evidence[e] for e in site.get("evidence_ids", []) if e in evidence and evidence[e].get("source_class", "").startswith("company_owned")), None)
-    site_ev = site_ev or next((evidence[e] for e in site.get("evidence_ids", []) if e in evidence), {})
+    def _same_page(a: Any, b: Any) -> bool:
+        return bool(a) and bool(b) and str(a).rstrip("/").lower() == str(b).rstrip("/").lower()
+
+    home = value.get("url")
+    # The website record pairs the homepage URL with the homepage's own hash; the identity page (often
+    # /kontakt) is listed in pages with its own hash, never presented as the homepage.
+    site_ev = next((evidence[e] for e in site.get("evidence_ids", []) if e in evidence
+                    and (_same_page(evidence[e].get("final_url"), home) or _same_page(evidence[e].get("source_url"), home))), None)
+    if site_ev is None:
+        page = next((p for p in (envelope.get("crawl") or {}).get("pages_checked") or [] if _same_page(p.get("url"), home)), None)
+        if page:
+            site_ev = {"source_url": page["url"], "retrieved_at": page.get("retrieved_at"), "content_sha256": page.get("content_sha256")}
+    site_ev = site_ev or {"source_url": home, "retrieved_at": None, "content_sha256": None}
     social = []
     for claim in claims:
         if claim.get("field") == "social_profile" and isinstance(claim.get("value"), dict):
