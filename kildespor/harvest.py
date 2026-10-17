@@ -750,12 +750,12 @@ CAREER_SEGMENT = re.compile(
     r"^(?:karrierer?|careers?|jobb(?:er)?|jobs|(?:ledige?-?)?stillinger|ledige-jobber|ledig-stilling|vacanc(?:y|ies)|join-?us|"
     r"bli-med(?:-oss|-p[aå]a?-laget|-i-(?:teamet|laget))?|bli-en-av-oss|jobbe?-som-[\w-]+|work-(?:with|for|at)-[\w-]+|rekruttering|recruitment|open-positions|jobbmuligheter|"
     r"(?:kom-og-)?jobbe?-(?:hos|i|med|for)-[\w-]+|karriere-og-jobb|jobb-og-karriere|job-opportunities|career-opportunities|"
-    r"arbeid-hos-oss|vi-ansetter|we-are-hiring|karriere-(?:i|hos)-[\w-]+|(?:ledige-)?stillinger-(?:i|hos)-[\w-]+|jobb-her|jobba-(?:hos-oss|har)|arbeta-hos-oss)(?:\.html?|\.php|\.aspx)?$",
+    r"arbeid-hos-oss|vi-ansetter|we-are-hiring|stilling(?:er)?-ledig|ledige?-stillinger-hos-[\w-]+|karriere-(?:i|hos)-[\w-]+|(?:ledige-)?stillinger-(?:i|hos)-[\w-]+|jobb-her|jobba-(?:hos-oss|har)|arbeta-hos-oss)(?:\.html?|\.php|\.aspx)?$",
     re.I,
 )
 CAREER_TEXT = re.compile(
     r"^(?:(?:job\s*)?(?:careers?|karriere|jobs?|jobb|stillinger|vacancies|job\s+vacancies|open\s+positions)"
-    r"|ledige\s+stillinger|ledige\s+jobber|ledig\s+stilling|jobb(?:e)?\s+(?:hos|i|med|for)\s+\S+(?:\s+\S+)?"
+    r"|ledige\s+stillinger|ledige\s+jobber|ledig\s+stilling|stilling(?:er)?\s+ledig|jobb(?:e)?\s+(?:hos|i|med|for)\s+\S+(?:\s+\S+)?"
     r"|work\s+(?:with|at|for)\s+\S+(?:\s+\S+)?|join\s+(?:us|our\s+team|the\s+team)|bli\s+med(?:\s+på\s+laget|\s+oss)?"
     r"|jobb\s*(?:&|og)\s*karriere|karriere\s*(?:&|og)\s*jobb|kom\s+og\s+jobb\s+(?:hos|for)\s+\S+|vi\s+ansetter!?|we'?re\s+hiring!?)$",
     re.I,
@@ -847,7 +847,11 @@ def ats_tenant(url: str) -> str | None:
     return None
 
 
-def is_careers_link(url: str, text: str, site_host: str) -> int | None:
+TEXT_LINK_EXCLUDED = re.compile(r"/(?:blog|blogg|posts|news|nyheter|stories|events|kategori|category|tag|produkt|produkter|product|products|shop|nettbutikk|butikk)(?:/|$)", re.I)
+_DIRECTORY_OR_SOCIAL = re.compile(r"(?:^|\.)(?:facebook|instagram|linkedin|twitter|x|youtube|tiktok|google|proff|gulesider|1881|purehelp|brreg)\.", re.I)
+
+
+def is_careers_link(url: str, text: str, site_host: str, tokens: set[str] | None = None) -> int | None:
     """Rank of a link as the company's careers page (0 best), or None.
 
     A careers word must be a whole path segment (the last one), a careers subdomain, a
@@ -862,6 +866,8 @@ def is_careers_link(url: str, text: str, site_host: str) -> int | None:
     host = (parts.hostname or "").lower()
     text = re.sub(r"\s+", " ", text or "").strip()
     if registered_domain(host) == site_host:
+        if TEXT_LINK_EXCLUDED.search(parts.path):
+            return None  # a blog post, news item or shop page is never the careers page
         segs = _segments(url)
         sub = host.removesuffix(site_host).rstrip(".").removeprefix("www.").split(".")[0] if host != site_host else ""
         if sub and CAREER_HOST_LABEL.match(sub) and len(segs) <= 2:
@@ -870,10 +876,18 @@ def is_careers_link(url: str, text: str, site_host: str) -> int | None:
             return 0
         if len(segs) >= 2 and CAREER_SEGMENT.match(segs[-2]) and re.fullmatch(r"[a-z]{2}(?:-[a-z]{2})?|ledige(?:-stillinger)?|stillinger|jobs|vacancies|openings", segs[-1], re.I):
             return 0
-        if 0 < len(text) <= 40 and CAREER_TEXT.match(text) and not NOT_A_ROLE_PATH.search(parts.path):
-            return 2
+        if 0 < len(text) <= 40 and CAREER_TEXT.match(text) and not TEXT_LINK_EXCLUDED.search(parts.path):
+            return 2  # the page itself must then read as a careers page
         return None
     ats = ats_of(url)
+    if ats is None and tokens and 0 < len(text) <= 40 and CAREER_TEXT.match(text) and not _DIRECTORY_OR_SOCIAL.search(host):
+        # A recruiter's page for this company ("Karriere" -> talangpunkten.se/career/work-system/):
+        # the link says careers and the URL names the company.
+        words = [_alnum(w) for w in re.split(r"[./\-_]+", f"{host} {unquote(parts.path)}".replace(" ", "/")) if w]
+        joined = _alnum(unquote(parts.path))
+        if any(len(t) >= 4 and (t in joined or t in words) for t in tokens):
+            return 1
+        return None
     if ats is None or _ATS_NOT_PUBLIC.search(parts.path):
         return None
     if ats[0] == "finn":
@@ -1620,7 +1634,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     careers: list[tuple[str, Snapshot, str, str]] = []  # (url, evidence snapshot, span, method)
     roles: list[tuple[Role, Snapshot]] = []
     site_wide = _site_wide_links(home_soup, home.final_url)
-    candidates = _careers_candidates(anchors, sitemap, sitemap_snaps, site_host)
+    candidates = _careers_candidates(anchors, sitemap, sitemap_snaps, site_host, contains)
     own = next((c for c in candidates if c[0] in (0, 2)), None)
     ats_links = [c for c in candidates if c[0] == 1]
     # True only when every careers source this site points to was read in full this run: refresh
@@ -1776,7 +1790,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             profiles[key] = found
             per_platform[found.platform] = per_platform.get(found.platform, 0) + 1
     _publish_profiles(rec, list(profiles.values()), exact, company_label, own_pages())
-    _publish_hiring(rec, careers, roles, company_label)
+    _publish_hiring(rec, careers, roles, company_label, site_host)
     _publish_news(rec, list(news.values()), company_label)
 
     _note_pages(rec, own_pages(), home, careers, news, site_host)
@@ -1848,11 +1862,11 @@ def _anchors(pages: list[tuple[Snapshot, BeautifulSoup, str]]) -> list[tuple[str
     return out
 
 
-def _careers_candidates(anchors: list[tuple[str, str, Snapshot, str]], sitemap: list[SitemapEntry], sitemap_snaps: list[Snapshot], site_host: str) -> list[tuple[int, str, Snapshot | None, str, str]]:
+def _careers_candidates(anchors: list[tuple[str, str, Snapshot, str]], sitemap: list[SitemapEntry], sitemap_snaps: list[Snapshot], site_host: str, tokens: set[str] | None = None) -> list[tuple[int, str, Snapshot | None, str, str]]:
     """(rank, url, linking page, span, link text) for each careers link, best first."""
     found: dict[str, tuple[int, int, str, Snapshot | None, str, str]] = {}
     for order, (url, text, snap, raw) in enumerate(anchors):
-        rank = is_careers_link(url, text, site_host)
+        rank = is_careers_link(url, text, site_host, tokens)
         if rank is None:
             continue
         if rank == 1 and not (ats_tenant(url) or CAREER_TEXT.match(text or "")) and ats_of(url) and (ats_of(url) or ("",))[0] != "finn":
@@ -2129,14 +2143,20 @@ def _publish_profiles(rec: CompanyRecord, profiles: list[Found], exact: bool, co
         rec.set_state("company_profiles", "not_available", "the verified website links to no profile whose account name matches the company", checked_sources=[p[0].final_url for p in pages])
 
 
-def _publish_hiring(rec: CompanyRecord, careers: list[tuple[str, Snapshot, str, str]], roles: list[tuple[Role, Snapshot]], company_label: str | None) -> None:
+def _hiring_source(snap: Snapshot, site_host: str) -> str:
+    if _site(snap.final_url) == site_host:
+        return "company_owned_website"
+    return "company_ats_page" if ats_of(snap.final_url) else "recruitment_page_linked_from_company_site"
+
+
+def _publish_hiring(rec: CompanyRecord, careers: list[tuple[str, Snapshot, str, str]], roles: list[tuple[Role, Snapshot]], company_label: str | None, site_host: str = "") -> None:
     seen: set[str] = set()
     for url, snap, span, method in careers:
         key = _norm_url(url)
         if key in seen or len(seen) >= 3:
             continue
         seen.add(key)
-        ev = rec.evidence_from_snapshot(snap, source_class="company_ats_page" if ats_of(snap.final_url) else "company_owned_website", span=span, method=method, url=snap.final_url)
+        ev = rec.evidence_from_snapshot(snap, source_class=_hiring_source(snap, site_host), span=span, method=method, url=snap.final_url)
         rec.add_claim(family="hiring", field_name="careers_page", value=url, evidence_ids=[ev], confidence=0.88, method=method, relationship=company_label, label="Careers page")
         rec.context.setdefault("career_pages", []).append(url)
     existing = {_norm_url(c["value"].get("url") or "") for c in rec.claims if c["field"] == "job_posting" and isinstance(c["value"], dict)}
@@ -2147,7 +2167,7 @@ def _publish_hiring(rec: CompanyRecord, careers: list[tuple[str, Snapshot, str, 
             continue
         existing.add(key)
         value = {"title": role.title[:300], "url": role.url, "published": role.published, "expires": role.expires, "location": role.location, "source": role.source}
-        ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website" if not ats_of(snap.final_url) else "company_ats_page", span=role.span, method=role.method, url=snap.final_url)
+        ev = rec.evidence_from_snapshot(snap, source_class=_hiring_source(snap, site_host), span=role.span, method=role.method, url=snap.final_url)
         rec.add_claim(
             family="hiring",
             field_name="job_posting",

@@ -203,6 +203,17 @@ class CareersTests(unittest.TestCase):
         self.assertIsNone(f("https://www.teamtailor.com/", "Powered by Teamtailor", self.SITE))
         self.assertIsNone(f("https://www.finn.no/", "Finn", self.SITE))
 
+    def test_more_careers_link_forms(self) -> None:
+        f = harvest.is_careers_link
+        self.assertEqual(f("https://teknomed.no/stilling-ledig/", "Stilling ledig", "teknomed.no"), 0)
+        self.assertEqual(f("http://www.bygdesnekkern.no/ansatte/", "Jobb hos oss", "bygdesnekkern.no"), 2)  # the page must read as careers
+        self.assertIsNone(f("https://www.fjordbygg.no/blogg/jobb-hos-oss", "Jobb hos oss", self.SITE))
+        tokens, _ = harvest.identity_tokens(["WORK SYSTEM NORWAY AS"], "https://www.worksystem.no/")
+        self.assertEqual(f("https://talangpunkten.se/career/work-system/lang/no", "Karriere", "worksystem.no", tokens), 1)
+        self.assertIsNone(f("https://talangpunkten.se/career/annet-firma/", "Karriere", "worksystem.no", tokens))
+        self.assertIsNone(f("https://talangpunkten.se/career/work-system/", "Les mer", "worksystem.no", tokens))
+        self.assertIsNone(f("https://www.facebook.com/worksystem/jobs", "Karriere", "worksystem.no", tokens))
+
     def test_roles_on_own_careers_page(self) -> None:
         rec = record()
         future = (TODAY + timedelta(days=30)).strftime("%d.%m.%Y")
