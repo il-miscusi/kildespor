@@ -1,0 +1,324 @@
+"""Offline tests for the per-site harvest (kildespor/harvest.py): no network.
+
+Run with ``python -m unittest tests.test_harvest``.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+import unittest
+from datetime import date, timedelta
+from urllib.robotparser import RobotFileParser
+
+from bs4 import BeautifulSoup
+
+from kildespor import harvest
+from kildespor.http import Snapshot
+from kildespor.model import CompanyRecord
+from kildespor.website import SiteVisit, parse
+
+TODAY = date.today()
+RECENT = (TODAY - timedelta(days=20)).isoformat()
+OLDER = (TODAY - timedelta(days=60)).isoformat()
+ANCIENT = (TODAY - timedelta(days=1200)).isoformat()
+
+
+def snap(url: str, body: str, ctype: str = "text/html; charset=utf-8", status: int = 200) -> Snapshot:
+    data = body.encode("utf-8")
+    return Snapshot(requested_url=url, final_url=url, status=status, retrieved_at="2026-10-17T00:00:00Z", sha256=hashlib.sha256(data).hexdigest(), content_type=ctype, body=data)
+
+
+def soup_of(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, "lxml")
+
+
+def record(name: str = "FJORDBYGG AS", org: str = "923609016") -> CompanyRecord:
+    rec = CompanyRecord(org)
+    rec.context["entity"] = {"navn": name}
+    return rec
+
+
+class SocialTests(unittest.TestCase):
+    def test_canonical_forms(self) -> None:
+        cp = harvest.canonical_profile
+        self.assertEqual(cp("https://www.facebook.com/FjordBygg/?ref=footer"), ("facebook", "https://facebook.com/FjordBygg", "FjordBygg"))
+        self.assertEqual(cp("https://m.facebook.com/profile.php?id=100064123456789&ref=x")[1], "https://facebook.com/profile.php?id=100064123456789")
+        self.assertEqual(cp("https://no.linkedin.com/company/fjordbygg-as/about/")[1], "https://linkedin.com/company/fjordbygg-as")
+        self.assertEqual(cp("https://www.youtube.com/@fjordbygg/videos")[1], "https://youtube.com/@fjordbygg")
+        self.assertEqual(cp("https://twitter.com/fjordbygg")[1], "https://x.com/fjordbygg")
+        self.assertEqual(cp("https://www.tiktok.com/@fjordbygg")[1], "https://tiktok.com/@fjordbygg")
+        self.assertEqual(cp("https://www.instagram.com/fjordbygg/")[1], "https://instagram.com/fjordbygg")
+        self.assertEqual(cp("https://no.pinterest.com/fjordbygg/")[1], "https://pinterest.com/fjordbygg")
+        self.assertEqual(cp("https://vimeo.com/fjordbygg")[1], "https://vimeo.com/fjordbygg")
+        self.assertEqual(cp("https://www.threads.net/@fjordbygg")[1], "https://threads.net/@fjordbygg")
+        self.assertEqual(cp("https://github.com/fjordbygg")[1], "https://github.com/fjordbygg")
+
+    def test_non_profiles_rejected(self) -> None:
+        cp = harvest.canonical_profile
+        for url in (
+            "https://www.facebook.com/sharer/sharer.php?u=https://fjordbygg.no",
+            "https://www.facebook.com/plugins/page.php?href=x",
+            "https://developers.facebook.com/fjordbygg",
+            "https://www.linkedin.com/in/kari-nordmann",
+            "https://www.linkedin.com/shareArticle?mini=true",
+            "https://twitter.com/intent/tweet?text=x",
+            "https://twitter.com/fjordbygg/status/123",
+            "https://www.youtube.com/watch?v=abc",
+            "https://youtu.be/abc",
+            "https://www.youtube.com/embed/abc",
+            "https://www.instagram.com/p/Cx123/",
+            "https://vimeo.com/123456789",
+            "https://player.vimeo.com/video/1",
+            "https://www.facebook.com/wix",
+            "https://www.facebook.com/123456789/posts/1",
+            "https://github.com/fjordbygg/website",
+        ):
+            self.assertIsNone(cp(url), url)
+
+    def test_profiles_on_page_sources_and_ownership(self) -> None:
+        rec = record()
+        html = """<html><head><script type="application/ld+json">{"@type":"Organization","name":"Fjordbygg","sameAs":["https://www.instagram.com/fjordbygg_as/","https://www.linkedin.com/company/12345678/"]}</script>
+        <script>window.__DATA__={"social":{"tiktok":"https:\\/\\/www.tiktok.com\\/@fjordbygg","other":"https:\\/\\/www.facebook.com\\/somepartner"}}</script></head>
+        <body><footer>
+          <a href="https://www.facebook.com/fjordbyggas">Facebook</a>
+          <a href="https://www.facebook.com/sharer/sharer.php?u=x">Del</a>
+          <a href="https://www.linkedin.com/in/ola-nordmann">Ola</a>
+          <a href="https://www.facebook.com/bygghandelen">Vår leverandør</a>
+          <p>Nettside levert av <a href="https://www.facebook.com/webbyraaet">Byrå</a></p>
+          <div class="fb-page" data-href="https://www.facebook.com/fjordbygg.bergen"></div>
+          <iframe src="https://www.facebook.com/plugins/page.php?href=https%3A%2F%2Fwww.facebook.com%2Ffjordbygg.stavanger&tabs=timeline"></iframe>
+          <a href="https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv">YouTube</a>
+        </footer></body></html>"""
+        page = snap("https://www.fjordbygg.no/", html)
+        contains, prefixes = harvest.identity_tokens(["FJORDBYGG AS"], page.final_url)
+        found = {f.url: f.via for f in harvest.profiles_on_page(page, soup_of(html), html, contains, prefixes, rec)}
+        self.assertEqual(found.get("https://facebook.com/fjordbyggas"), "anchor")
+        self.assertEqual(found.get("https://facebook.com/fjordbygg.bergen"), "data_href")
+        self.assertEqual(found.get("https://facebook.com/fjordbygg.stavanger"), "embed_iframe")
+        self.assertEqual(found.get("https://instagram.com/fjordbygg_as"), "json_ld_sameAs")
+        self.assertEqual(found.get("https://linkedin.com/company/12345678"), "json_ld_sameAs")  # id-only account
+        self.assertEqual(found.get("https://tiktok.com/@fjordbygg"), "script_data")
+        self.assertIn("https://youtube.com/channel/UCabcdefghijklmnopqrstuv", found)
+        self.assertNotIn("https://facebook.com/bygghandelen", found)  # another company's page
+        self.assertNotIn("https://facebook.com/webbyraaet", found)  # the web agency's credit
+        self.assertNotIn("https://facebook.com/somepartner", found)
+        self.assertFalse(any("linkedin.com/in" in u for u in found))
+
+    def test_resemblance_folds_norwegian_letters(self) -> None:
+        contains, prefixes = harvest.identity_tokens(["Bjørkås Rørleggerservice AS"], "https://bjorkas.no/")
+        self.assertTrue(harvest.resembles("bjorkasror", contains, prefixes))
+        self.assertTrue(harvest.resembles("bjoerkaasroerleggerservice", contains, prefixes))
+        self.assertFalse(harvest.resembles("elektroimport", contains, prefixes))
+
+
+class CareersTests(unittest.TestCase):
+    SITE = "fjordbygg.no"
+
+    def test_careers_links(self) -> None:
+        f = harvest.is_careers_link
+        self.assertEqual(f("https://www.fjordbygg.no/karriere", "Karriere", self.SITE), 0)
+        self.assertEqual(f("https://www.fjordbygg.no/om-oss/ledige-stillinger/", "Jobb hos oss", self.SITE), 0)
+        self.assertEqual(f("https://karriere.fjordbygg.no/", "", self.SITE), 0)
+        self.assertEqual(f("https://www.fjordbygg.no/page/42", "Ledige stillinger", self.SITE), 2)
+        self.assertEqual(f("https://fjordbygg.teamtailor.com/jobs", "Se stillinger", self.SITE), 1)
+        self.assertEqual(f("https://www.finn.no/job/fulltime/ad.html?finnkode=123456", "", self.SITE), 1)
+        # A blog post that mentions work is not a careers page (spedify-lanserer-reparasjonstjenester).
+        self.assertIsNone(f("https://spedify.no/spedify-lanserer-reparasjonstjenester", "Spedify lanserer reparasjonstjenester - nå jobber vi med", "spedify.no"))
+        self.assertIsNone(f("https://www.fjordbygg.no/nyheter/vi-jobber-med-baerekraft", "Slik jobber vi med bærekraft", self.SITE))
+        self.assertIsNone(f("https://www.teamtailor.com/", "Powered by Teamtailor", self.SITE))
+        self.assertIsNone(f("https://www.finn.no/", "Finn", self.SITE))
+
+    def test_roles_on_own_careers_page(self) -> None:
+        rec = record()
+        future = (TODAY + timedelta(days=30)).strftime("%d.%m.%Y")
+        past = (TODAY - timedelta(days=3)).strftime("%d.%m.%Y")
+        html = f"""<html><head><title>Ledige stillinger - Fjordbygg</title>
+        <script type="application/ld+json">{{"@type":"JobPosting","title":"Prosjektleder","datePosted":"{RECENT}","validThrough":"{(TODAY + timedelta(days=10)).isoformat()}","hiringOrganization":{{"@type":"Organization","name":"Fjordbygg AS"}},"jobLocation":{{"@type":"Place","address":{{"addressLocality":"Bergen"}}}}}}</script>
+        <script type="application/ld+json">{{"@type":"JobPosting","title":"Sjåfør","hiringOrganization":{{"@type":"Organization","name":"Annet Firma AS"}}}}</script>
+        </head><body><h1>Ledige stillinger</h1><ul>
+          <li><a href="/karriere/stilling/tomrer-bergen"><h3>Tømrer</h3></a><p>Søknadsfrist: {future}</p><p>Sted: Bergen</p></li>
+          <li><a href="/karriere/stilling/laerling-2026">Lærling tømrerfaget</a></li>
+          <li><a href="/karriere/stilling/gammel">Gammel stilling</a><span>Søknadsfrist {past}</span></li>
+          <li><a href="/karriere/team/mot-anna">Møt Anna, prosjektleder</a></li>
+          <li><a href="/personvern">Personvern</a></li>
+        </ul></body></html>"""
+        page = snap("https://www.fjordbygg.no/karriere/", html)
+        roles = harvest.roles_on_page(page, soup_of(html), rec, own_site=True, tenant_ok=True)
+        titles = {r.title: r for r in roles}
+        self.assertIn("Prosjektleder", titles)
+        self.assertEqual(titles["Prosjektleder"].location, "Bergen")
+        self.assertNotIn("Sjåfør", titles)  # JobPosting for another employer
+        self.assertIn("Tømrer", titles)
+        self.assertEqual(titles["Tømrer"].url, "https://www.fjordbygg.no/karriere/stilling/tomrer-bergen")
+        self.assertEqual(titles["Tømrer"].location, "Bergen")
+        self.assertIn("Lærling tømrerfaget", titles)
+        self.assertNotIn("Gammel stilling", titles)  # deadline passed
+        self.assertFalse(any("Anna" in t for t in titles))
+
+    def test_single_team_link_is_not_a_role(self) -> None:
+        html = '<html><body><h1>Karriere</h1><a href="/karriere/stilling/historien-om-oss">Historien om oss</a></body></html>'
+        page = snap("https://www.fjordbygg.no/karriere/", html)
+        self.assertEqual(harvest.roles_on_page(page, soup_of(html), record(), own_site=True, tenant_ok=True), [])
+
+    def test_ats_tenant(self) -> None:
+        self.assertEqual(harvest.ats_tenant("https://fjordbygg.teamtailor.com/jobs"), "fjordbygg")
+        self.assertEqual(harvest.ats_tenant("https://jobs.lever.co/fjordbygg/"), "fjordbygg")
+        self.assertEqual(harvest.ats_tenant("https://candidate.hr-manager.net/vacancies/list.aspx?customer=fjordbygg"), "fjordbygg")
+        self.assertEqual(harvest.ats_tenant("https://equinor.wd3.myworkdayjobs.com/EQNR"), "equinor")
+
+    def test_ats_page_of_other_tenant_yields_no_roles(self) -> None:
+        html = '<html><body><a href="https://andre.teamtailor.com/jobs/123456-sjafor">Sjåfør</a><a href="https://andre.teamtailor.com/jobs/123457-lager">Lagermedarbeider</a></body></html>'
+        page = snap("https://andre.teamtailor.com/jobs", html)
+        self.assertEqual(harvest.roles_on_page(page, soup_of(html), record(), own_site=False, tenant_ok=False), [])
+        roles = harvest.roles_on_page(page, soup_of(html), record(), own_site=False, tenant_ok=True)
+        self.assertEqual([r.title for r in roles], ["Sjåfør", "Lagermedarbeider"])
+
+
+class NewsTests(unittest.TestCase):
+    SITE = "fjordbygg.no"
+
+    def test_dates(self) -> None:
+        self.assertEqual(harvest.text_date("Publisert 14. oktober 2026 av Kari"), "2026-10-14")
+        self.assertEqual(harvest.text_date("14.10.2026"), "2026-10-14")
+        self.assertEqual(harvest.text_date("October 14, 2026"), "2026-10-14")
+        self.assertEqual(harvest.stamp("2025-09-22T20:00:00+02:00"), ("2025-09-22T20:00:00+02:00", "2025-09-22"))
+        self.assertEqual(harvest.stamp("Mon, 22 Sep 2025 18:00:00 +0000"), ("2025-09-22T20:00:00+02:00", "2025-09-22"))
+        self.assertEqual(harvest.stamp("2025-09-22"), ("2025-09-22", "2025-09-22"))
+
+    def test_listing_items(self) -> None:
+        d1 = date.fromisoformat(RECENT)
+        html = f"""<html><body><nav><ul><li><a href="/nyheter/">Nyheter</a></li></ul></nav><main>
+          <article><h2><a href="/nyheter/fjordbygg-vinner-kontrakt">Fjordbygg vinner stor kontrakt i Bergen</a></h2><time datetime="{RECENT}T09:30:00+02:00">{RECENT}</time></article>
+          <div class="news-card"><a href="/nyheter/ny-avdeling-pa-voss"><h3>Ny avdeling åpner på Voss</h3></a><span>{d1.day}. {['januar','februar','mars','april','mai','juni','juli','august','september','oktober','november','desember'][d1.month-1]} {d1.year}</span></div>
+          <article><h2><a href="https://e24.no/annen-sak">Annet selskap i nyhetene</a></h2><time datetime="{RECENT}">x</time></article>
+          <article><h2><a href="/nyheter/kategori/bygg">Kategori bygg og anlegg</a></h2><time datetime="{RECENT}">x</time></article>
+        </main></body></html>"""
+        page = snap("https://www.fjordbygg.no/nyheter/", html)
+        items = {i.title: i for i in harvest.listing_items(page, soup_of(html), self.SITE, require_news_path=False)}
+        self.assertEqual(items["Fjordbygg vinner stor kontrakt i Bergen"].published, f"{RECENT}T09:30:00+02:00")
+        self.assertEqual(items["Ny avdeling åpner på Voss"].date, RECENT)
+        self.assertNotIn("Annet selskap i nyhetene", items)  # another site's story
+        self.assertEqual(len(items), 2)
+
+    def test_article_meta(self) -> None:
+        html = """<html><head><title>Bedre sosial funksjon etter hjerneskade - Sunnaas sykehus</title>
+        <meta property="article:published_time" content="2025-09-22T20:00:00+02:00"></head>
+        <body><article><h1>Bedre sosial funksjon etter hjerneskade</h1><p>Tekst</p></article></body></html>"""
+        page = snap("https://www.sunnaas.no/fag-og-forskning/nyheter-rkr/bedre-sosial-funksjon", html)
+        item = harvest.article_meta(page, soup_of(html), ["Sunnaas sykehus"])
+        self.assertEqual((item.title, item.published), ("Bedre sosial funksjon etter hjerneskade", "2025-09-22T20:00:00+02:00"))
+
+    def test_feed_and_wordpress(self) -> None:
+        d = date.fromisoformat(RECENT)
+        rss = f"""<?xml version="1.0"?><rss><channel><title>Fjordbygg</title>
+        <item><title><![CDATA[Fjordbygg &amp; partnere bygger skole]]></title><link>https://www.fjordbygg.no/fjordbygg-bygger-skole/</link><pubDate>{d.strftime('%a, %d %b %Y')} 08:00:00 +0000</pubDate></item>
+        <item><title>Gammel nyhet fra lenge siden</title><link>https://www.fjordbygg.no/gammel/</link><pubDate>Mon, 01 Jan 2018 08:00:00 +0000</pubDate></item>
+        </channel></rss>"""
+        items = harvest.feed_items(snap("https://www.fjordbygg.no/feed/", rss, "application/rss+xml"), self.SITE)
+        self.assertEqual(items[0].title, "Fjordbygg & partnere bygger skole")
+        self.assertTrue(items[0].published.startswith(RECENT + "T1"))
+        posts = json.dumps([{"date": f"{RECENT}T10:00:00", "date_gmt": f"{RECENT}T08:00:00", "link": "https://www.fjordbygg.no/ny-kontrakt/", "title": {"rendered": "Ny kontrakt med Bergen kommune"}}])
+        wp = harvest.wordpress_items(snap("https://www.fjordbygg.no/wp-json/wp/v2/posts", posts, "application/json"), self.SITE)
+        self.assertEqual(wp[0].published, f"{RECENT}T10:00:00+02:00")
+
+    def test_sitemap_parse(self) -> None:
+        xml = f"""<urlset xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"><url><loc>https://www.fjordbygg.no/karriere/</loc></url>
+        <url><loc>https://www.fjordbygg.no/nyheter/ny-sak</loc><lastmod>{RECENT}</lastmod><news:news><news:publication_date>{RECENT}T08:00:00+02:00</news:publication_date><news:title>Ny sak om bygg</news:title></news:news></url></urlset>"""
+        pages, children = harvest.parse_sitemap(xml)
+        self.assertEqual(children, [])
+        self.assertEqual(pages[1].news_title, "Ny sak om bygg")
+        index = "<sitemapindex><sitemap><loc>https://x.no/post-sitemap.xml</loc></sitemap><sitemap><loc>https://x.no/page-sitemap.xml</loc></sitemap><sitemap><loc>https://x.no/product-sitemap.xml</loc></sitemap></sitemapindex>"
+        _pages, children = harvest.parse_sitemap(index)
+        self.assertEqual([harvest._child_rank(c) for c in children], [0, 1, 9])
+
+
+class FakeFetcher:
+    """Serves fixture pages; counts requests like the real fetcher's thread counter."""
+
+    def __init__(self, pages: dict[str, tuple[str, str]], robots: str = "") -> None:
+        self.pages = pages
+        self.count = 0
+        self.cap: int | None = None
+        self.cap_start = 0
+        parser = RobotFileParser()
+        parser.parse(robots.splitlines())
+        self._robots = {"https://www.fjordbygg.no": parser}
+        self.requested: list[str] = []
+
+    def thread_requests(self) -> int:
+        return self.count
+
+    def begin_company(self, cap: int | None) -> None:
+        self.cap, self.cap_start = cap, self.count
+
+    def get(self, url: str, **_kwargs) -> Snapshot:
+        if self.cap is not None and self.count - self.cap_start >= self.cap:
+            raise RuntimeError("per-company request cap reached")
+        self.count += 1
+        self.requested.append(url)
+        body, ctype = self.pages.get(url, ("not found", "text/html"))
+        return snap(url, body, ctype, 200 if url in self.pages else 404)
+
+
+class EndToEndTests(unittest.TestCase):
+    def test_harvest_publishes_one_claim_per_fact(self) -> None:
+        home_html = f"""<html><head><title>Fjordbygg - tømrer i Bergen</title><meta property="og:site_name" content="Fjordbygg">
+        <meta name="description" content="Fjordbygg bygger hus, hytter og skoler på Vestlandet siden 1985."></head><body>
+        <nav><a href="/karriere/">Karriere</a><a href="/nyheter/">Nyheter</a><a href="/kontakt/">Kontakt</a></nav>
+        <section class="news"><article><a href="/nyheter/fjordbygg-vinner-kontrakt"><h3>Fjordbygg vinner stor kontrakt i Bergen</h3></a><time datetime="{RECENT}">x</time></article></section>
+        <a href="/nyheter/spedify-lanserer-reparasjonstjenester">Vi lanserer reparasjoner - nå jobber vi også med service</a>
+        <footer><a href="https://www.facebook.com/fjordbygg/">Facebook</a><a href="https://www.instagram.com/fjordbygg.as/">Instagram</a>
+        <a href="https://www.linkedin.com/company/fjordbygg/">LinkedIn</a><a href="https://www.facebook.com/sharer/sharer.php?u=x">Del</a>
+        <a href="tel:+4755123456">55 12 34 56</a> Org.nr 923 609 016</footer></body></html>"""
+        careers_html = """<html><head><title>Karriere | Fjordbygg</title></head><body><h1>Jobb hos oss</h1>
+        <a href="https://fjordbygg.teamtailor.com/jobs/123456-tomrer">Tømrer</a>
+        <a href="https://fjordbygg.teamtailor.com/jobs/123457-prosjektleder">Prosjektleder</a>
+        <a href="https://fjordbygg.teamtailor.com/jobs">Se alle stillinger</a></body></html>"""
+        ats_html = """<html><head><title>Jobs at Fjordbygg</title></head><body>
+        <a href="https://fjordbygg.teamtailor.com/jobs/123456-tomrer"><span>Tømrer</span></a>
+        <a href="https://fjordbygg.teamtailor.com/jobs/123458-lærling">Lærling</a></body></html>"""
+        article_html = f"""<html><head><title>Fjordbygg vinner stor kontrakt i Bergen | Fjordbygg</title>
+        <meta property="article:published_time" content="{RECENT}T09:15:00+02:00"></head><body><article><h1>Fjordbygg vinner stor kontrakt i Bergen</h1></article></body></html>"""
+        sitemap = f"""<urlset><url><loc>https://www.fjordbygg.no/karriere/</loc></url><url><loc>https://www.fjordbygg.no/nyheter/eldre-sak-om-hytter</loc><lastmod>{OLDER}</lastmod></url></urlset>"""
+        listing_html = f"""<html><body><h1>Nyheter</h1><ul>
+        <li><a href="/nyheter/fjordbygg-vinner-kontrakt">Fjordbygg vinner stor kontrakt i Bergen</a> <span>{RECENT[8:10]}.{RECENT[5:7]}.{RECENT[:4]}</span></li>
+        <li><a href="/nyheter/eldre-sak-om-hytter">Eldre sak om hytter på fjellet</a> <span>{OLDER[8:10]}.{OLDER[5:7]}.{OLDER[:4]}</span></li>
+        <li><a href="/nyheter/veldig-gammel-sak">Veldig gammel sak fra arkivet</a> <span>{ANCIENT[8:10]}.{ANCIENT[5:7]}.{ANCIENT[:4]}</span></li></ul></body></html>"""
+        contact_html = '<html><body><a href="https://www.youtube.com/@fjordbygg">YouTube</a><a href="mailto:post@fjordbygg.no">post@fjordbygg.no</a></body></html>'
+        pages = {
+            "https://www.fjordbygg.no/sitemap.xml": (sitemap, "application/xml"),
+            "https://www.fjordbygg.no/karriere/": (careers_html, "text/html"),
+            "https://fjordbygg.teamtailor.com/jobs": (ats_html, "text/html"),
+            "https://www.fjordbygg.no/nyheter/": (listing_html, "text/html"),
+            "https://www.fjordbygg.no/kontakt/": (contact_html, "text/html"),
+            "https://www.fjordbygg.no/nyheter/fjordbygg-vinner-kontrakt": (article_html, "text/html"),
+        }
+        fetcher = FakeFetcher(pages, robots="User-agent: *\nAllow: /\n")
+        rec = record()
+        visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.fjordbygg.no/", home_html)
+        visit.pages.append((home, *parse(home)[0:1], parse(home)[2]))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+
+        socials = sorted(c["value"]["url"] for c in rec.claims if c["field"] == "social_profile")
+        self.assertEqual(socials, ["https://facebook.com/fjordbygg", "https://instagram.com/fjordbygg.as", "https://linkedin.com/company/fjordbygg", "https://youtube.com/@fjordbygg"])
+        careers = [c["value"] for c in rec.claims if c["field"] == "careers_page"]
+        self.assertIn("https://www.fjordbygg.no/karriere/", careers)
+        self.assertNotIn("https://www.fjordbygg.no/nyheter/spedify-lanserer-reparasjonstjenester", careers)
+        jobs = {c["value"]["title"]: c for c in rec.claims if c["field"] == "job_posting"}
+        self.assertEqual(sorted(jobs), ["Lærling", "Prosjektleder", "Tømrer"])
+        news = {c["value"]["title"]: c["value"] for c in rec.claims if c["field"] == "company_news"}
+        self.assertEqual(news["Fjordbygg vinner stor kontrakt i Bergen"]["published"], f"{RECENT}T09:15:00+02:00")
+        self.assertIn("Eldre sak om hytter på fjellet", news)
+        self.assertNotIn("Veldig gammel sak fra arkivet", news)  # older than 24 months
+        article_claim = next(c for c in rec.claims if c["field"] == "company_news" and c["value"]["title"].startswith("Fjordbygg vinner"))
+        self.assertEqual(rec.evidence[article_claim["evidence_ids"][0]]["source_url"], "https://www.fjordbygg.no/nyheter/fjordbygg-vinner-kontrakt")
+        for claim in rec.claims:
+            self.assertEqual(len(claim["evidence_ids"]), 1, claim)
+        self.assertLessEqual(rec.context["harvest"]["requests"], harvest.HARVEST_REQUESTS)
+        self.assertEqual(rec.family_state["hiring"]["state"], "available")
+
+
+if __name__ == "__main__":
+    unittest.main()
