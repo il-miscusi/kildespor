@@ -297,3 +297,28 @@ class CacheSocialProfiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SuccessorsAndUmbrellas(unittest.TestCase):
+    def test_declared_site_under_a_former_name_is_refused(self) -> None:
+        # CMW HOLDING AS was ABCHAR AS; a new ABCHAR AS now runs abchar.no.
+        rec = make_rec(name="CMW HOLDING AS", phone="45 05 19 98", email="maria@abchar.no", hjemmeside="abchar.no")
+        rec.context["entity"]["historiskeNavn"] = [{"navn": "ABCHAR AS", "tilDato": "2024-01-01"}]
+        pages = {"https://abchar.no/": html("ABCHAR | Pyrolysereaktor", "<div id=app></div> 45 05 19 98")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
+
+    def test_umbrella_brand_with_our_phone_needs_the_full_name(self) -> None:
+        rec = make_rec(name="HEAD ENERGY NORGRID AS", phone="992 04 323")
+        pages = {"https://headenergy.no/": html("Head Energy Norge | Ingeniørselskap", "Kontakt +47 992 04 323")}
+        self.assertEqual(run(rec, pages, guesses=["headenergy.no"]), [])
+
+    def test_initials_stay_together_in_guesses(self) -> None:
+        self.assertIn("pe-gaarud.no", website.guess_domains("P.E. GAARUD AS"))
+
+    def test_default_port_is_dropped_from_the_site_url(self) -> None:
+        rec = make_rec(name="PEAB BYGG AS", phone=None)
+        home = page("https://peab.no:443/bygg/", html("Peab Bygg", "Peab Bygg"))[0]
+        visit = website.SiteVisit(None, rec, time.monotonic() + 30)
+        with patch("kildespor.harvest._extract_site_facts", lambda *a, **k: None):
+            website._publish_site(rec, visit, home, home, "registry_listed_name_on_site", "registry_listed", "Peab Bygg", set(), set())
+        self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://peab.no/")

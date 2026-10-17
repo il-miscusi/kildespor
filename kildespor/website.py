@@ -403,6 +403,7 @@ class RegisterSignals:
         # identity: after a restructuring the operating business often moves to a new company that
         # takes the old name ("ABC AS" -> "ABC HOLDING AS" + a new "ABC AS" at the same address).
         self.names = [n for n in _names_of(rec) if n]
+        self.former = [h.get("navn") for h in entity.get("historiskeNavn") or [] if h.get("navn") and name_tokens(h["navn"]) != name_tokens(entity.get("navn") or "")]
         form = ((entity.get("organisasjonsform") or {}).get("kode") or "").upper()
         words = set(core_tokens(entity.get("navn") or ""))
         self.housing = form in HOUSING_FORMS or bool(words & HOUSING_WORDS)
@@ -559,6 +560,13 @@ def guess_domains(legal_name: str, limit: int = 8) -> list[str]:
     published only on the identity rules in this module.
     """
     tokens = name_tokens(legal_name)
+    merged: list[str] = []
+    for token in tokens:  # initials stay together: "P.E. GAARUD" -> pe gaarud, "L.A FURELI" -> la fureli
+        if len(token) == 1 and merged and len(merged[-1]) <= 3 and merged[-1].isalpha() and token.isalpha() and all(len(t) == 1 for t in tokens[: tokens.index(token)]):
+            merged[-1] += token
+        else:
+            merged.append(token)
+    tokens = merged
     if not tokens:
         return []
     if len("".join(tokens)) < 3:
@@ -913,6 +921,18 @@ class _Evidence:
         return self.numbers.get(org)
 
 
+def _umbrella_brand(sig: RegisterSignals, parts: list[tuple[str, str]]) -> bool:
+    """The identity text names the start of our legal name but drops a distinctive later word."""
+    tokens = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
+    if len(tokens) < 2:
+        return False
+    words = set(" ".join(_norm_part(part) for _, part in parts).replace("|", " ").split())
+    if tokens[0] not in words and "".join(tokens[:2]) not in words:
+        return False
+    missing = [t for t in tokens[1:] if t not in words and "".join(tokens) not in words]
+    return any(len(t) >= 4 and t not in GENERIC_NAME_WORDS and t not in STRIP_GUESS_WORDS for t in missing)
+
+
 def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domain: str, final_host: str, parts: list[tuple[str, str]],
                     blocked: bool) -> tuple[str, str, Snapshot] | None:
     """``register_contact_on_site`` or ``name_and_register_signal`` for a site without our number, else None."""
@@ -924,6 +944,8 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
         return None  # the site's copyright or name line names a different legal entity
     name_hit = next(((label, part) for label, part in parts for n in sig.names if name_in_part(n, part)), None)
     stem_full = _stem_matches_name(site_domain, sig.names, min_len=3)
+    if not name_hit and any(name_in_part(f, part) for f in sig.former for _, part in parts):
+        return None  # the site runs under a name this company gave up; a successor company may hold it now
     contacts = ev.contacts
     # Rule 1: the registered phone or e-mail address, not shared with other register entities.
     screen = {"phone": RegisterSignals.screen_ready("phone"), "email": RegisterSignals.screen_ready("email")}
@@ -941,7 +963,9 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
     if contact_hit is not None:
         # A holding or group company shares contact details with its operating sister or parent, and an
         # e-mail domain is no independent proof of the site it was derived from: these need the name too.
-        need_name = sig.holding or sig.in_group or (origin in EMAIL_ORIGINS and not screen["email"])
+        # So does a site whose identity text carries only the first part of our name ("Head Energy" for
+        # HEAD ENERGY NORGRID AS, "Sjø-Sport" for SJØ-SPORT MANDAL AS): that is the umbrella brand.
+        need_name = sig.holding or sig.in_group or origin == "former_name_domain" or (origin in EMAIL_ORIGINS and not screen["email"]) or _umbrella_brand(sig, parts)
         if not need_name or name_hit or stem_full:
             return "register_contact_on_site", contact_hit[0], contact_hit[1]
     # Rule 2: the whole legal name in the homepage's identity text, plus one register signal on the site.
@@ -980,7 +1004,11 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
 
     folded_words = set(re.findall(r"[a-z0-9]+", _fold(text)))
     legal_core = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
-    plausible = declared or bool(ev.numbers.get(org)) or bool(ev.contacts) or (legal_core and set(legal_core) <= folded_words)
+    stem = site_domain.split(".")[0].replace("-", "")
+    named = legal_core and (2 * len(set(legal_core) & folded_words) >= len(set(legal_core)) or (len(stem) >= 4 and stem in folded_words))
+    # Worth reading the contact/about pages (where the org number usually is) only when the site
+    # shows something of this company: its number, a register contact, or its name.
+    plausible = declared or bool(ev.numbers.get(org)) or bool(ev.contacts) or bool(named)
     if plausible and not proven():
         for link in _contact_links(snap, soup)[: 3 if declared else 2]:
             if visit.time_left() < 4:
@@ -1034,6 +1062,13 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
     corroboration = name_corroboration(legal_name, rec.context.get("subunits") or [], text, snap.final_url)
     if corroboration:
         return f"{base}_name_on_site", snap, corroboration, foreign_any, group_on_page
+    former_hit = next((f for f in sig.former for _, part in parts if name_in_part(f, part) or _stem_matches_name(site_domain, [f], 4)), None)
+    if former_hit:
+        # The site carries a name this company has since given up (ABCHAR AS -> CMW HOLDING AS): the
+        # operating business, and its site, usually moved to a new company that took the old name.
+        rec.context["website_ambiguous"] = snap.final_url
+        rec.context["website_ambiguous_reason"] = f"the listed site {snap.final_url} carries the former name {former_hit}, not the current one"
+        return None
     # A JavaScript shell or a short title: the name in the page's metadata, or the domain spelling it.
     meta_text = " ".join(part for _, part in parts)
     for attrs in ({"name": "description"}, {"property": "og:description"}):
@@ -1049,7 +1084,7 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
     rule = _register_rules(sig, ev, origin, site_domain, final_host, parts, False)
     if rule:
         return f"{base}_{rule[0]}", rule[2], rule[1], foreign_any, group_on_page
-    if len(text) < 600 and fetcher is not None:
+    if len(text) < 600 and fetcher is not None and not sig.holding:
         sitemap = _sitemap_size(fetcher, visit, snap.final_url)
         if sitemap >= 5:
             return f"{base}_live_site", snap, f"register-listed site is live: its sitemap lists {sitemap} pages on {site_domain}", foreign_any, group_on_page
@@ -1255,7 +1290,10 @@ def _publish_site(
     group_on_page: set[str],
 ) -> None:
     parts = urlsplit(home.final_url)
-    site_url = urlunsplit((parts.scheme, parts.netloc, "/", "", ""))
+    netloc = (parts.hostname or "").lower()
+    if parts.port and not ((parts.scheme == "https" and parts.port == 443) or (parts.scheme == "http" and parts.port == 80)):
+        netloc = f"{netloc}:{parts.port}"
+    site_url = urlunsplit((parts.scheme, netloc, "/", "", ""))
     evidence = []
     if span:
         evidence.append(rec.evidence_from_snapshot(identity_snap, source_class="company_owned_website", span=span, method=identity, url=identity_snap.final_url))
