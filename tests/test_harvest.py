@@ -233,6 +233,15 @@ class NewsTests(unittest.TestCase):
         self.assertEqual([harvest._child_rank(c) for c in children], [0, 1, 9])
 
 
+class NavNameTests(unittest.TestCase):
+    def test_brand_names_join_the_prefilter(self) -> None:
+        from kildespor.jobs import search_names
+        rec = record("NORDIC DOOR AS")
+        rec.context["subunits"] = [{"name": "NORDIC DOOR AS AVD BERGEN", "organisation_number": "912345678"}]
+        rec.context["site_brand_names"] = ["Nordic Door Proff", "Hjem", "NORDIC DOOR AS"]
+        self.assertEqual(search_names(rec), ["NORDIC DOOR AS", "NORDIC DOOR AS AVD BERGEN", "Nordic Door Proff"])
+
+
 class FakeFetcher:
     """Serves fixture pages; counts requests like the real fetcher's thread counter."""
 

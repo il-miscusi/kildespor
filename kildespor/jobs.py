@@ -35,6 +35,24 @@ def name_key(name: str) -> str:
     return " ".join(strip_accents(t.replace("æ", "ae").replace("ø", "o").replace("å", "a")) for t in tokens)
 
 
+NOT_A_BRAND = {"hjem", "home", "forside", "startside", "velkommen", "welcome", "index", "nettbutikk", "kontakt", "om oss"}
+
+
+def search_names(rec: CompanyRecord) -> list[str]:
+    """Names an ad's ``businessName`` may carry: the legal name, the registered subunits' names and
+    the brand the verified website uses (an ad is often posted under the brand). The names only
+    choose which entries to open; the entry's employer orgnr decides."""
+    entity = rec.context.get("entity") or {}
+    names = [entity.get("navn") or ""] + [s.get("name") or "" for s in rec.context.get("subunits") or []]
+    brands = [c["value"] for c in rec.claims if c["field"] == "public_brand_name" and isinstance(c["value"], str)]
+    brands += list(rec.context.get("site_brand_names") or [])
+    for brand in brands:
+        key = name_key(brand)
+        if len(key.replace(" ", "")) >= 3 and key not in NOT_A_BRAND and brand not in names:
+            names.append(brand)
+    return [n for n in names if n]
+
+
 class NavFeed:
     """Reads the vacancy feed once; ``candidates`` and ``entry`` are called from worker threads."""
 
@@ -141,9 +159,11 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
             rec.set_state("hiring", "failed", f"NAV vacancy feed unavailable: {feed.error}")
         return
     subunits = rec.context.get("subunits") or []
-    names = [legal_name] + [s.get("name") or "" for s in subunits]
+    names = search_names(rec)
     own_numbers = {rec.organisation_number} | {s.get("organisation_number") for s in subunits if s.get("organisation_number")}
     candidates = feed.candidates(names)
+    today = datetime.now(timezone.utc).date().isoformat()
+    listed = {str((c["value"] or {}).get("url") or "").rstrip("/") for c in rec.claims if c["field"] == "job_posting" and isinstance(c["value"], dict)}
     published = 0
     complete = True
     checked = [f"{FEED}/api/v1/feed (last {feed.days} days, {feed.pages} pages, {len(feed.active)} active ads)"]
@@ -167,7 +187,7 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
         except ValueError:
             continue
         if body.get("status") != "ACTIVE":
-            continue
+            continue  # NAV's terms: an ad leaves the results as soon as it is inactive
         ad = body.get("ad_content") or {}
         employer = ad.get("employer") or {}
         number = re.sub(r"\D", "", str(employer.get("orgnr") or ""))
@@ -176,9 +196,14 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
         title = " ".join(str(ad.get("title") or "").split())
         if not title:
             continue
+        expires = str(ad.get("expires") or "")[:10]
+        if expires and expires < today:
+            continue
         link = ad.get("link") or f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"
         if not str(link).startswith("https://arbeidsplassen.nav.no/"):
             link = f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"
+        if str(link).rstrip("/") in listed:
+            continue
         locations = ", ".join(dict.fromkeys(filter(None, [(loc or {}).get("city") or (loc or {}).get("municipal") for loc in ad.get("workLocations") or []]))) or None
         published_at = str(ad.get("published") or "")[:10] or None
         value: dict[str, Any] = {
