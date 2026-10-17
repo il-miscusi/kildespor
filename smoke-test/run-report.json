@@ -5,8 +5,8 @@
     "run_id": "smoke-100-a",
     "agent": "kildespor",
     "agent_version": "1.0.0",
-    "started_at": "2026-10-17T06:17:59Z",
-    "completed_at": "2026-10-17T06:18:31Z",
+    "started_at": "2026-10-17T12:54:40Z",
+    "completed_at": "2026-10-17T12:55:41Z",
     "terminal_status": "completed",
     "time_budget_s": 900.0,
     "input_count": 100,
@@ -21,9 +21,11 @@
       "same_order_and_membership": true,
       "unique_organisation_numbers": true,
       "all_states_terminal": true,
-      "every_available_claim_has_evidence": true
+      "every_available_claim_has_evidence": true,
+      "every_evidence_id_resolves": true
     },
-    "invalid_states": []
+    "invalid_states": [],
+    "dangling_evidence": []
   },
   "coverage_by_family": {
     "legal_identity": {
@@ -34,11 +36,11 @@
       }
     },
     "public_brand": {
-      "available": 9,
-      "share_available": 0.09,
+      "available": 13,
+      "share_available": 0.13,
       "states": {
-        "not_available": 88,
-        "available": 9,
+        "not_available": 84,
+        "available": 13,
         "ambiguous": 3
       }
     },
@@ -65,30 +67,29 @@
       }
     },
     "official_website": {
-      "available": 9,
-      "share_available": 0.09,
+      "available": 13,
+      "share_available": 0.13,
       "states": {
         "not_available": 84,
-        "available": 9,
-        "ambiguous": 3,
-        "blocked": 4
+        "available": 13,
+        "ambiguous": 3
       }
     },
     "company_profiles": {
-      "available": 5,
-      "share_available": 0.05,
+      "available": 8,
+      "share_available": 0.08,
       "states": {
-        "not_available": 92,
-        "ambiguous": 3,
-        "available": 5
+        "not_available": 89,
+        "available": 8,
+        "ambiguous": 3
       }
     },
     "contact_channels": {
-      "available": 28,
-      "share_available": 0.28,
+      "available": 30,
+      "share_available": 0.3,
       "states": {
-        "not_available": 72,
-        "available": 28
+        "not_available": 70,
+        "available": 30
       }
     },
     "hiring": {
@@ -107,10 +108,10 @@
       }
     }
   },
-  "available_claims": 7000,
+  "available_claims": 7041,
   "claims_by_field": {
-    "careers_page": 4,
-    "company_news": 10,
+    "careers_page": 3,
+    "company_news": 29,
     "financial.annual_result": 283,
     "financial.audit_opt_out": 283,
     "financial.current_assets": 282,
@@ -135,11 +136,11 @@
     "legal_form": 100,
     "legal_name": 100,
     "municipality": 97,
-    "official_website": 9,
+    "official_website": 13,
     "organisation_number": 100,
     "part_of_group": 100,
     "postal_address": 24,
-    "public_brand_name": 9,
+    "public_brand_name": 13,
     "registered_activity": 100,
     "registered_business_address": 100,
     "registered_date": 100,
@@ -151,37 +152,37 @@
     "registry_update": 497,
     "registry_website": 11,
     "role": 410,
-    "self_description": 5,
+    "self_description": 6,
     "share_capital": 90,
-    "social_profile": 13,
+    "social_profile": 19,
     "statutory_purpose": 93,
     "vat_registered": 100,
-    "website_email": 9,
-    "website_phone": 5
+    "website_email": 16,
+    "website_phone": 6
   },
-  "evidence_records": 7000,
+  "evidence_records": 7062,
   "changes_detected": 0,
   "operations": {
-    "requests": 826,
-    "bytes": 62958536,
-    "p50_ms": 449,
-    "p95_ms": 1636,
+    "requests": 1011,
+    "bytes": 71152803,
+    "p50_ms": 209,
+    "p95_ms": 1400,
     "max_requests": 1900,
     "budget_refusals": 0,
-    "rate_limited_responses": 0,
+    "rate_limited_responses": 1,
     "dns_timeouts": 0,
-    "wall_clock_s": 31.8,
+    "wall_clock_s": 61.3,
     "per_company_runtime_ms": {
-      "p50": 3949,
-      "p95": 16183
+      "p50": 4219,
+      "p95": 30696
     },
     "third_party_cost_usd": 0.0,
     "language_model_calls": 0
   },
   "nav_feed": {
     "days": 45,
-    "pages": 93,
-    "active_ads": 9368,
+    "pages": 92,
+    "active_ads": 9363,
     "error": null,
     "loaded": true
   }
