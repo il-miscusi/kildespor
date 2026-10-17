@@ -381,3 +381,12 @@ class GroupDomains(unittest.TestCase):
         with patch.object(website, "caches", cache):
             cands = dict(website.website_candidates(rec))
         self.assertEqual(cands["https://afgruppen.no/"], "registry_email_domain")
+
+
+class RobotsSitemaps(unittest.TestCase):
+    def test_sitemap_lines_are_kept_for_harvest(self) -> None:
+        robots = Robots(["User-agent: *", "Disallow: /admin", "Sitemap: https://x.no/custom-map.xml", "", "sitemap: https://x.no/news.xml", "Sitemap: /relative.xml"], "KildesporBot")
+        self.assertEqual(robots.site_maps(), ["https://x.no/custom-map.xml", "https://x.no/news.xml"])
+        self.assertTrue(robots.allows("https://x.no/"))
+        self.assertIsNone(Robots(["User-agent: *", "Disallow:"], "KildesporBot").site_maps())
+        self.assertIsNone(Robots([], disallow_all=True).site_maps())

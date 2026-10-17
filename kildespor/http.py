@@ -113,6 +113,7 @@ class Robots:
     def __init__(self, lines: list[str], agent: str = "", disallow_all: bool = False) -> None:
         self.disallow_all = disallow_all
         self.rules: list[tuple[bool, str]] = []
+        self.sitemaps: list[str] = []
         if disallow_all:
             return
         groups: list[tuple[list[str], list[tuple[bool, str]]]] = []
@@ -125,6 +126,11 @@ class Robots:
                 continue
             key, value = (part.strip() for part in line.split(":", 1))
             key = key.lower()
+            if key == "sitemap":
+                # Sitemap lines stand outside the groups (RFC 9309 2.3.5); keep absolute http(s) URLs.
+                if value.lower().startswith(("http://", "https://")) and value not in self.sitemaps:
+                    self.sitemaps.append(value)
+                continue
             if key == "user-agent":
                 if in_rules:
                     groups.append((agents, rules))
@@ -141,6 +147,10 @@ class Robots:
         chosen = mine or [r for a, r in groups if "*" in a]
         for group_rules in chosen:
             self.rules.extend(group_rules)
+
+    def site_maps(self) -> list[str] | None:
+        """The sitemap URLs robots.txt declares, as urllib.robotparser returns them (None when there are none)."""
+        return list(self.sitemaps) or None
 
     @staticmethod
     def _matches(pattern: str, path: str) -> bool:
