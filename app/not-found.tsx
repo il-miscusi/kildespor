@@ -1,0 +1,1 @@
+export default function NotFound(){return <main className="main empty"><h1>This page is not in the directory.</h1><p>The link may be incomplete or no longer available.</p><a className="primary" href="/">Return to Kildespor</a></main>;}
