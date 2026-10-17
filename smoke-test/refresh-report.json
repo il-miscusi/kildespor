@@ -1,0 +1,188 @@
+{
+  "agent": "kildespor",
+  "agent_version": "1.0.0",
+  "run": {
+    "run_id": "smoke-100-b",
+    "agent": "kildespor",
+    "agent_version": "1.0.0",
+    "started_at": "2026-10-17T04:59:27Z",
+    "completed_at": "2026-10-17T05:00:15Z",
+    "terminal_status": "completed",
+    "time_budget_s": 900.0,
+    "input_count": 100,
+    "max_requests": 1900
+  },
+  "expected_count": 100,
+  "emitted_envelopes": 100,
+  "validation": {
+    "passed": true,
+    "checks": {
+      "exact_expected_count": true,
+      "same_order_and_membership": true,
+      "unique_organisation_numbers": true,
+      "all_states_terminal": true,
+      "every_available_claim_has_evidence": true
+    },
+    "invalid_states": []
+  },
+  "coverage_by_family": {
+    "legal_identity": {
+      "available": 100,
+      "share_available": 1.0,
+      "states": {
+        "available": 100
+      }
+    },
+    "public_brand": {
+      "available": 9,
+      "share_available": 0.09,
+      "states": {
+        "not_available": 88,
+        "available": 9,
+        "ambiguous": 3
+      }
+    },
+    "annual_accounts": {
+      "available": 100,
+      "share_available": 1.0,
+      "states": {
+        "available": 100
+      }
+    },
+    "leadership": {
+      "available": 100,
+      "share_available": 1.0,
+      "states": {
+        "available": 100
+      }
+    },
+    "workplaces": {
+      "available": 70,
+      "share_available": 0.7,
+      "states": {
+        "available": 70,
+        "not_available": 30
+      }
+    },
+    "official_website": {
+      "available": 9,
+      "share_available": 0.09,
+      "states": {
+        "not_available": 84,
+        "available": 9,
+        "ambiguous": 3,
+        "blocked": 4
+      }
+    },
+    "company_profiles": {
+      "available": 5,
+      "share_available": 0.05,
+      "states": {
+        "not_available": 92,
+        "ambiguous": 3,
+        "available": 5
+      }
+    },
+    "contact_channels": {
+      "available": 28,
+      "share_available": 0.28,
+      "states": {
+        "not_available": 72,
+        "available": 28
+      }
+    },
+    "hiring": {
+      "available": 3,
+      "share_available": 0.03,
+      "states": {
+        "not_available": 97,
+        "available": 3
+      }
+    },
+    "public_activity": {
+      "available": 100,
+      "share_available": 1.0,
+      "states": {
+        "available": 100
+      }
+    }
+  },
+  "available_claims": 7000,
+  "claims_by_field": {
+    "careers_page": 4,
+    "company_news": 10,
+    "financial.annual_result": 283,
+    "financial.audit_opt_out": 283,
+    "financial.current_assets": 282,
+    "financial.equity": 282,
+    "financial.fixed_assets": 273,
+    "financial.long_term_debt": 231,
+    "financial.net_financial_items": 258,
+    "financial.operating_expenses": 280,
+    "financial.operating_result": 280,
+    "financial.profit_before_tax": 281,
+    "financial.revenue": 197,
+    "financial.short_term_debt": 260,
+    "financial.tax_expense": 209,
+    "financial.total_assets": 283,
+    "financial.total_debt": 278,
+    "former_name": 18,
+    "founded_date": 97,
+    "group_relationship": 62,
+    "in_business_register": 100,
+    "industry_code": 100,
+    "latest_filed_accounts_year": 100,
+    "legal_form": 100,
+    "legal_name": 100,
+    "municipality": 97,
+    "official_website": 9,
+    "organisation_number": 100,
+    "part_of_group": 100,
+    "postal_address": 24,
+    "public_brand_name": 9,
+    "registered_activity": 100,
+    "registered_business_address": 100,
+    "registered_date": 100,
+    "registered_employees": 15,
+    "registered_workplace": 72,
+    "registry_phone": 29,
+    "registry_role_change": 261,
+    "registry_status": 100,
+    "registry_update": 497,
+    "registry_website": 11,
+    "role": 410,
+    "self_description": 5,
+    "share_capital": 90,
+    "social_profile": 13,
+    "statutory_purpose": 93,
+    "vat_registered": 100,
+    "website_email": 9,
+    "website_phone": 5
+  },
+  "evidence_records": 7000,
+  "changes_detected": 0,
+  "operations": {
+    "requests": 830,
+    "bytes": 63196834,
+    "p50_ms": 479,
+    "p95_ms": 1771,
+    "max_requests": 1900,
+    "budget_refusals": 0,
+    "rate_limited_responses": 0,
+    "dns_timeouts": 0,
+    "wall_clock_s": 47.3,
+    "per_company_runtime_ms": {
+      "p50": 7457,
+      "p95": 19205
+    },
+    "third_party_cost_usd": 0.0,
+    "language_model_calls": 0
+  },
+  "nav_feed": {
+    "days": 45,
+    "pages": 93,
+    "active_ads": 9382,
+    "error": null,
+    "loaded": true
+  }
+}
