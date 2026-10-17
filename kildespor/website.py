@@ -413,6 +413,7 @@ class RegisterSignals:
         self.housing = form in HOUSING_FORMS or bool(words & HOUSING_WORDS)
         self.holding = bool(words & HOLDING_WORDS)
         self.in_group = bool(entity.get("erIKonsern")) or bool(rec.context.get("group_orgs"))
+        self.group = set(rec.context.get("group_orgs") or set())
 
     # -- screens --------------------------------------------------------------------------
     @staticmethod
@@ -440,6 +441,19 @@ class RegisterSignals:
             return bool(caches is not None and caches.shared_email_domain(domain))
         except Exception:
             return True
+
+    def email_domain_shared(self, domain: str) -> bool:
+        """Shared with other companies. A corporate group's own domain (afgruppen.no is used by 17 group
+        companies) is not shared for a member of that group: no more holders than the group has members."""
+        if not self.domain_shared(domain):
+            return False
+        if domain in FREE_MAIL or not self.group:
+            return True
+        try:
+            holders = caches.email_domain_holders(domain) if caches is not None and hasattr(caches, "email_domain_holders") else 0
+        except Exception:
+            return True
+        return not (0 < holders <= len(self.group))
 
 
 def contact_signals(sig: RegisterSignals, text: str, html: str, soup: BeautifulSoup | None) -> dict[str, str]:
@@ -762,7 +776,7 @@ HARVEST_REQUESTS = 16     # further requests a verified site may draw for contac
 MAX_GUESSES = 14          # name-derived domains DNS-checked per company
 MAX_GUESS_FETCHES = 7     # of those, live candidates actually fetched
 DECLARED_ORIGINS = ("registry_listed", "subunit_registry_listed", "nav_employer_homepage")
-EMAIL_ORIGINS = ("registry_email_domain", "subunit_email_domain")
+EMAIL_ORIGINS = ("registry_email_domain", "subunit_email_domain", "shared_email_domain")
 
 
 def _host_key(url: str) -> str:
@@ -807,8 +821,10 @@ def website_candidates(rec: CompanyRecord, only_nav: bool = False) -> list[tuple
             add(site, "nav_employer_homepage")
     if only_nav:
         return [c for c in candidates if c[1] == "nav_employer_homepage"]
-    housing = RegisterSignals(rec).housing
+    sig = RegisterSignals(rec)
+    housing = sig.housing
     emails = [(entity.get("epostadresse"), "registry_email_domain")] + [(u.get("email"), "subunit_email_domain") for u in subunits]
+    shared_domains: list[str] = []
     for email, origin in emails:
         email = (email or "").strip().lower()
         if "@" not in email or housing:
@@ -816,8 +832,11 @@ def website_candidates(rec: CompanyRecord, only_nav: bool = False) -> list[tuple
         domain = registered_domain(email.rsplit("@", 1)[1])
         if not domain or "." not in domain or domain in FREE_MAIL or is_directory(domain):
             continue
-        if RegisterSignals.domain_shared(domain):
-            continue  # an accountant's or property manager's domain, held by five or more entities
+        if sig.email_domain_shared(domain):
+            # Held by five or more entities: an accountant's or property manager's domain, or a group's
+            # (solvangship.no). Tried after the name guesses, and its contact details prove nothing.
+            shared_domains.append(domain)
+            continue
         add(f"https://{domain}/", origin)
     if caches is not None:
         try:
@@ -852,6 +871,8 @@ def website_candidates(rec: CompanyRecord, only_nav: bool = False) -> list[tuple
             names_by_origin += [(d, "subunit_name_domain") for d in guesses[before:]]
     for domain, origin in names_by_origin[:MAX_GUESSES]:
         add(f"https://{domain}/", origin)
+    for domain in shared_domains:
+        add(f"https://{domain}/", "shared_email_domain")
     return candidates
 
 
@@ -925,6 +946,13 @@ class _Evidence:
         return self.numbers.get(org)
 
 
+SERVICE_PROVIDER_WORDS = re.compile(
+    r"regnskap|revisjon|revisor|accounting|accountant|auditor|bokføring|lønn og|økonomitjenester|advokat|law\s?firm|"
+    r"forvaltning|eiendomsmegl|boligbyggelag|obos|usbl|property\s+manage|business\s+cent|kontorhotell|coworking",
+    re.I,
+)
+
+
 def _umbrella_brand(sig: RegisterSignals, parts: list[tuple[str, str]]) -> bool:
     """The identity text names the start of our legal name but drops a distinctive later word."""
     tokens = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
@@ -961,9 +989,11 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
             contact_hit = contacts["phone"]
     if contact_hit is None and "email_address" in contacts:
         domain = registered_domain(contacts["email_address"][0].rsplit("@", 1)[1])
-        unshared = (not RegisterSignals.domain_shared(domain)) if screen["email"] else (own_domain and domain == site_domain and domain not in FREE_MAIL)
+        unshared = (not sig.email_domain_shared(domain)) if screen["email"] else (own_domain and domain == site_domain and domain not in FREE_MAIL)
         if unshared:
             contact_hit = contacts["email"]
+    if origin == "shared_email_domain":
+        contact_hit = None  # a domain five or more entities use: its contact details are not ours alone
     if contact_hit is not None:
         # A holding or group company shares contact details with its operating sister or parent, and an
         # e-mail domain is no independent proof of the site it was derived from: these need the name too.
@@ -978,6 +1008,11 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
         id_words = set(" ".join(_norm_part(part) for _, part in parts).replace("|", " ").split())
         stem = site_domain.split(".")[0].replace("-", "")
         affinity = any(len(t) >= 4 and t not in GENERIC_NAME_WORDS and (t in id_words or t in stem) for t in legal_core)
+        # Accountants, auditors, lawyers and property managers lend clients their phone and mailbox:
+        # their site carries the client's contact details without being the client's.
+        provider = SERVICE_PROVIDER_WORDS.search(" ".join(part for _, part in parts)) and not SERVICE_PROVIDER_WORDS.search(sig.names[0] if sig.names else "")
+        if provider and not (name_hit or stem_full or affinity):
+            return None
         if (not need_name or name_hit or stem_full) and (others or affinity or name_hit or stem_full):
             return "register_contact_on_site", contact_hit[0], contact_hit[1]
     # Rule 2: the whole legal name in the homepage's identity text, plus one register signal on the site.
@@ -1355,11 +1390,10 @@ def _publish_site(
 
 
 # -- declared cache social profiles ---------------------------------------------------------
-CACHE_SOCIAL_RULES = {
-    ("wikidata", None): "wikidata_p2333_exact_orgnr",
-    ("overture", "overture_email_exact"): "overture_email_exact",
-    ("overture", "overture_website_domain"): "overture_website_domain",
-}
+# Only Wikidata's organisation-number statement (P2333) is an exact join. Overture's strongest rules were
+# measured at about 1 in 60 wrong-company (a sister company's page), so Overture only proposes websites
+# for live verification and never publishes a profile.
+CACHE_SOCIAL_RULES = {("wikidata", "wikidata_p2333_exact_orgnr"): "wikidata_p2333_exact_orgnr"}
 _cache_social_owners: dict[str, set[str]] | None = None
 
 
@@ -1383,11 +1417,9 @@ def _social_owners() -> dict[str, set[str]]:
 
 
 def _publish_cache_socials(rec: CompanyRecord) -> None:
-    """Social profiles a declared open dataset ties to this organisation number by an exact join.
+    """Social profiles Wikidata ties to this organisation number (P2333, an exact join).
 
-    Wikidata P2333 (organisation number) is an exact join; Overture places count only when matched
-    by the registered e-mail or website domain. Name-and-postcode matches are never published from
-    the cache. A profile the cache also gives another organisation is skipped.
+    A profile the caches also give another organisation is skipped. Overture never publishes one.
     """
     if caches is None:
         return
@@ -1400,7 +1432,7 @@ def _publish_cache_socials(rec: CompanyRecord) -> None:
             continue
         source = item.get("source") or ""
         rule = item.get("match_rule") or None
-        method = CACHE_SOCIAL_RULES.get((source, None)) if source == "wikidata" else CACHE_SOCIAL_RULES.get((source, rule))
+        method = CACHE_SOCIAL_RULES.get((source, rule))
         if not method:
             continue
         profile = social_profile(str(item.get("url") or ""))

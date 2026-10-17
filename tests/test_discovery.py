@@ -24,6 +24,7 @@ class FakeCaches:
         self.phones = set(shared_phones)
         self.domains = set(shared_domains)
         self.social = list(social)
+        self.holders = {}
 
     def available(self):
         return ["shared-phones.tsv.gz", "shared-email-domains.tsv.gz"]
@@ -33,6 +34,9 @@ class FakeCaches:
 
     def shared_email_domain(self, domain):
         return domain in self.domains
+
+    def email_domain_holders(self, domain):
+        return self.holders.get(domain, 7 if domain in self.domains else 0)
 
     def candidates(self, orgnr):
         return [dict(item) for item in self.social if item.get("orgnr", ORG) == orgnr]
@@ -250,8 +254,9 @@ class CandidatesAndBudget(unittest.TestCase):
     def test_shared_email_domain_is_no_candidate(self) -> None:
         rec = make_rec(name="NYTT NAVN AS", email="kunde@forvalter.no")
         with patch.object(website, "caches", FakeCaches(shared_domains={"forvalter.no"})):
-            urls = [u for u, _ in website.website_candidates(rec)]
-        self.assertFalse(any("forvalter.no" in u for u in urls))
+            cands = website.website_candidates(rec)
+        # Still tried, last, and labelled so that its contact details never count as proof.
+        self.assertEqual(cands[-1], ("https://forvalter.no/", "shared_email_domain"))
 
     def test_long_and_generic_names_are_guessed(self) -> None:
         self.assertIn("vetnes.no", website.guess_domains("VETNES INVEST AS", limit=12))
@@ -287,8 +292,9 @@ class CacheSocialProfiles(unittest.TestCase):
     def test_exact_cache_profiles_published_name_matches_not(self) -> None:
         rec = make_rec()
         social = [
-            {"url": "https://www.facebook.com/bergbygg", "kind": "social", "platform": "facebook", "source": "wikidata", "match_rule": "p2333", "source_record": "https://www.wikidata.org/wiki/Q1#P2013"},
+            {"url": "https://www.facebook.com/bergbygg", "kind": "social", "platform": "facebook", "source": "wikidata", "match_rule": "wikidata_p2333_exact_orgnr", "source_record": "https://www.wikidata.org/wiki/Q1#P2013"},
             {"url": "https://www.instagram.com/bergbygg", "kind": "social", "platform": "instagram", "source": "overture", "match_rule": "overture_name_postcode", "source_record": "overture:2026-09:x"},
+            {"url": "https://www.x.com/bergbygg", "kind": "social", "platform": "x", "source": "overture", "match_rule": "overture_email_exact", "source_record": "overture:2026-09:w"},
             {"url": "https://www.instagram.com/shared", "kind": "social", "platform": "instagram", "source": "overture", "match_rule": "overture_email_exact", "source_record": "overture:2026-09:y"},
             {"url": "https://www.instagram.com/shared", "kind": "social", "platform": "instagram", "source": "overture", "match_rule": "overture_email_exact", "source_record": "overture:2026-09:z", "orgnr": OTHER},
         ]
@@ -343,3 +349,35 @@ class LabelsAndBareNumbers(unittest.TestCase):
         rec = make_rec(name="AURINKO FILM AS", phone=None)
         pages = {"https://aurinkofilm.com/": html("Stories", f"Partnere: Nordlys AS {ORG}")}
         self.assertEqual(run(rec, pages, guesses=["aurinkofilm.com"]), [])
+
+
+class SharedDomains(unittest.TestCase):
+    def test_group_domain_with_name_in_title_is_found(self) -> None:
+        rec = make_rec(name="SOLVANG ASA", phone="51 84 84 00", email="post@solvangship.no", street="Strandkaien 36", postcode="4005", town="STAVANGER")
+        pages = {"https://solvangship.no/": html("Solvang ASA - shipping", "Strandkaien 36, 4005 Stavanger. Telephone (+47) 51 84 84 00")}
+        out = run(rec, pages, cache=FakeCaches(shared_domains={"solvangship.no"}), guesses=[])
+        self.assertEqual(out, [("name_and_register_signal", "https://solvangship.no/")])
+
+    def test_accountant_domain_contact_match_proves_nothing(self) -> None:
+        rec = make_rec(name="BERG BYGG AS", phone="22 00 11 22", email="berg@regnskap.no")
+        pages = {"https://regnskap.no/": html("Regnskap", "Tlf 22 00 11 22. berg@regnskap.no. Strandgaten 1, 5013 Bergen")}
+        self.assertEqual(run(rec, pages, cache=FakeCaches(shared_domains={"regnskap.no"}), guesses=[]), [])
+
+
+class ServiceProviders(unittest.TestCase):
+    def test_small_accountant_lending_its_contacts_is_refused(self) -> None:
+        # Domain held by fewer than five entities, so the screen does not catch it.
+        rec = make_rec(name="NORDLYS TRANSPORT AS", phone="22 00 11 22", email="nordlys@lilleregnskap.no")
+        pages = {"https://lilleregnskap.no/": html("Lille Regnskap - regnskapsfører i Bergen", "Tlf 22 00 11 22. nordlys@lilleregnskap.no. Strandgaten 1, 5013 Bergen")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
+
+
+class GroupDomains(unittest.TestCase):
+    def test_group_domain_is_ours_for_a_group_member(self) -> None:
+        rec = make_rec(name="AF GRUPPEN ASA", email="post@afgruppen.no", group=True)
+        rec.context["group_orgs"] = {ORG} | {str(911111110 + i) for i in range(20)}
+        cache = FakeCaches(shared_domains={"afgruppen.no"})
+        cache.holders = {"afgruppen.no": 17}
+        with patch.object(website, "caches", cache):
+            cands = dict(website.website_candidates(rec))
+        self.assertEqual(cands["https://afgruppen.no/"], "registry_email_domain")
