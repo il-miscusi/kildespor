@@ -892,6 +892,29 @@ DECLARED_ORIGINS = ("registry_listed", "subunit_registry_listed", "nav_employer_
 EMAIL_ORIGINS = ("registry_email_domain", "subunit_email_domain", "shared_email_domain")
 
 
+DEFERRED_ORIGINS = ("cache_noindex",)
+
+
+def _name_like_domain(host: str, sig: "RegisterSignals") -> bool:
+    """The domain spells one of our names: in full, without its generic words, or as its first
+    distinctive word ("kaefer.no" for KAEFER ENERGY AS, "lundbeck.com" for H. LUNDBECK AS)."""
+    stem = registered_domain(host).split(".")[0].replace("-", "")
+    if not stem:
+        return False
+    for name in sig.names:
+        tokens = [t for t in name_tokens(name) if t not in ("og", "and")]
+        stripped = [t for t in tokens if t not in STRIP_GUESS_WORDS and t not in GEO_SUFFIXES]
+        for variant in (0, 1):
+            fold = lambda ts: [(_ascii_variants(t) + _ascii_variants(t))[variant] for t in ts]  # noqa: E731
+            forms = {"".join(fold(tokens)), "".join(fold(stripped))}
+            first = next((t for t in fold(tokens) if len(t) >= 4 and t not in GENERIC_NAME_WORDS and t not in STRIP_GUESS_WORDS), None)
+            if first:
+                forms.add(first)  # initials skipped: "lundbeck" for H. LUNDBECK AS
+            if stem in {f for f in forms if len(f) >= 3}:
+                return True
+    return False
+
+
 def _host_key(url: str) -> str:
     return registered_domain(urlsplit(url).hostname or "")
 
@@ -1320,11 +1343,14 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
     out_of_time = False
     declared_unread = False
     guess_fetches = 0
+    held = None  # a verified site found only through the .no crawl index, kept until name-like domains are tried
     for url, origin in candidates:
         if visit.time_left() < 5:
             out_of_time = True
             break
         declared = origin in DECLARED_ORIGINS
+        if held is not None and not declared and not _name_like_domain(urlsplit(url).hostname or "", sig):
+            continue
         if not declared:
             if fetcher is not None and fetcher.company_used() >= DISCOVERY_REQUESTS:
                 break
@@ -1360,9 +1386,19 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         if decision is None:
             continue
         identity, identity_snap, span, foreign, group_on_page = decision
+        if origin in DEFERRED_ORIGINS and held is None and not _name_like_domain(urlsplit(snap.final_url).hostname or "", sig):
+            # The crawl index finds the domain whose pages print our number, which can be a secondary
+            # site the company also owns (kaeferenergy.no beside kaefer.no). A domain spelling the name
+            # that verifies too is the better answer; this one is published only if none does.
+            held = (snap, identity_snap, identity, origin, span, foreign, group_on_page)
+            continue
         _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
         return
 
+    if held is not None:
+        snap, identity_snap, identity, origin, span, foreign, group_on_page = held
+        _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
+        return
     if only_nav:
         return
     if not (out_of_time or budget_hit or blocked_reason or declared_unread):

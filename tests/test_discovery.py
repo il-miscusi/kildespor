@@ -638,3 +638,35 @@ class JsonLdOwnFragments(unittest.TestCase):
         for fragment in ("customer", "client-org", "partner_organization", "review", "author", "person", "product", "offer",
                          "supplier-company", "brand", "kunde", "", "webpage", "breadcrumb"):
             self.assertFalse(website._own_org_fragment(fragment), fragment)
+
+
+class NoindexCandidates(unittest.TestCase):
+    NOINDEX = [{"url": "https://hjernenett.no/", "kind": "website", "platform": None, "source": "noindex", "match_rule": "orgnr_on_own_pages", "source_record": "noindex:2026-10-17:hjernenett.no"}]
+
+    def rec(self):
+        return make_rec(name="H. LUNDBECK AS", phone=None)
+
+    def test_noindex_candidate_needs_the_number_live(self) -> None:
+        pages = {"https://hjernenett.no/": html("Hjernenett", "Om hjernen og helse.")}
+        self.assertEqual(run(self.rec(), pages, cache=FakeCaches(social=self.NOINDEX), guesses=[]), [])
+
+    def test_noindex_site_is_published_when_it_is_the_best_verified_candidate(self) -> None:
+        pages = {"https://hjernenett.no/": html("Hjernenett", f"Hjernenett drives av H. Lundbeck AS, org.nr {ORG}")}
+        out = run(self.rec(), pages, cache=FakeCaches(social=self.NOINDEX), guesses=["lundbeck.no"])
+        self.assertEqual(out, [("organisation_number_on_site", "https://hjernenett.no/")])
+
+    def test_a_name_domain_that_verifies_is_preferred(self) -> None:
+        pages = {
+            "https://hjernenett.no/": html("Hjernenett", f"Hjernenett drives av H. Lundbeck AS, org.nr {ORG}"),
+            "https://lundbeck.no/": html("Lundbeck Norge", f"H. Lundbeck AS. Org.nr {ORG} MVA"),
+        }
+        out = run(self.rec(), pages, cache=FakeCaches(social=self.NOINDEX), guesses=["lundbeck.no"])
+        self.assertEqual(out, [("organisation_number_on_site", "https://lundbeck.no/")])
+
+    def test_name_like_domains(self) -> None:
+        sig = website.RegisterSignals(make_rec(name="KAEFER ENERGY AS"))
+        self.assertTrue(website._name_like_domain("kaefer.no", sig))
+        self.assertTrue(website._name_like_domain("www.kaeferenergy.no", sig))
+        self.assertFalse(website._name_like_domain("hjernenett.no", sig))
+        self.assertTrue(website._name_like_domain("lundbeck.com", website.RegisterSignals(make_rec(name="H. LUNDBECK AS"))))
+        self.assertFalse(website._name_like_domain("gruppen.no", website.RegisterSignals(make_rec(name="AF GRUPPEN ASA"))))
