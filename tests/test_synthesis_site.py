@@ -263,6 +263,18 @@ class SiteTests(unittest.TestCase):
                         self.assertTrue(source["u"] and source["t"] and source["h"])
                 self.assertTrue(data["syn"]["summary"])
 
+    def test_placeholder_and_bad_input_envelopes(self) -> None:
+        from kildespor.envelope import placeholder_envelope
+        from kildespor.site import build_site
+
+        envs = [placeholder_envelope("12345", {"run_id": "r1"}, "input is not a nine-digit Norwegian organisation number"), envelope_of(bare_holding())]
+        out = Path(tempfile.mkdtemp()) / "site"
+        build_site(envs, out, None)
+        rows = json.loads((out / "data" / "index.json").read_text())["rows"]
+        self.assertEqual([r["o"] for r in rows], ["12345", "919263601"])
+        data = json.loads((out / "data" / "companies" / "12345.json").read_text())
+        self.assertEqual(data["org"], "12345")
+
     def test_script_parses(self) -> None:
         import re
         import shutil

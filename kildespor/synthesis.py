@@ -173,6 +173,8 @@ def _pct(change: float) -> str:
 
 def _result_words(amount: float, currency: str | None, kind: str) -> str:
     """'net profit of NOK 1.2 million' / 'operating loss of NOK 300 thousand'."""
+    if amount == 0:
+        return f"{kind} result of {money(0, currency)}"
     return f"{kind} {'loss' if amount < 0 else 'profit'} of {money(abs(amount), currency)}"
 
 
@@ -375,7 +377,12 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         lead += f", founded in {str(founded_c['value'])[:4]}"
     industry_en = nace_en(ind_code) if ind_code and not str(ind_code).startswith("00") else None
     phrase = INDUSTRY_PHRASES.get(str(ind_code or "")[:5])
-    if phrase:
+    if phrase and str(ind_code or "").startswith("97.00") and str(form_code or "").upper() in ("BRL", "ESEK", "BBL"):
+        phrase = "under industry code"  # the legal form already says what kind of entity it is
+    if phrase == "under industry code":
+        lead += f" (industry code {ind_code})"
+        phrase = None
+    elif phrase:
         lead += f", {phrase} (industry code {ind_code})"
     elif industry_en:
         lead += f", working in {_lc(industry_en)} (industry code {ind_code})"
@@ -492,7 +499,7 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
             cite.append(net)
             if prev_net is not None and _amount(prev_net) is not None and _cur(prev_net) == _cur(net):
                 pn = _amount(prev_net) or 0.0
-                text += f" (against a {'loss' if pn < 0 else 'profit'} of {money(abs(pn), _cur(prev_net))} in {prev_year})"
+                text += f" (against {_result_words(pn, _cur(prev_net), 'a')} in {prev_year})"
                 cite.append(prev_net)
             parts.append(text)
         if parts:
