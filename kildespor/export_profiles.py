@@ -41,14 +41,31 @@ def company(env: dict[str, Any]) -> dict[str, Any]:
             v = c["value"]
             accounts.append({
                 "type": "group" if v.get("account_type") == "KONSERN" else "company",
-                "year": v.get("fiscal_year"),
+                "year": int(v["fiscal_year"]) if str(v.get("fiscal_year") or "").isdigit() else v.get("fiscal_year"),
                 "metric": c["field"].split(".", 1)[1],
                 "label": c.get("label") or c["field"],
                 "amount": v.get("amount"),
                 "currency": v.get("currency") or "NOK",
                 "sources": c["evidence_ids"],
             })
-    company_revenue = sorted((a for a in accounts if a["metric"] == "revenue" and a["type"] == "company"), key=lambda a: a["year"] or "", reverse=True)
+    # Equity ratio is arithmetic on two filed figures, never a filed figure itself: it is
+    # labelled as computed and cites both inputs.
+    for kind in ("company", "group"):
+        rows = [a for a in accounts if a["type"] == kind]
+        for year in sorted({a["year"] for a in rows}, key=str):
+            equity = next((a for a in rows if a["year"] == year and a["metric"] == "equity"), None)
+            assets = next((a for a in rows if a["year"] == year and a["metric"] == "total_assets"), None)
+            if equity and assets and assets["amount"] and equity["currency"] == assets["currency"]:
+                accounts.append({
+                    "type": kind,
+                    "year": year,
+                    "metric": "equity_ratio",
+                    "label": "Equity ratio (computed: equity / total assets)",
+                    "amount": round(100.0 * equity["amount"] / assets["amount"], 1),
+                    "currency": "%",
+                    "sources": sorted(set(equity["sources"]) | set(assets["sources"])),
+                })
+    company_revenue = sorted((a for a in accounts if a["metric"] == "revenue" and a["type"] == "company"), key=lambda a: str(a["year"] or ""), reverse=True)
     if company_revenue:
         revenue = company_revenue[0]["amount"]
     website = (by("official_website") or [{}])[0].get("value") or {}
@@ -69,6 +86,21 @@ def company(env: dict[str, Any]) -> dict[str, Any]:
                 "period": c.get("reporting_period"),
                 "sources": c["evidence_ids"],
             })
+    # The app resolves header values through facts named like its fields; give it those names.
+    def alias(field: str, area: str, label: str, value: Any, claim: dict[str, Any] | None) -> None:
+        if claim is not None and value not in (None, ""):
+            facts.append({"area": area, "field": field, "label": label, "value": value, "date": claim.get("effective_date"), "period": claim.get("reporting_period"), "sources": claim["evidence_ids"]})
+
+    industry_claims = sorted(by("industry_code"), key=lambda c: c["value"].get("rank", 9))
+    if industry_claims:
+        alias("industry", "identity", "Industry", industry_claims[0]["value"].get("description"), industry_claims[0])
+    employees_claim = (by("registered_employees") or [None])[0]
+    if employees_claim is not None:
+        alias("employees", "people", "Employees (register)", employees_claim["value"], employees_claim)
+    website_claim = (by("official_website") or [None])[0]
+    if website_claim is not None:
+        alias("website", "web", "Official website", website_claim["value"].get("url"), website_claim)
+    accounts.sort(key=lambda a: (a["type"] != "company",))
     activity = []
     for c in claims:
         if c["family"] == "public_activity":
@@ -82,7 +114,7 @@ def company(env: dict[str, Any]) -> dict[str, Any]:
         brief.append({"heading": section.get("heading"), "text": section.get("text"), "sources": sources})
     return {
         "org": env["organisation_number"],
-        "name": ident.get("legal_name"),
+        "name": ident.get("legal_name") or env["organisation_number"],
         "brand": ident.get("public_brand"),
         "legalForm": legal_form.get("description") if isinstance(legal_form, dict) else legal_form,
         "municipality": ident.get("municipality"),

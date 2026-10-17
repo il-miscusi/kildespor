@@ -198,3 +198,31 @@ class SafetyAndOwnershipTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebAppDatasetTests(unittest.TestCase):
+    """The exported profiles.json must satisfy the JBOX app's parseDataset rules (lib/profiles.ts)."""
+
+    def test_export_matches_app_contract(self) -> None:
+        from kildespor.export_profiles import build
+        orgs = ["938702675", "971487046"]
+        recs = {orgs[0]: sample_record(orgs[0]), orgs[1]: CompanyRecord(orgs[1])}
+        envelopes = assemble(orgs, recs, {}, {"run_id": "r1", "completed_at": "2026-10-17T00:00:00Z"}, final=True)
+        data = build(envelopes)
+        self.assertIsInstance(data["run"]["runId"], str)
+        self.assertFalse(data["run"]["runId"].startswith("demo"))
+        self.assertEqual([c["org"] for c in data["companies"]], orgs)
+        states = {"available", "not_available", "ambiguous", "blocked", "failed", "not_applicable"}
+        for company in data["companies"]:
+            self.assertIsInstance(company["name"], str)
+            self.assertEqual(set(company["coverage"]), {"identity", "accounts", "people", "web", "hiring"})
+            for area in company["coverage"].values():
+                self.assertIn(area["state"], states)
+                self.assertIsInstance(area["reason"], str)
+            ids = {e["id"] for e in company["evidence"]}
+            for key in ("brief", "signals", "facts", "accounts", "roles", "workplaces", "profiles", "jobs", "activity"):
+                for item in company[key]:
+                    for ev in item.get("sources", []):
+                        self.assertIn(ev, ids, (key, ev))
+            for e in company["evidence"]:
+                self.assertTrue(str(e["url"]).startswith(("http://", "https://")))

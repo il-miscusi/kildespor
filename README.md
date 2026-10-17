@@ -94,6 +94,37 @@ outbound URL policy, [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) for the
 envelope format and [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for known
 gaps.
 
+## Web app (built with JBOX)
+
+The Next.js app at the repository root (`app/`, `components/`, `lib/`, `public/`)
+was generated with [JBOX](https://jboxai.com) and exported from JBOX into this
+repository. Its history is kept: the commits "Initialize JBOX sandbox base"
+(JBOX) and "Publish latest changes" (JBOXAI) come from JBOX, merged in
+`Merge JBOX web app`. It is a read-only explorer for the agent's output:
+- a directory with search, filters and per-area coverage;
+- company profiles where every fact and brief sentence opens its evidence
+  record;
+- a side-by-side comparison of up to four companies with shareable links;
+- light and dark modes, and a mobile layout.
+
+It has no login, database or secrets, and makes no external calls. It reads
+`public/data/profiles.json` at runtime. Every agent run writes that dataset
+next to its output (`out/profiles.json`), or wherever `--app-data` points:
+
+```bash
+python -m kildespor --input companies.jsonl --output runs/latest/envelopes.jsonl --app-data public/data/profiles.json
+pnpm install && pnpm export        # static site in out/; see STATIC-DATA.md
+```
+
+`pnpm export` writes to `out/`, so give the agent another output folder (as
+above) when you use both. The committed `public/data/profiles.json` is the
+100-company smoke run below. `kildespor/export_profiles.py` defines the
+mapping. The equity ratio it adds is labelled as computed from equity and total
+assets, and it cites both figures.
+
+The agent itself needs none of this. The evaluator's install step and run
+command are only `pip install -r requirements.txt` and `python -m kildespor ...`.
+
 ## 100-company smoke test
 
 [`smoke-test/`](smoke-test/) holds the result of a 100-company run on a clean
