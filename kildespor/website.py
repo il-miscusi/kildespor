@@ -152,7 +152,7 @@ def name_corroboration(legal_name: str, subunits: list[dict[str, Any]], page_tex
 
 
 OWNERSHIP_CONTEXT = re.compile(
-    r"org\.?\s*-?\s*n|\borg\b\.?\s*:?\s*$|organisasjons|foretak|mva|vat|reg\.?\s*nr|registrering|company\s+(reg|no|number)|"
+    r"org\.?\s*-?\s*n|\borg\b\.?\s*:?\s*$|organisasjons|organi[sz]ation\s*(?:no|nr|number|id)|foretak|mva|vat|reg\.?\s*nr|registrering|company\s+(reg|no|number)|"
     r"business\s+(reg|id|no)|(?<![a-z])no\s?$",
     re.I,
 )
