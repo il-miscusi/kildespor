@@ -1930,15 +1930,43 @@ def _articles_to_read(anchors: list[tuple[str, str, Snapshot, str]], news: dict[
     return out
 
 
+VENDOR_WORDS = re.compile(r"\bdesign\s*:|\bwebdesign\b|\bwebbyr[aå]|\breklamebyr[aå]|\bnettbyr[aå]|\bbyr[aå]et\b|hosting\s*:|\bdrift\s*:", re.I)
+
+
+def _vendor_context(anchor: Any) -> bool:
+    """The anchor sits in a credit line or vendor block (levert av, utviklet av, design:, powered by,
+    website by ...), judged on its nearest small container."""
+    node = anchor
+    for _ in range(3):
+        node = node.parent
+        if node is None or getattr(node, "name", None) in ("body", "html", "[document]"):
+            return False
+        if len({a.get("href") for a in node.find_all("a", href=True)}) > 4:
+            return False
+        text = node.get_text(" ", strip=True)
+        if len(text) > 250:
+            return False
+        if CREDIT_WORDS.search(text) or VENDOR_WORDS.search(text):
+            return True
+    return False
+
+
 def _brand_and_contacts(rec: CompanyRecord, home: Snapshot, pages: list[tuple[Snapshot, BeautifulSoup, str]], exact: bool, company_label: str | None, contacts_only: bool = False) -> list[str]:
     phones: dict[str, tuple[Snapshot, str]] = {}
     emails: dict[str, tuple[Snapshot, str]] = {}
     brand_candidates: list[tuple[str, Snapshot, str]] = []
     description: tuple[str, Snapshot] | None = None
+    site_host = _site(home.final_url)
     for snap, soup, _text in pages:
         for anchor in soup.find_all("a", href=True):
             href = anchor["href"].strip()
             label = anchor.get_text(" ", strip=True)
+            if href.lower().startswith(("tel:", "mailto:")) and _vendor_context(anchor):
+                # The web agency's contact in a credit line ("Nettside levert av Webbyrå AS, tlf ..."):
+                # never the company's, except an address on the company's own domain.
+                address = unquote(href[7:].split("?")[0]).strip().lower() if href.lower().startswith("mailto:") else ""
+                if not (address and registered_domain(address.rsplit("@", 1)[-1]) == site_host):
+                    continue
             if href.lower().startswith("tel:"):
                 phone = normalise_phone(href[4:])
                 if phone:

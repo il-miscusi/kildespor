@@ -568,3 +568,22 @@ class PublicationDateTests(unittest.TestCase):
         <p>Velkommen til seminar 16. oktober 2025 hos oss i Bergen, med foredrag og mat.</p></li></ul></body></html>"""
         page = snap("https://www.fjordbygg.no/nyheter/", html)
         self.assertEqual(harvest.listing_items(page, soup_of(html), "fjordbygg.no", require_news_path=False), [])
+
+
+class VendorContactTests(unittest.TestCase):
+    def test_vendor_contacts_are_not_the_companys(self) -> None:
+        """Codex review rc2 N4: the agency's mailto/tel in a "levert av" credit line are not
+        published as the company's website_email/website_phone."""
+        home_html = """<html><head><title>Fjordbygg</title></head><body>
+        <div class="contact"><a href="tel:+4755123456">55 12 34 56</a> <a href="mailto:post@fjordbygg.no">post@fjordbygg.no</a></div>
+        <footer><p>Nettside levert av Webbyrå AS – <a href="mailto:hei@webbyraa.no">hei@webbyraa.no</a>, <a href="tel:+4722998877">22 99 88 77</a></p>
+        <p>Design: <a href="mailto:kontakt@designer.no">kontakt@designer.no</a></p></footer></body></html>"""
+        fetcher = FakeFetcher({}, robots="User-agent: *\nAllow: /\n")
+        rec = record()
+        visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.fjordbygg.no/", home_html)
+        soup, _html, text = parse(home)
+        visit.pages.append((home, soup, text))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+        self.assertEqual(sorted(c["value"] for c in rec.claims if c["field"] == "website_email"), ["post@fjordbygg.no"])
+        self.assertEqual([c["value"] for c in rec.claims if c["field"] == "website_phone"], ["+47 55 12 34 56"])
