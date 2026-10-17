@@ -113,6 +113,16 @@ def _strip_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", parts.query, ""))
 
 
+_TRACKING_PARAM = re.compile(r"^(?:utm_\w+|_gl|_ga|gclid|fbclid|mc_\w+|hs\w*|_hs\w+|ref|source|src|trk|link_source\w*|validator)$", re.I)
+
+
+def _clean_url(url: str) -> str:
+    """``url`` without its fragment and tracking parameters (?_gl=..., ?utm_...)."""
+    parts = urlsplit(url)
+    params = [q for q in parts.query.split("&") if q and "=" in q and not _TRACKING_PARAM.match(q.split("=", 1)[0])]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", "&".join(params), ""))
+
+
 def _segments(url: str) -> list[str]:
     return [unquote(s) for s in urlsplit(url).path.split("/") if s]
 
@@ -594,7 +604,7 @@ CAREER_SEGMENT = re.compile(
     r"^(?:karrierer?|careers?|jobb(?:er)?|jobs|(?:ledige?-?)?stillinger|ledige-jobber|ledig-stilling|vacanc(?:y|ies)|join-?us|"
     r"bli-med(?:-oss)?|bli-en-av-oss|work-(?:with|for|at)-[\w-]+|rekruttering|recruitment|open-positions|jobbmuligheter|"
     r"(?:kom-og-)?jobbe?-(?:hos|i|med|for)-[\w-]+|karriere-og-jobb|jobb-og-karriere|job-opportunities|career-opportunities|"
-    r"arbeid-hos-oss|vi-ansetter|we-are-hiring)(?:\.html?|\.php|\.aspx)?$",
+    r"arbeid-hos-oss|vi-ansetter|we-are-hiring|karriere-(?:i|hos)-[\w-]+|(?:ledige-)?stillinger-(?:i|hos)-[\w-]+|jobb-her|jobba-(?:hos-oss|har)|arbeta-hos-oss)(?:\.html?|\.php|\.aspx)?$",
     re.I,
 )
 CAREER_TEXT = re.compile(
@@ -633,9 +643,9 @@ _ATS_GENERIC_SEGMENTS = {
     "da", "o", "j", "ad", "ads", "list", "list.aspx", "vacancies.aspx", "cv", "ext", "main", "positions", "p", "embed", "candidate",
 }
 ROLE_URL = re.compile(
-    r"/[\w%-]*(?:stilling|position|vacanc|ledig|opening|annonse|jobpost|job-post)[\w%-]*/[^/?#]+"
+    r"/[\w%-]*(?:stilling|position|vacanc|ledige?-?jobb|opening|annonse|jobpost|job-post)[\w%-]*/[^/?#]+"
     r"|/(?:jobs?|jobb|jobber|careers?|karriere|stillinger)/\d{3,}[^/?#]*"
-    r"|[?&](?:jobid|job_id|adid|advertid|positionid|projectid|vacancyid|annonseid)=\d+"
+    r"|[?&](?:jobid|job_id|adid|advertid|positionid|projectid|vacancyid|annonseid|rmjob)=\d+"
     r"|/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     r"|jobID:\d+|/vacancy/\d+|/o/[\w-]{3,}|/j/[0-9A-F]{6,}|/\d{5,}(?=[-_/?#.]|$)",
     re.I,
@@ -722,9 +732,28 @@ def is_careers_link(url: str, text: str, site_host: str) -> int | None:
         return None
     if ats[0] == "finn":
         return 1 if parts.path.lower().startswith("/job/") else None
-    if not ats_tenant(url) and not parts.path.strip("/") and not parts.query:
-        return None  # the vendor's own homepage ("Powered by Teamtailor")
+    if not ats_tenant(url) or re.search(r"utm_campaign=poweredby|powered", parts.query, re.I):
+        return None  # the vendor's own site ("Powered by Teamtailor"), not one employer's page
     return 1
+
+
+def rss_roles(snap: Snapshot, careers_url: str) -> list["Role"]:
+    """Open roles from a careers site's own job feed (Teamtailor publishes /jobs.rss)."""
+    host = _site(careers_url)
+    roles: list[Role] = []
+    for match in _FEED_ITEM.finditer(snap.text()):
+        block = match.group(2)
+        title_m = _FEED_TITLE.search(block)
+        link_m = _FEED_LINK_TEXT.search(block)
+        title = _clean(title_m.group(1)) if title_m else ""
+        link = link_m.group(1).strip() if link_m else None
+        if not title or not link or _site(link) != host:
+            continue
+        dates = {m.group(1).lower(): _clean(m.group(2)) for m in _FEED_DATE.finditer(block)}
+        posted = stamp(dates.get("pubdate") or dates.get("published") or "", to_local=True)
+        city = re.search(r"<tt:city>(.*?)</tt:city>", block, re.S)
+        roles.append(Role(title[:200], _clean_url(link), posted[0] if posted else None, None, _clean(city.group(1)) if city else None, "careers_site_job_feed", title, "careers_job_feed"))
+    return roles[:MAX_JOBS]
 
 
 @dataclass
@@ -790,7 +819,7 @@ def _ld_location(item: dict[str, Any]) -> str | None:
     return None
 
 
-def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, own_site: bool, tenant_ok: bool) -> list[Role]:
+def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, own_site: bool, tenant_ok: bool, site_wide: set[str] | None = None) -> list[Role]:
     """Open roles listed on a careers page (own site) or an ATS listing page.
 
     JSON-LD JobPosting must name this employer (or name none on a page that is the
@@ -849,8 +878,8 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
         if not title or ROLE_NAV_TEXT.match(title) or ROLE_BOILERPLATE.search(title) or ROLE_SECTION.match(title) or re.fullmatch(r"[\d.\s/:-]+", title):
             continue
         key = _norm_url(url)
-        if key in seen or title.lower() in {r.title.lower() for r in links}:
-            continue
+        if key in seen or title.lower() in {r.title.lower() for r in links} or (site_wide and key in site_wide):
+            continue  # a link the homepage also carries is navigation, not a listed role
         seen.add(key)
         card = _card_text(anchor)
         expires = None
@@ -861,7 +890,7 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
                 continue
         location = LOCATION.search(card)
         source = ats[0] if ats else ("company_careers_page" if own_site else "ats_listing")
-        links.append(Role(title, url, None, expires, location.group(1).strip() if location else None, source, title, "careers_page_role_link"))
+        links.append(Role(title, _clean_url(url), None, expires, location.group(1).strip() if location else None, source, title, "careers_page_role_link"))
     off_site = [r for r in links if _site(r.url) != page_site]
     if not own_site or len(links) >= 2 or off_site:
         roles.extend(links)
@@ -874,7 +903,8 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
 NEWS_SEGMENT = re.compile(
     r"^(?:nyheter|nyhet|nyheiter|aktuelt|news|newsroom|presse|press|pressemeldinger|pressemelding|press-releases?|presserom|"
     r"blogg|blog|artikler|artikkel|articles?|nyhetsarkiv|siste-nytt|aktuelle-saker|fagartikler|innsikt|insights|"
-    r"aktuelt-og-nyheter|nyheter-og-aktuelt|media|mediesenter|innlegg|posts?)$",
+    r"aktuelt-og-nyheter|nyheter-og-aktuelt|media|mediesenter|innlegg|posts?)$"
+    r"|^(?:[\w]+-){0,3}(?:nyheter|aktuelt|news|blogg|blog|artikler|presse|pressemeldinger|newsroom)(?:-[\w]+){0,3}$",
     re.I,
 )
 NEWS_TEXT = re.compile(
@@ -1041,17 +1071,19 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> News
                 published, span = (day, day), f"date written near the headline: {day}"
     if published is None:
         return None
-    title = None
     h1 = (soup.find("article") or soup).find("h1")
-    if h1 is not None and is_headline(h1.get_text(" ", strip=True)):
-        title = h1.get_text(" ", strip=True)
-    if title is None:
-        og = soup.find("meta", attrs={"property": "og:title"})
-        if og is not None and og.get("content") and is_headline(_strip_site_suffix(_clean(og["content"]), brands)):
-            title = _strip_site_suffix(_clean(og["content"]), brands)
-    if title is None and soup.title is not None:
-        text = _strip_site_suffix(soup.title.get_text(" ", strip=True), brands)
-        title = text if is_headline(text) else None
+    heading = _clean(h1.get_text(" ", strip=True)) if h1 is not None else ""
+    og = soup.find("meta", attrs={"property": "og:title"})
+    declared = _strip_site_suffix(_clean(og["content"]), brands) if og is not None and og.get("content") else ""
+    if not declared and soup.title is not None:
+        declared = _strip_site_suffix(_clean(soup.title.get_text(" ", strip=True)), brands)
+    title = None
+    if is_headline(heading) and (not declared or _alnum(heading) in _alnum(declared) or _alnum(declared) in _alnum(heading)):
+        title = heading
+    elif is_headline(declared):
+        title = declared  # the page's own title when its <h1> is a section banner
+    elif is_headline(heading):
+        title = heading
     if title is None:
         return None
     title = _clean(title)
@@ -1270,6 +1302,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # Hiring: the careers page (own site first), then the ATS listing it links.
     careers: list[tuple[str, Snapshot, str, str]] = []  # (url, evidence snapshot, span, method)
     roles: list[tuple[Role, Snapshot]] = []
+    site_wide = _site_wide_links(home_soup, home.final_url)
     candidates = _careers_candidates(anchors, sitemap, sitemap_snaps, site_host)
     own = next((c for c in candidates if c[0] in (0, 2)), None)
     ats_links = [c for c in candidates if c[0] == 1]
@@ -1279,8 +1312,16 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if page is not None and _is_careers_page(page, rank, site_host):
             c_snap, c_soup, _ = page
             title = (c_soup.title.get_text(" ", strip=True) if c_soup.title else "") or url
-            careers.append((_strip_url(c_snap.final_url), c_snap, f"careers page: {title[:200]}", "careers_page_on_verified_site"))
-            roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True)]
+            careers.append((_clean_url(c_snap.final_url), c_snap, f"careers page: {title[:200]}", "careers_page_on_verified_site"))
+            roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True, site_wide=site_wide)]
+            listing = None if roles else _job_listing_link(c_snap, c_soup)
+            if listing and listing.endswith(".rss") and plan.can(1, 6.0):
+                feed = plan.raw(listing, headers={"Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.5"})
+                roles += [(r, feed) for r in rss_roles(feed, c_snap.final_url)] if feed is not None else []
+            elif listing and plan.can(1, 6.0):
+                l_page = plan.page(listing)
+                if l_page is not None and _site(l_page[0].final_url) == _site(c_snap.final_url):
+                    roles += [(r, l_page[0]) for r in roles_on_page(l_page[0], l_page[1], rec, own_site=True, tenant_ok=True, site_wide=site_wide)]
             for a in c_soup.find_all(["a", "iframe"]):
                 href = a.get("href") or a.get("src")
                 if not href:
@@ -1292,7 +1333,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 if ats_of(link) and is_careers_link(link, a.get_text(" ", strip=True) if a.name == "a" else "", site_host) == 1 and not ROLE_URL.search(link):
                     ats_links.insert(0, (1, link, c_snap, f"link on the careers page {c_snap.final_url}: {link[:200]}", "@careers-page"))
         elif page is None and rank == 0 and snap is not None:
-            careers.append((_strip_url(url), snap, span, "careers_link_on_verified_site"))
+            careers.append((_clean_url(url), snap, span, "careers_link_on_verified_site"))
     seen_ats: set[str] = set()
     fetched_ats = False
     for _rank, url, snap, span, text in ats_links:
@@ -1309,10 +1350,10 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             page = plan.page(url)
         if page is not None and not ERROR_PAGE.search(page[0].final_url + " " + ((page[1].title.get_text(" ", strip=True) if page[1].title else "")[:200])):
             a_snap, a_soup, _ = page
-            careers.append((_strip_url(a_snap.final_url), a_snap, f"applicant-tracking page ({ats_name}): {(a_soup.title.get_text(' ', strip=True) if a_soup.title else '')[:160]}", "ats_page_linked_from_verified_site"))
+            careers.append((_clean_url(a_snap.final_url), a_snap, f"applicant-tracking page ({ats_name}): {(a_soup.title.get_text(' ', strip=True) if a_soup.title else '')[:160]}", "ats_page_linked_from_verified_site"))
             roles += [(r, a_snap) for r in roles_on_page(a_snap, a_soup, rec, own_site=False, tenant_ok=tenant_ok)]
         elif snap is not None and (tenant_ok or text == "@careers-page" or ats_name == "finn" or CAREER_TEXT.match(text or "")):
-            careers.append((_strip_url(url), snap, span, "ats_link_on_verified_site"))
+            careers.append((_clean_url(url), snap, span, "ats_link_on_verified_site"))
 
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}
@@ -1402,10 +1443,55 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     _publish_hiring(rec, careers, roles, company_label)
     _publish_news(rec, list(news.values()), company_label)
 
+    _note_pages(rec, own_pages(), home, careers, news, site_host)
     rec.checked_fields.update({"social_profile", "website_phone", "website_email", "public_brand_name", "self_description", "careers_page"})
     if visit.time_left() > 5:
         rec.checked_fields.add("company_news")
     rec.context["harvest"] = {"requests": plan.used(), "sitemap_entries": len(sitemap), "profiles": len(profiles), "careers": len(careers), "roles": len(roles), "news": len(news)}
+
+
+_CHROME = re.compile(r"menu|nav|footer|header|mega", re.I)
+
+
+def _site_wide_links(soup: BeautifulSoup, base: str) -> set[str]:
+    """Links in the homepage's navigation, header and footer: they sit on every page."""
+    keys: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        chrome = anchor.find_parent(["nav", "header", "footer"]) is not None or any(
+            _CHROME.search(" ".join(parent.get("class") or []) + " " + str(parent.get("id") or "")) for parent in anchor.parents if getattr(parent, "name", None) not in (None, "[document]", "html", "body")
+        )
+        if chrome:
+            try:
+                keys.add(_norm_url(urljoin(base, anchor["href"].strip())))
+            except ValueError:
+                continue
+    return keys
+
+
+def _note_pages(rec: CompanyRecord, pages: list[tuple[Snapshot, BeautifulSoup, str]], home: Snapshot, careers: list[tuple[str, Snapshot, str, str]], news: dict[str, NewsItem], site_host: str) -> None:
+    """Every page read on the verified site, with its <title> and why it was read (the envelope's
+    crawl.pages_checked and the kit profile's page list are built from these)."""
+    if not hasattr(rec, "note_page"):
+        return
+    career_keys = {_norm_url(c[1].final_url) for c in careers}
+    article_keys = {_norm_url(n.snap.final_url) for n in news.values() if n.method == "article_page_meta"}
+    for snap, soup, _ in pages:
+        key = _norm_url(snap.final_url)
+        segs = _segments(snap.final_url)
+        if snap is home:
+            purpose = "home"
+        elif key in career_keys:
+            purpose = "careers"
+        elif key in article_keys or is_article_url(snap.final_url, site_host):
+            purpose = "news_article"
+        elif is_listing_url(snap.final_url, site_host):
+            purpose = "news_listing"
+        elif segs and CONTACT_SEGMENT.match(segs[-1]):
+            purpose = "contact"
+        else:
+            purpose = "page"
+        title = soup.title.get_text(" ", strip=True) if soup.title else None
+        rec.note_page(snap, title, purpose)
 
 
 def _anchors(pages: list[tuple[Snapshot, BeautifulSoup, str]]) -> list[tuple[str, str, Snapshot, str]]:
@@ -1443,6 +1529,31 @@ def _careers_candidates(anchors: list[tuple[str, str, Snapshot, str]], sitemap: 
             found[_norm_url(entry.loc)] = (0, 10000 + order, entry.loc, sitemap_snaps[0] if sitemap_snaps else None, f"sitemap <loc>{entry.loc[:200]}</loc>", "")
     ranked = sorted(found.values(), key=lambda f: (f[0], len(_segments(f[2])), f[1]))
     return [(rank, url, snap, span, text) for rank, _order, url, snap, span, text in ranked]
+
+
+JOB_LISTING_SEGMENT = re.compile(r"^(?:jobs|jobb|stillinger|ledige-stillinger|ledige-jobber|vacancies|open-positions|positions|openings|alle-stillinger)$", re.I)
+
+
+def _job_listing_link(snap: Snapshot, soup: BeautifulSoup) -> str | None:
+    """The job list a careers landing page links to on its own host (Teamtailor's jobs.rss, a
+    /jobs or /ledige-stillinger sub-page), when the landing page itself lists no roles."""
+    host = (urlsplit(snap.final_url).hostname or "").lower()
+    for node in soup.find_all(["a", "link"], href=True):
+        try:
+            url = urljoin(snap.final_url, node["href"].strip())
+        except ValueError:
+            continue
+        if (urlsplit(url).hostname or "").lower() == host and urlsplit(url).path.lower().endswith("/jobs.rss"):
+            return url
+    for anchor in soup.find_all("a", href=True):
+        try:
+            url = urljoin(snap.final_url, anchor["href"].strip()).split("#")[0]
+        except ValueError:
+            continue
+        segs = _segments(url)
+        if (urlsplit(url).hostname or "").lower() == host and segs and JOB_LISTING_SEGMENT.match(segs[-1]) and _norm_url(url) != _norm_url(snap.final_url):
+            return url
+    return None
 
 
 def _is_careers_page(page: tuple[Snapshot, BeautifulSoup, str], rank: int, site_host: str) -> bool:

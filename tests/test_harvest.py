@@ -161,6 +161,24 @@ class CareersTests(unittest.TestCase):
         page = snap("https://www.fjordbygg.no/karriere/", html)
         self.assertEqual(harvest.roles_on_page(page, soup_of(html), record(), own_site=True, tenant_ok=True), [])
 
+    def test_vacant_premises_and_menu_links_are_not_roles(self) -> None:
+        html = """<html><body><nav class="mega-menu"><a href="/eiendom/ledige-lokaler/leie-kontor-i-bergen">Leie kontor i Bergen</a>
+        <a href="/eiendom/ledige-lokaler/leie-kontor-i-oslo">Leie kontor i Oslo</a></nav><h1>Jobb hos oss</h1>
+        <a href="/jobb/stilling/123456-okonomisjef">Økonomisjef</a><a href="/jobb/stilling/123457-jurist">Jurist</a>
+        <a href="https://www.entra.no/meny/stilling/9999999-fra-menyen">Fra menyen</a></body></html>"""
+        page = snap("https://www.entra.no/om-entra/jobb-hos-entra", html)
+        menu = {"entra.no/meny/stilling/9999999-fra-menyen"}
+        roles = harvest.roles_on_page(page, soup_of(html), record("ENTRA ASA"), own_site=True, tenant_ok=True, site_wide=menu)
+        self.assertEqual([r.title for r in roles], ["Økonomisjef", "Jurist"])
+
+    def test_job_feed_and_tracking_params(self) -> None:
+        rss = f"""<rss xmlns:tt="https://teamtailor.com/locations"><channel><title>Fjordbygg</title>
+        <item><title>Tømrer</title><link>https://karriere.fjordbygg.no/jobs/123-tomrer</link><pubDate>{date.fromisoformat(RECENT).strftime('%a, %d %b %Y')} 08:00:00 +0000</pubDate><tt:locations><tt:location><tt:city>Bergen</tt:city></tt:location></tt:locations></item>
+        </channel></rss>"""
+        roles = harvest.rss_roles(snap("https://karriere.fjordbygg.no/jobs.rss", rss, "application/rss+xml"), "https://karriere.fjordbygg.no/")
+        self.assertEqual((roles[0].title, roles[0].location), ("Tømrer", "Bergen"))
+        self.assertEqual(harvest._clean_url("https://jobs.zaptec.com/?_gl=1*ys5oo6&_ga=2.81&lang=no#top"), "https://jobs.zaptec.com/?lang=no")
+
     def test_ats_tenant(self) -> None:
         self.assertEqual(harvest.ats_tenant("https://fjordbygg.teamtailor.com/jobs"), "fjordbygg")
         self.assertEqual(harvest.ats_tenant("https://jobs.lever.co/fjordbygg/"), "fjordbygg")
@@ -208,6 +226,13 @@ class NewsTests(unittest.TestCase):
         page = snap("https://www.sunnaas.no/fag-og-forskning/nyheter-rkr/bedre-sosial-funksjon", html)
         item = harvest.article_meta(page, soup_of(html), ["Sunnaas sykehus"])
         self.assertEqual((item.title, item.published), ("Bedre sosial funksjon etter hjerneskade", "2025-09-22T20:00:00+02:00"))
+
+    def test_article_title_skips_a_section_banner(self) -> None:
+        html = """<html><head><title>Spedify lanserer reparasjonstjenester</title><meta property="og:title" content="Spedify lanserer reparasjonstjenester">
+        <meta property="article:published_time" content="2026-09-01T10:00:00+02:00"></head>
+        <body><h1>Nyheter, innsikt og erfaringer fra drift, fulfillment og vareflyt</h1></body></html>"""
+        item = harvest.article_meta(snap("https://spedify.no/spedify-3pl-blogg/spedify-lanserer-reparasjonstjenester", html), soup_of(html), ["Spedify"])
+        self.assertEqual(item.title, "Spedify lanserer reparasjonstjenester")
 
     def test_feed_and_wordpress(self) -> None:
         d = date.fromisoformat(RECENT)
@@ -327,6 +352,12 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(len(claim["evidence_ids"]), 1, claim)
         self.assertLessEqual(rec.context["harvest"]["requests"], harvest.HARVEST_REQUESTS)
         self.assertEqual(rec.family_state["hiring"]["state"], "available")
+        if hasattr(rec, "pages_checked"):
+            purposes = {p["url"]: p["purpose"] for p in rec.pages_checked}
+            self.assertEqual(purposes["https://www.fjordbygg.no/"], "home")
+            self.assertEqual(purposes["https://www.fjordbygg.no/karriere/"], "careers")
+            self.assertEqual(purposes["https://www.fjordbygg.no/nyheter/fjordbygg-vinner-kontrakt"], "news_article")
+            self.assertEqual(purposes["https://www.fjordbygg.no/nyheter/"], "news_listing")
 
 
 if __name__ == "__main__":
