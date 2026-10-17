@@ -93,6 +93,8 @@ class CompanyRecord:
     context: dict[str, Any] = field(default_factory=dict)
     # Fields whose source was checked completely this run; refresh reports a removal only for these.
     checked_fields: set[str] = field(default_factory=set)
+    # Pages read on the company's verified site (url, title, sha256, purpose), for the kit profile's bounded pages.
+    pages_checked: list[dict[str, Any]] = field(default_factory=list)
     requests: int = 0
     started_monotonic: float = 0.0
     runtime_ms: int = 0
@@ -166,6 +168,16 @@ class CompanyRecord:
             reporting_period=reporting_period,
             access_policy=access_policy,
         )
+
+    def note_page(self, snap: Snapshot, title: str | None = None, purpose: str = "page") -> None:
+        """Record a page read on the verified site, also when it yielded no claim."""
+        if not snap or not getattr(snap, "sha256", None):
+            return
+        url = snap.final_url or snap.requested_url
+        with self._lock:
+            if any(p["url"] == url for p in self.pages_checked) or len(self.pages_checked) >= 40:
+                return
+            self.pages_checked.append({"url": url, "title": (title or "")[:300], "content_sha256": snap.sha256, "retrieved_at": snap.retrieved_at, "purpose": purpose})
 
     # -- claims ---------------------------------------------------------------------
     def add_claim(

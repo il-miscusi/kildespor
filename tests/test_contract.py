@@ -58,6 +58,17 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(canonical_social("https://no.linkedin.com/company/elopak/about/"), "https://linkedin.com/company/elopak")
         self.assertEqual(canonical_social("https://www.youtube.com/@Elopak/videos"), "https://youtube.com/@Elopak")
         self.assertEqual(canonical_social("https://m.facebook.com/MtmSkogservice?locale=nb"), "https://facebook.com/MtmSkogservice")
+        self.assertEqual(canonical_social("https://www.facebook.com/profile.php?id=100063&ref=x"), "https://facebook.com/profile.php?id=100063")
+
+    def test_kit_pages_include_checked_news_pages(self):
+        env = _envelope()
+        env["crawl"] = {"pages_checked": [
+            {"url": "https://spedify.no/nyheter/", "title": "Nyheter", "content_sha256": "c" * 64},
+            {"url": "https://other.no/nyheter/", "title": "x", "content_sha256": "d" * 64},
+        ]}
+        pages = [p["url"] for p in publish(env)["profile"]["evidence"]["website"]["value"]["pages"]]
+        self.assertIn("https://spedify.no/nyheter/", pages)
+        self.assertNotIn("https://other.no/nyheter/", pages)
 
 
 if __name__ == "__main__":

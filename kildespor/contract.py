@@ -17,7 +17,10 @@ the same verified claims, for readers that consume the kit's shape.
 from __future__ import annotations
 
 from typing import Any
+import re
 from urllib.parse import urlsplit
+
+NEWS_PATH = re.compile(r"/(?:news|press|aktuelt|nyheter|artikler|blog)(?:/|$)", re.I)
 
 # internal field -> published field
 PUBLISHED_FIELD = {
@@ -57,6 +60,9 @@ def canonical_social(url: str) -> str:
     if not platform:
         return url
     segments = [s for s in parts.path.split("/") if s]
+    if platform == "facebook" and segments[:1] == ["profile.php"]:
+        page_id = next((v for k, v in (pair.split("=", 1) for pair in parts.query.split("&") if "=" in pair) if k == "id"), None)
+        return f"https://facebook.com/profile.php?id={page_id}" if page_id else url
     if platform == "linkedin":
         segments = segments[:2]
     elif platform == "youtube" and segments:
@@ -191,7 +197,23 @@ def kit_profile(envelope: dict[str, Any]) -> dict[str, Any]:
     if home_url and site_ev.get("content_sha256"):
         pages.append({"url": home_url, "title": value.get("domain") or "", "content_sha256": site_ev["content_sha256"]})
         seen.add(home_url)
+    # News-path pages first (the kit's site-news reader takes the deepest one), then pages behind claims.
+    site_host = (urlsplit(str(value.get("url") or "")).hostname or "").lower().removeprefix("www.")
+    candidates = list((envelope.get("crawl") or {}).get("pages_checked") or [])
+    candidates += [{"url": e.get("final_url") or e.get("source_url"), "title": "", "content_sha256": e.get("content_sha256")}
+                   for e in envelope.get("evidence", []) if str(e.get("source_class", "")).startswith("company_owned")]
+    for page in sorted(candidates, key=lambda p: 0 if NEWS_PATH.search(urlsplit(str(p.get("url") or "")).path) else 1):
+        url = str(page.get("url") or "")
+        host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+        if not url or url in seen or len(str(page.get("content_sha256") or "")) != 64 or not site_host or not (host == site_host or host.endswith("." + site_host)):
+            continue
+        pages.append({"url": url, "title": str(page.get("title") or "")[:500], "content_sha256": page["content_sha256"]})
+        seen.add(url)
+        if len(pages) >= 12:
+            break
     for claim in claims:
+        if len(pages) >= 12:
+            break
         if claim.get("field") not in ("company_news", "careers_page", "job_posting"):
             continue
         detail = claim.get("value")

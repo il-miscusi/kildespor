@@ -162,6 +162,7 @@ def frozen_copy(rec: CompanyRecord) -> CompanyRecord:
             errors=list(rec.errors),
             context={},
             checked_fields=set(rec.checked_fields),
+            pages_checked=list(rec.pages_checked),
             requests=rec.requests,
             runtime_ms=rec.runtime_ms,
         )

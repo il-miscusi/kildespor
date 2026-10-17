@@ -54,6 +54,7 @@ def build_envelope(
         evidence = dict(rec.evidence)
         family_state = {k: dict(v) for k, v in rec.family_state.items()}
         errors = list(rec.errors)
+        pages_checked = [dict(p) for p in rec.pages_checked]
 
     sections: dict[str, Any] = {}
     for section, families in SECTIONS.items():
@@ -123,6 +124,7 @@ def build_envelope(
         "synthesis": synthesis,
         "changes": changes,
         "refresh": refresh_meta,
+        "crawl": {"pages_checked": pages_checked},
         "errors": errors,
         "operations": {
             "requests": rec.requests,
