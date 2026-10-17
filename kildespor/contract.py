@@ -112,6 +112,13 @@ def publish(envelope: dict[str, Any]) -> dict[str, Any]:
                 item["published_at"] = claim["value"].get("published") or claim["value"].get("date")
             if item.get("value") in (None, ""):
                 continue
+            if item["field"] == "social_profile":
+                twin = next((c for c in claims if c.get("field") == "social_profile" and c.get("availability") == "available"
+                             and str(c.get("value")).lower() == str(item["value"]).lower()), None)
+                if twin is not None:  # same profile from two routes (site link and Wikidata): one claim, both evidence trails
+                    twin["evidence_ids"] = sorted(set(twin["evidence_ids"]) | set(item.get("evidence_ids", [])))
+                    twin["confidence"] = max(twin.get("confidence") or 0, item.get("confidence") or 0)
+                    continue
             published_available.add(item["field"])
             claims.append(item)
         elif field in FAMILY_FIELD and claim.get("value") is None and claim.get("availability") != "available":

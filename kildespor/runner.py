@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, brreg, jobs, model, website
-from .contract import publish
+from .contract import canonical_social, publish
 from .envelope import build_envelope, placeholder_envelope
 from .http import Fetcher, utc_now
 from .model import FAMILIES, STATES, CompanyRecord
@@ -179,11 +179,42 @@ def write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
     os.replace(tmp, path)
 
 
+def _profile_key(claim: dict[str, Any]) -> str | None:
+    if claim.get("field") != "social_profile" or not isinstance(claim.get("value"), dict):
+        return None
+    return canonical_social(str(claim["value"].get("url") or "")).lower() or None
+
+
+def shared_profiles(recs: dict[str, CompanyRecord]) -> set[str]:
+    """Profiles claimed by two or more companies in this run: a group's, agency's or platform's page, not one company's own."""
+    owners: dict[str, set[str]] = {}
+    for org, rec in recs.items():
+        with rec._lock:
+            keys = {_profile_key(c) for c in rec.claims}
+        for key in keys - {None}:
+            owners.setdefault(key, set()).add(org)
+    return {key for key, holders in owners.items() if len(holders) > 1}
+
+
+def withhold_shared_profiles(snap: CompanyRecord, shared: set[str]) -> None:
+    dropped = [c for c in snap.claims if _profile_key(c) in shared]
+    if not dropped:
+        return
+    snap.claims = [c for c in snap.claims if c not in dropped]
+    reason = "profile also claimed by another company in this run; withheld as not exclusively this entity's"
+    for claim in dropped:
+        snap.error("company_profiles", f"withheld {claim['value'].get('url')}: {reason}")
+    if not snap.claims_for("company_profiles"):
+        snap.family_state["company_profiles"] = {"state": "ambiguous", "reason": reason, "checked_sources": [], "decided_at": utc_now()}
+
+
 def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str, dict[str, Any]], run: dict[str, Any], final: bool) -> list[dict[str, Any]]:
     out = []
+    shared = shared_profiles(recs)
     for org in orgs:
         try:
             snap = frozen_copy(recs[org])
+            withhold_shared_profiles(snap, shared)
             if final:
                 snap.finalize_states()
             else:

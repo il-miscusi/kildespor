@@ -73,3 +73,37 @@ class ContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SharedProfileTest(unittest.TestCase):
+    def test_profile_claimed_by_two_companies_is_withheld(self):
+        from kildespor.model import CompanyRecord
+        from kildespor.runner import frozen_copy, shared_profiles, withhold_shared_profiles
+
+        recs = {}
+        for org, handle in (("111111111", "acmegroup"), ("222222222", "acmegroup"), ("333333333", "solo")):
+            rec = CompanyRecord(org)
+            rec.add_claim(family="company_profiles", field_name="social_profile",
+                          value={"platform": "facebook", "url": f"https://www.facebook.com/{handle}/"},
+                          evidence_ids=["ev-1"], method="fixture")
+            rec.set_state("company_profiles", "available", "fixture")
+            recs[org] = rec
+        shared = shared_profiles(recs)
+        self.assertEqual(shared, {"https://facebook.com/acmegroup"})
+        snap = frozen_copy(recs["111111111"])
+        withhold_shared_profiles(snap, shared)
+        self.assertEqual(snap.claims_for("company_profiles"), [])
+        self.assertEqual(snap.family_state["company_profiles"]["state"], "ambiguous")
+        solo = frozen_copy(recs["333333333"])
+        withhold_shared_profiles(solo, shared)
+        self.assertEqual(len(solo.claims_for("company_profiles")), 1)
+
+    def test_same_profile_from_two_routes_is_one_published_claim(self):
+        env = _envelope()
+        env["claims"].append({"id": "cl-9", "key": "social_profile:wd", "family": "company_profiles", "field": "social_profile",
+                              "value": {"platform": "facebook", "url": "https://facebook.com/Spedify.no"},
+                              "availability": "available", "confidence": 0.85, "evidence_ids": ["ev-wd"]})
+        out = publish(env)
+        socials = [c for c in out["claims"] if c["field"] == "social_profile" and c["availability"] == "available"]
+        self.assertEqual(len(socials), 1)
+        self.assertEqual(set(socials[0]["evidence_ids"]), {"ev-1", "ev-wd"})
