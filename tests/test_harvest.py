@@ -504,3 +504,36 @@ class SitemapProvenanceTests(unittest.TestCase):
         sources = {c["field"]: rec.evidence[c["evidence_ids"][0]]["source_url"] for c in rec.claims if c["field"] in ("company_news", "careers_page")}
         self.assertEqual(sources["company_news"], "https://www.fjordbygg.no/news-sitemap.xml")
         self.assertEqual(sources["careers_page"], "https://www.fjordbygg.no/page-sitemap.xml")
+
+
+class PublicationDateTests(unittest.TestCase):
+    """Codex review rc1 finding 9: only publication-specific dates date a news item."""
+
+    def test_date_near_the_headline_is_not_a_publication_date(self) -> None:
+        html = """<html><head><title>Prosjektet på Voss</title></head><body><article><h1>Prosjektet på Voss</h1>
+        <p>Seminaret arrangeres 16. oktober 2026. Prosjektet ble ferdig i 2019.</p><time datetime="2026-10-16">16. oktober</time></article></body></html>"""
+        self.assertIsNone(harvest.article_meta(snap("https://www.fjordbygg.no/nyheter/prosjektet-pa-voss", html), soup_of(html), ["Fjordbygg"]))
+
+    def test_byline_time_is_a_publication_date(self) -> None:
+        html = f"""<html><head><title>Ny kontrakt i Bergen</title></head><body><article><header><h1>Ny kontrakt i Bergen</h1>
+        <div class="byline">Publisert <time datetime="{RECENT}T09:00:00+02:00">{RECENT}</time></div></header><p>Tekst</p></article></body></html>"""
+        item = harvest.article_meta(snap("https://www.fjordbygg.no/nyheter/ny-kontrakt", html), soup_of(html), ["Fjordbygg"])
+        self.assertEqual(item.published, f"{RECENT}T09:00:00+02:00")
+
+    def test_atom_updated_alone_is_not_published(self) -> None:
+        atom = f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Oppdatert side om tjenester</title>
+        <link href="https://www.fjordbygg.no/tjenester-oppdatert"/><updated>{RECENT}T10:00:00Z</updated></entry>
+        <entry><title>Publisert nyhet om bygg</title><link href="https://www.fjordbygg.no/nyheter/publisert"/><published>{RECENT}T10:00:00Z</published><updated>{RECENT}T11:00:00Z</updated></entry></feed>"""
+        items = harvest.feed_items(snap("https://www.fjordbygg.no/feed.atom", atom, "application/atom+xml"), "fjordbygg.no")
+        self.assertEqual([i.title for i in items], ["Publisert nyhet om bygg"])
+
+    def test_future_dates_are_never_publication_dates(self) -> None:
+        tomorrow = (date.today() + timedelta(days=2)).isoformat()
+        self.assertFalse(harvest._news_window(tomorrow))
+        self.assertTrue(harvest._news_window(RECENT))
+
+    def test_listing_date_inside_a_teaser_sentence_is_ignored(self) -> None:
+        html = """<html><body><ul><li><a href="/nyheter/seminar-om-bygg">Seminar om bygg og anlegg</a>
+        <p>Velkommen til seminar 16. oktober 2025 hos oss i Bergen, med foredrag og mat.</p></li></ul></body></html>"""
+        page = snap("https://www.fjordbygg.no/nyheter/", html)
+        self.assertEqual(harvest.listing_items(page, soup_of(html), "fjordbygg.no", require_news_path=False), [])

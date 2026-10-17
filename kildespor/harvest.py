@@ -226,8 +226,9 @@ def _news_window(day: str) -> bool:
         parsed = date.fromisoformat(day[:10])
     except ValueError:
         return False
-    today = _today()
-    return today - timedelta(days=NEWS_MAX_AGE_DAYS) <= parsed <= today + timedelta(days=1)
+    today = datetime.now(OSLO).date() if OSLO is not None else _today()
+    # A date after today is never a publication date (an event, a deadline, a typo).
+    return today - timedelta(days=NEWS_MAX_AGE_DAYS) <= parsed <= today
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1184,8 +1185,13 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
         if time_tag is not None:
             published = stamp(time_tag.get("datetime")) or stamp(time_tag.get_text(" ", strip=True))
         if published is None:
-            day = text_date(block.get_text(" ", strip=True)[:400])
-            published = (day, day) if day else None
+            # A dateline beside the item's own title ("14.10.2026", "Publisert 14. oktober 2026"),
+            # never a date inside a sentence of the teaser.
+            for string in block.find_all(string=True):
+                text = str(string).strip()
+                if 6 <= len(text) <= 40 and (day := text_date(text)):
+                    published = (day, day)
+                    break
         if published is None:
             continue
         title = None
@@ -1207,9 +1213,21 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
 _PUBLISHED_META = (
     ("property", "article:published_time"), ("property", "og:article:published_time"), ("name", "article:published_time"),
     ("itemprop", "datePublished"), ("name", "pubdate"), ("name", "publishdate"), ("name", "publish_date"), ("name", "publish-date"),
-    ("name", "date"), ("name", "dc.date.issued"), ("name", "DC.date.issued"), ("name", "dcterms.created"), ("name", "parsely-pub-date"),
-    ("name", "sailthru.date"), ("property", "og:published_time"),
+    ("name", "dc.date.issued"), ("name", "DC.date.issued"), ("name", "parsely-pub-date"), ("property", "og:published_time"),
 )
+_BYLINE = re.compile(r"byline|publi|post-?date|entry-?date|entry-?meta|post-?meta|article-?meta|article-?header|entry-?header|post-?header|dateline|dato", re.I)
+
+
+def _byline_time(scope: Any) -> Any:
+    """A <time> that dates the article itself: marked datePublished/pubdate, or sitting in the
+    article's header or byline. A <time> in the body (an event, a deadline) does not count."""
+    for tag in scope.find_all("time", attrs={"datetime": True}):
+        if (tag.get("itemprop") or "").lower() == "datepublished" or tag.has_attr("pubdate") or _BYLINE.search(" ".join(tag.get("class") or [])):
+            return tag
+        for parent in list(tag.parents)[:4]:
+            if getattr(parent, "name", None) == "header" or _BYLINE.search(" ".join(parent.get("class") or []) if hasattr(parent, "get") else ""):
+                return tag
+    return None
 
 
 def _strip_site_suffix(title: str, brands: list[str]) -> str:
@@ -1242,17 +1260,12 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> News
                     break
     if published is None:
         scope = soup.find("article") or soup.find("main") or soup
-        time_tag = scope.find("time", attrs={"datetime": True})
+        time_tag = _byline_time(scope)
         if time_tag is not None:
             published = stamp(time_tag["datetime"])
             span = f'<time datetime="{time_tag["datetime"]}">' if published else None
-        if published is None:
-            h1 = scope.find("h1")
-            text = " ".join(t.get_text(" ", strip=True) for t in ([h1.parent] if h1 is not None and h1.parent is not None else [scope]))[:600]
-            day = text_date(text)
-            if day:
-                published, span = (day, day), f"date written near the headline: {day}"
-    if published is None:
+    # Never a date merely written near the headline: it may be an event, a deadline or a project year.
+    if published is None or not _news_window(published[1]):
         return None
     h1 = (soup.find("article") or soup).find("h1")
     heading = _clean(h1.get_text(" ", strip=True)) if h1 is not None else ""
@@ -1299,7 +1312,8 @@ def feed_items(snap: Snapshot, site_host: str) -> list[NewsItem]:
                     link = html_lib.unescape(href.group(1))
                     break
         dates = {m.group(1).lower(): _clean(m.group(2)) for m in _FEED_DATE.finditer(block)}
-        raw = dates.get("pubdate") or dates.get("published") or dates.get("dc:date") or dates.get("updated") or dates.get("a10:updated")
+        # Publication dates only: an Atom entry with nothing but <updated> carries a modification time.
+        raw = dates.get("pubdate") or dates.get("published")
         published = stamp(raw, to_local=True) if raw else None
         if not published or not is_headline(title):
             continue
