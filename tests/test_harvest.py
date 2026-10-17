@@ -281,6 +281,16 @@ class CareersTests(unittest.TestCase):
         roles = harvest.roles_on_page(snap("https://www.fjordbygg.no/jobb/", html), soup_of(html), record(), own_site=True, tenant_ok=True, rejected=set())
         self.assertEqual([r.title for r in roles], ["Tømrer", "Maler"])
 
+    def test_open_applications_and_host_digits_are_not_roles(self) -> None:
+        html = """<html><body><h1>Ledige stillinger</h1>
+        <a href="/ledige-stillinger/spontansoknad/">Spontansøknad</a>
+        <a href="/ledige-stillinger/karriere-instalco/">Hva vil det si å jobbe i et Instalco-selskap?</a>
+        <a href="/ledige-stillinger/123456-rorlegger">Rørlegger</a><a href="/ledige-stillinger/123457-servicetekniker">Servicetekniker</a></body></html>"""
+        roles = harvest.roles_on_page(snap("https://total-vvs.no/ledige-stillinger/", html), soup_of(html), record("TOTAL VVS AS"), own_site=True, tenant_ok=True, rejected=set())
+        self.assertEqual([r.title for r in roles], ["Rørlegger", "Servicetekniker"])
+        taxi = '<html><body><a href="https://02365.no/bedrifter/">Bedrifter</a><a href="https://02365.no/bestilling/">Bestilling</a><a href="https://02365.no/tjenester/">Tjenester</a></body></html>'
+        self.assertEqual(harvest.roles_on_page(snap("https://02365.no/jobb-som-sjafor/", taxi), soup_of(taxi), record("CHRISTIANIA TAXI AS"), own_site=True, tenant_ok=True, rejected=set()), [])
+
     def test_single_team_link_is_not_a_role(self) -> None:
         html = '<html><body><h1>Karriere</h1><a href="/karriere/stilling/historien-om-oss">Historien om oss</a></body></html>'
         page = snap("https://www.fjordbygg.no/karriere/", html)

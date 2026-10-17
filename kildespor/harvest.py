@@ -815,6 +815,16 @@ DEADLINE = re.compile(r"(?:søknadsfrist|frist|deadline|apply\s+by|application\s
 LOCATION = re.compile(r"\b(?i:arbeidssted|sted|lokasjon|location|kontorsted)\s*:\s*([A-ZÆØÅ][\wæøåÆØÅ.\-]{1,30}(?:,? [A-ZÆØÅ][\wæøåÆØÅ.\-]{1,30})?)")
 
 
+# Open applications and pages about working here sit under the careers path but are not vacancies.
+NOT_A_ROLE = re.compile(r"spontan|[aå]pen[- ]s[øo]knad|apen-soknad|open[- ]application|general[- ]applications?|generell[- ]s[øo]knad|karriere|career|jobbe-i-et|om-oss", re.I)
+
+
+def _role_url(url: str) -> bool:
+    """The URL's path or query (never its host: 02365.no is a taxi company, not an ad id) looks like one ad."""
+    parts = urlsplit(url)
+    return bool(ROLE_URL.search(parts.path + ("?" + parts.query if parts.query else "")))
+
+
 def ats_of(url: str) -> tuple[str, str] | None:
     """(ATS name, matched domain) when ``url`` is on a known applicant-tracking host."""
     host = (urlsplit(url).hostname or "").lower()
@@ -1077,9 +1087,11 @@ def roles_on_page(
         if ats is not None and ats[0] == "finn":
             if not re.search(r"finnkode=\d+|/ad/\d+|/job/(?:fulltime|parttime|management)/ad", url, re.I):
                 continue
-        elif not ROLE_URL.search(url) or NOT_A_ROLE_PATH.search(urlsplit(url).path):
+        elif not _role_url(url) or NOT_A_ROLE_PATH.search(urlsplit(url).path) or NOT_A_ROLE.search(_segments(url)[-1] if _segments(url) else ""):
             continue
         title = _role_title(anchor)
+        if title and NOT_A_ROLE.search(title):
+            continue  # an open application or a page about working here, not a vacancy
         if not title or ROLE_NAV_TEXT.match(title) or ROLE_BOILERPLATE.search(title) or ROLE_SECTION.match(title) or re.fullmatch(r"[\d.\s/:-]+", title):
             continue
         key = _norm_url(url)
@@ -1673,7 +1685,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                     link = urljoin(c_snap.final_url, str(href)).split("#")[0]
                 except ValueError:
                     continue
-                if ats_of(link) and is_careers_link(link, a.get_text(" ", strip=True) if a.name == "a" else "", site_host) == 1 and not ROLE_URL.search(link):
+                if ats_of(link) and is_careers_link(link, a.get_text(" ", strip=True) if a.name == "a" else "", site_host) == 1 and not _role_url(link):
                     ats_links.insert(0, (1, link, c_snap, f"link on the careers page {c_snap.final_url}: {link[:200]}", "@careers-page"))
         elif page is None and rank == 0 and snap is not None:
             careers.append((_clean_url(url), snap, span, "careers_link_on_verified_site"))
