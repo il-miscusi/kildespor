@@ -151,7 +151,11 @@ def name_corroboration(legal_name: str, subunits: list[dict[str, Any]], page_tex
     return None
 
 
-OWNERSHIP_CONTEXT = re.compile(r"org\.?\s*-?\s*n|organisasjons|foretak|mva|vat|reg\.?\s*nr|registrering|company\s+(reg|no|number)", re.I)
+OWNERSHIP_CONTEXT = re.compile(
+    r"org\.?\s*-?\s*n|\borg\b\.?\s*:?\s*$|organisasjons|foretak|mva|vat|reg\.?\s*nr|registrering|company\s+(reg|no|number)|"
+    r"business\s+(reg|id|no)|(?<![a-z])no\s?$",
+    re.I,
+)
 CREDIT_WORDS = re.compile(r"levert av|laget av|designet av|design av|utviklet av|utvikla av|nettside av|webside av|hjemmeside av|webdesign|web design|powered by|made by|website by|site by|developed by|designed by|built by|produsert av|\bbyrå\b", re.I)
 
 
@@ -266,7 +270,7 @@ def number_contexts(text: str) -> dict[str, tuple[str, str]]:
             kind = "credit"
         elif MENTION_CONTEXT.search(before):
             kind = "mention"
-        elif OWNERSHIP_CONTEXT.search(before[-40:] + " " + after):
+        elif OWNERSHIP_CONTEXT.search(before[-40:]) or OWNERSHIP_CONTEXT.search(after.lstrip()[:12]):
             kind = "owner"
         else:
             kind = "bare"
@@ -753,10 +757,10 @@ def _org_on_page(text: str, html: str, org: str) -> tuple[bool, str | None, dict
     return org in numbers, numbers.get(org), numbers
 
 
-DISCOVERY_REQUESTS = 11   # requests the search for a site may spend (DNS lookups are free)
+DISCOVERY_REQUESTS = 15   # requests the search for a site may spend (DNS lookups are free)
 HARVEST_REQUESTS = 16     # further requests a verified site may draw for contact, sitemap, careers and news pages
-MAX_GUESSES = 12          # name-derived domains DNS-checked per company
-MAX_GUESS_FETCHES = 5     # of those, live candidates actually fetched
+MAX_GUESSES = 14          # name-derived domains DNS-checked per company
+MAX_GUESS_FETCHES = 7     # of those, live candidates actually fetched
 DECLARED_ORIGINS = ("registry_listed", "subunit_registry_listed", "nav_employer_homepage")
 EMAIL_ORIGINS = ("registry_email_domain", "subunit_email_domain")
 
@@ -1047,6 +1051,12 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
                 return None
             return "organisation_number_on_site", own[2], own[1], foreign_any, group_on_page
         if own is not None and own[0] == "bare":
+            # Our number without a label ("Firma AS 938 702 675" in a footer) is ours when the site also
+            # names us or shows a register contact, and no other organisation claims the site.
+            name_hit = next((part for _, part in parts for n in sig.names if name_in_part(n, part)), None)
+            signal = next((ev.contacts[k][0] for k in ("phone", "email", "street", "postcode_town", "person", "email_domain") if k in ev.contacts), None)
+            if (name_hit or signal) and not (foreign_primary or group_on_page or len(foreign_any) >= 3):
+                return "organisation_number_with_register_signal", own[2], f"{own[1]}; {signal or 'name in identity text: ' + str(name_hit)[:100]}", foreign_any, group_on_page
             rec.error("website", "organisation number found without an ownership label; not treated as this entity's site", snap.final_url)
             rec.context["website_ambiguous"] = snap.final_url
             rec.context["website_ambiguous_reason"] = f"{snap.final_url} mentions this organisation number but not as its own registration"
@@ -1316,7 +1326,7 @@ def _publish_site(
         relationship = "group_site"
     elif identity.endswith("_other_entity_on_site"):
         relationship = "registry_listed_site_names_another_entity" if identity.startswith("registry") else "listed_site_names_another_entity"
-    confidence = 0.99 if exact else 0.93 if "register_contact_on_site" in identity else 0.92 if "name_and_register_signal" in identity else 0.9 if identity.endswith("name_on_site") else 0.88 if identity.endswith(("name_in_metadata", "domain_spells_name")) else 0.8
+    confidence = 0.99 if exact else 0.96 if "organisation_number" in identity else 0.93 if "register_contact_on_site" in identity else 0.92 if "name_and_register_signal" in identity else 0.9 if identity.endswith("name_on_site") else 0.88 if identity.endswith(("name_in_metadata", "domain_spells_name")) else 0.8
     rec.add_claim(
         family="official_website",
         field_name="official_website",

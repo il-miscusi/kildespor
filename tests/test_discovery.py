@@ -327,3 +327,19 @@ class SuccessorsAndUmbrellas(unittest.TestCase):
         with patch("kildespor.harvest._extract_site_facts", lambda *a, **k: None):
             website._publish_site(rec, visit, home, home, "registry_listed_name_on_site", "registry_listed", "Peab Bygg", set(), set())
         self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://peab.no/")
+
+
+class LabelsAndBareNumbers(unittest.TestCase):
+    def test_org_colon_and_vat_prefix_are_ownership_labels(self) -> None:
+        kinds = {n: k for n, (k, _) in website.number_contexts(f"To salg & Service AS Org: {ORG[:3]} {ORG[3:6]} {ORG[6:]} | Rotsund NO{OTHER}").items()}
+        self.assertEqual(kinds, {ORG: "owner", OTHER: "owner"})
+
+    def test_bare_number_with_name_is_ours(self) -> None:
+        rec = make_rec(name="AURINKO FILM AS", phone=None)
+        pages = {"https://aurinkofilm.com/": html("Aurinko Film AS | Arctic Stories", f"Contact us. Aurinko Film AS {ORG}")}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=["aurinkofilm.com"])], ["organisation_number_with_register_signal"])
+
+    def test_bare_number_alone_is_not(self) -> None:
+        rec = make_rec(name="AURINKO FILM AS", phone=None)
+        pages = {"https://aurinkofilm.com/": html("Stories", f"Partnere: Nordlys AS {ORG}")}
+        self.assertEqual(run(rec, pages, guesses=["aurinkofilm.com"]), [])
