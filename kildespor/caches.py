@@ -87,9 +87,16 @@ def _build_candidates() -> dict[str, list[tuple[str, ...]]]:
     return index
 
 
-def _build_set(name: str) -> frozenset[str]:
+GENERIC = 10**6  # count recorded for a generic mailbox provider
+
+
+def _build_counts(name: str) -> dict[str, int]:
     path = DATA_DIR / name
-    values = frozenset(fields[0] for fields in _rows(path) if fields and fields[0])
+    values: dict[str, int] = {}
+    for fields in _rows(path):
+        if fields and fields[0]:
+            count = fields[1] if len(fields) > 1 else ""
+            values[fields[0]] = int(count) if count.isdigit() else GENERIC
     if path.exists():
         _rows_loaded[name] = len(values)
     return values
@@ -135,10 +142,15 @@ def phone8(number: str) -> str | None:
     return digits[-8:] if len(digits) >= 8 else None
 
 
+def phone_holders(number: str) -> int:
+    """How many distinct companies list this number (sub-units counted under their parent); 0 below five or unknown."""
+    key = phone8(number)
+    return _load("shared-phones", lambda: _build_counts("shared-phones.tsv.gz")).get(key, 0) if key else 0
+
+
 def shared_phone(number: str) -> bool:
     """True when five or more register entities list this number (accountants, managers, group switchboards)."""
-    key = phone8(number)
-    return bool(key) and key in _load("shared-phones", lambda: _build_set("shared-phones.tsv.gz"))
+    return phone_holders(number) > 0
 
 
 def _email_domain(value: str) -> str:
@@ -149,19 +161,28 @@ def _email_domain(value: str) -> str:
     return value.strip(".").removeprefix("www.")
 
 
+def email_domain_holders(domain: str) -> int:
+    """How many distinct companies use this e-mail domain (``GENERIC`` for a mailbox provider); 0 below five or unknown.
+
+    Accepts a domain or a whole address; a sub-domain inherits its parent domain's count.
+    Note that a group's own domain counts its subsidiaries too (afgruppen.no is "shared").
+    """
+    host = _email_domain(domain)
+    if not host or "." not in host:
+        return 0
+    shared = _load("shared-email-domains", lambda: _build_counts("shared-email-domains.tsv.gz"))
+    if not shared:
+        return 0
+    labels = host.split(".")
+    return max((shared.get(".".join(labels[i:]), 0) for i in range(len(labels) - 1)), default=0)
+
+
 def shared_email_domain(domain: str) -> bool:
     """True for a generic mailbox provider or a domain five or more register entities use for e-mail.
 
     Accepts a domain or a whole address. A sub-domain of a shared domain is shared too.
     """
-    host = _email_domain(domain)
-    if not host or "." not in host:
-        return False
-    shared = _load("shared-email-domains", lambda: _build_set("shared-email-domains.tsv.gz"))
-    if not shared:
-        return False
-    labels = host.split(".")
-    return any(".".join(labels[i:]) in shared for i in range(len(labels) - 1))
+    return email_domain_holders(domain) > 0
 
 
 def register_contacts(orgnr: str) -> dict[str, list[str]]:

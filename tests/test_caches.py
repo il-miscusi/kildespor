@@ -68,6 +68,10 @@ class CachesTest(unittest.TestCase):
         self.assertTrue(caches.shared_email_domain("GMAIL.COM"))
         self.assertFalse(caches.shared_email_domain("equinor.com"))
         self.assertFalse(caches.shared_email_domain(""))
+        self.assertEqual(caches.email_domain_holders("a@mail.obos.no"), 300)
+        self.assertEqual(caches.email_domain_holders("gmail.com"), caches.GENERIC)
+        self.assertEqual(caches.phone_holders("22334455"), 12)
+        self.assertEqual(caches.phone_holders("99999999"), 0)
 
     def test_register_contacts(self) -> None:
         got = caches.register_contacts("923609016")
