@@ -598,3 +598,19 @@ class SectionRedirects(unittest.TestCase):
         with patch("kildespor.harvest._extract_site_facts", lambda *a, **k: None):
             website._publish_site(rec, visit, home, home, "organisation_number_on_site", "name_derived_domain", f"Org.nr {ORG}", set(), set())
         self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://berggruppen.no/berg-bygg/")
+
+
+class JsonLdLocalIds(unittest.TestCase):
+    def test_customer_with_local_id_is_not_bound(self) -> None:
+        ld = '<script type="application/ld+json">{"@type":"Organization","@id":"https://digitaltbyra.no/#customer","name":"Berg Bygg AS"}</script>'
+        rec = make_rec(name="BERG BYGG AS", phone=None)
+        pages = {"https://digitaltbyra.no/": html("Digitalt Byrå", "Kundecase. Strandgaten 9, 5013 Bergen", ld)}
+        self.assertEqual(run(rec, pages, guesses=["digitaltbyra.no"]), [])
+        ld2 = '<script type="application/ld+json">{"@type":"Organization","@id":"https://digitaltbyra.no/#customer","url":"https://digitaltbyra.no/","name":"Berg Bygg AS"}</script>'
+        soup = page("https://digitaltbyra.no/", html("Digitalt Byrå", "", ld2))[1]
+        self.assertEqual([l for l, _ in website.identity_parts(soup, "", "digitaltbyra.no") if l.startswith("JSON-LD")], [])
+
+    def test_site_organisation_with_organization_fragment_is_bound(self) -> None:
+        ld = '<script type="application/ld+json">{"@type":"Organization","@id":"https://bb.no/#organization","url":"https://bb.no/","name":"Berg Bygg AS"}</script>'
+        soup = page("https://bb.no/", html("Hjem", "", ld))[1]
+        self.assertIn(("JSON-LD name", "Berg Bygg AS"), website.identity_parts(soup, "", "bb.no"))

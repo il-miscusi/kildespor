@@ -373,8 +373,18 @@ def _ld_bound_names(soup: BeautifulSoup, site_domain: str | None) -> list[tuple[
                             publisher_ids.add(str(ref["@id"]))
                         if not (_types(ref) & {"Person"}) and len(ref) > 1:
                             out.extend(names_of(ref))
+    def own_id(value: Any) -> bool:
+        # A local @id binds only when it names the site's own organisation ("#organization"), not
+        # a customer, partner or review subject the page describes ("#customer").
+        if not isinstance(value, str) or not value:
+            return True
+        fragment = urlsplit(value).fragment.lower()
+        return on_site(value) and (not fragment or bool(re.fullmatch(r"(?:organi[sz]ation|org|company|business|localbusiness|corporation|publisher)\w*", fragment)))
+
     for item in items:
-        if _types(item) & ORG_LD_TYPES and (str(item.get("@id") or "") in publisher_ids or on_site(item.get("url")) or on_site(item.get("@id"))):
+        if not _types(item) & ORG_LD_TYPES:
+            continue
+        if str(item.get("@id") or "") in publisher_ids or (on_site(item.get("url")) and own_id(item.get("@id"))):
             out.extend(names_of(item))
     return list(dict.fromkeys(out))
 
