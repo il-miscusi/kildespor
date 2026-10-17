@@ -340,8 +340,46 @@ def name_in_part(name: str, part: str) -> bool:
     return False
 
 
-def identity_parts(soup: BeautifulSoup, text: str) -> list[tuple[str, str]]:
-    """The homepage's statements about who runs it: title, site name, h1, JSON-LD names, copyright."""
+def _ld_bound_names(soup: BeautifulSoup, site_domain: str | None) -> list[tuple[str, str]]:
+    """Names of JSON-LD organisations bound to this site: the WebSite/WebPage publisher or copyright
+    holder, or an organisation whose ``url``/``@id`` is on the site's own registered domain. A page can
+    embed a customer's or partner's organisation; an unbound one says nothing about who runs the site."""
+    if not site_domain:
+        return []
+    items = json_ld_items(soup)
+    publisher_ids: set[str] = set()
+    out: list[tuple[str, str]] = []
+
+    def names_of(item: dict[str, Any]) -> list[tuple[str, str]]:
+        found = []
+        for key in ("legalName", "name", "alternateName"):
+            value = item.get(key)
+            for v in value if isinstance(value, list) else [value]:
+                if isinstance(v, str) and v.strip():
+                    found.append((f"JSON-LD {key}", v.strip()[:200]))
+        return found
+
+    def on_site(value: Any) -> bool:
+        return isinstance(value, str) and value.startswith("http") and registered_domain(urlsplit(value).hostname or "") == site_domain
+
+    for item in items:
+        if _types(item) & {"WebSite", "WebPage"}:
+            for key in ("publisher", "copyrightHolder"):
+                value = item.get(key)
+                for ref in value if isinstance(value, list) else [value]:
+                    if isinstance(ref, dict):
+                        if ref.get("@id"):
+                            publisher_ids.add(str(ref["@id"]))
+                        if not (_types(ref) & {"Person"}) and len(ref) > 1:
+                            out.extend(names_of(ref))
+    for item in items:
+        if _types(item) & ORG_LD_TYPES and (str(item.get("@id") or "") in publisher_ids or on_site(item.get("url")) or on_site(item.get("@id"))):
+            out.extend(names_of(item))
+    return list(dict.fromkeys(out))
+
+
+def identity_parts(soup: BeautifulSoup, text: str, site_domain: str | None = None) -> list[tuple[str, str]]:
+    """The homepage's statements about who runs it: title, site name, h1, bound JSON-LD names, copyright."""
     parts: list[tuple[str, str]] = []
     if soup.title and soup.title.get_text(strip=True):
         parts.append(("title", soup.title.get_text(" ", strip=True)[:200]))
@@ -353,13 +391,7 @@ def identity_parts(soup: BeautifulSoup, text: str) -> list[tuple[str, str]]:
         value = h1.get_text(" ", strip=True)
         if value:
             parts.append(("h1", value[:200]))
-    for item in json_ld_items(soup):
-        if _types(item) & ORG_LD_TYPES:
-            for key in ("legalName", "name", "alternateName"):
-                value = item.get(key)
-                for v in value if isinstance(value, list) else [value]:
-                    if isinstance(v, str) and v.strip():
-                        parts.append((f"JSON-LD {key}", v.strip()[:200]))
+    parts.extend(_ld_bound_names(soup, site_domain))
     for match in COPYRIGHT.finditer(text):
         line = re.split(r"(?i)alle rettigheter|all rights|org\.?\s*-?\s*n|\btlf\b|\btelefon\b|\bphone\b|e-?post|e-?mail|\d{4}\s+[A-ZÆØÅ]", match.group(1))[0]
         line = re.sub(r"^\s*\d{4}(?:\s*[-–]\s*\d{2,4})?\s*", "", line).strip(" .,-")
@@ -1046,7 +1078,7 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
     site_domain = registered_domain(final_host)
     ev = _Evidence()
     ev.add(sig, org, snap, soup, text)
-    parts = identity_parts(soup, text)
+    parts = identity_parts(soup, text, site_domain)
 
     def proven() -> bool:
         own = ev.own(org)

@@ -415,3 +415,24 @@ class DeclaredSiteOwnershipChanges(unittest.TestCase):
         rec = make_rec(name="FJORD KONSULT AS", phone=None, hjemmeside="fjordkonsult.no")
         pages = {"https://fjordkonsult.no/": html("Fjord Konsult", "Fjord Konsult er nå en del av oss. © 2025 Vestland Rådgivning AS")}
         self.assertEqual(run(rec, pages, guesses=[]), [])
+
+
+class JsonLdBinding(unittest.TestCase):
+    CUSTOMER = '<script type="application/ld+json">{"@type":"Organization","name":"Berg Bygg AS","address":"Strandgaten 9, 5013 Bergen"}</script>'
+
+    def test_customer_organisation_on_agency_page_proves_nothing(self) -> None:
+        rec = make_rec(name="BERG BYGG AS", phone=None)
+        pages = {"https://digitaltbyra.no/": html("Digitalt Byrå", "Kundecase: nettside for en tømrer. Strandgaten 9, 5013 Bergen", self.CUSTOMER)}
+        self.assertEqual(run(rec, pages, guesses=["digitaltbyra.no"]), [])
+
+    def test_publisher_organisation_on_the_site_counts(self) -> None:
+        rec = make_rec(name="BERG BYGG AS", phone=None)
+        ld = ('<script type="application/ld+json">{"@graph":[{"@type":"WebSite","url":"https://bb.no/","publisher":{"@id":"https://bb.no/#org"}},'
+              '{"@type":"Organization","@id":"https://bb.no/#org","name":"Berg Bygg AS"}]}</script>')
+        pages = {"https://bb.no/": html("Hjem", "Strandgaten 9, 5013 Bergen", ld)}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=["bb.no"])], ["name_and_register_signal"])
+
+    def test_unbound_names_are_not_identity_parts(self) -> None:
+        soup = page("https://digitaltbyra.no/", html("Digitalt Byrå", "", self.CUSTOMER))[1]
+        labels = [label for label, _ in website.identity_parts(soup, "", "digitaltbyra.no")]
+        self.assertNotIn("JSON-LD name", labels)
