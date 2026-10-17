@@ -496,3 +496,14 @@ class ContactsHeldByOthers(unittest.TestCase):
         rec = make_rec(name="NORDLYS PRODUKSJON AS", phone="91 22 33 44")
         cache.contacts = {ORG: ("91223344", "", "")}
         self.assertEqual([m for m, _ in run(rec, pages, cache=cache, guesses=["nordlysproduksjon.no"])], ["register_contact_on_site"])
+
+
+class HyphenatedNames(unittest.TestCase):
+    def test_hyphenated_legal_names_are_one_entity_mention(self) -> None:
+        parts = [("copyright", "Frøya Rør- og Sveiseservice AS"), ("title", "Nor-El AS - elektriker i Bergen")]
+        self.assertEqual(website.entity_mentions(parts), ["froya ror sveiseservice", "nor el"])
+
+    def test_declared_site_with_hyphenated_copyright_is_ours(self) -> None:
+        rec = make_rec(name="FRØYA RØR OG SVEISESERVICE AS", phone=None, hjemmeside="froyaror.no")
+        pages = {"https://froyaror.no/": html("Frøya Rør", "Rørlegger på Frøya. Kopirett - Frøya Rør- og Sveiseservice AS - 2023")}
+        self.assertEqual(len(run(rec, pages, guesses=[])), 1)

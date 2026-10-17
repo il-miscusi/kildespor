@@ -249,7 +249,7 @@ LEGAL_FORM_WORDS = ("as", "asa", "ans", "da", "sa", "nuf", "enk", "ks", "ba")
 ROLE_CODES_FOR_IDENTITY = {"DAGL", "LEDE", "INNH", "DTPR", "DTSO"}
 PHONE_ON_PAGE = re.compile(r"(?<![\d+])(?:(?:\+|00)\s?47[\s.\-]*)?(\d(?:[\s.\-]?\d){7})(?![\d])")
 EMAIL_ON_PAGE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
-COPYRIGHT = re.compile(r"(?:©|\(c\)|copyright|opphavsrett)\s*(?:\d{4}(?:\s*[-–]\s*\d{2,4})?\s*)?[,:\-–]?\s*([^|•·©]{2,90})", re.I)
+COPYRIGHT = re.compile(r"(?:©|\(c\)|copyright|opphavsrett|kopirett)\s*(?:\d{4}(?:\s*[-–]\s*\d{2,4})?\s*)?[,:\-–]?\s*([^|•·©]{2,90})", re.I)
 
 
 def number_contexts(text: str) -> dict[str, tuple[str, str]]:
@@ -302,6 +302,9 @@ def _cf_emails(html: str) -> list[str]:
 def _norm_part(text: str) -> str:
     """Fold a piece of identity text to lowercase ASCII words, with `|` marking separators."""
     t = _fold(text or "").replace("&", " og ")
+    # A hyphen inside or closing a word is part of the name ("Nor-El AS", "Frøya Rør- og
+    # Sveiseservice AS"); a spaced dash, a bar or a colon separates the name from a tagline.
+    t = re.sub(r"(?<=[a-z0-9])-(?=[a-z0-9\s])", " ", t)
     t = re.sub(r"[|\-–—:·•,/()\[\]!?«»\"“”]+|\s\.\s", " | ", t)
     t = re.sub(r"[^a-z0-9| ]+", " ", t)
     return " ".join(t.split())
