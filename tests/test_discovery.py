@@ -614,3 +614,27 @@ class JsonLdLocalIds(unittest.TestCase):
         ld = '<script type="application/ld+json">{"@type":"Organization","@id":"https://bb.no/#organization","url":"https://bb.no/","name":"Berg Bygg AS"}</script>'
         soup = page("https://bb.no/", html("Hjem", "", ld))[1]
         self.assertIn(("JSON-LD name", "Berg Bygg AS"), website.identity_parts(soup, "", "bb.no"))
+
+
+class JsonLdOwnFragments(unittest.TestCase):
+    ALTI = ('<script type="application/ld+json">{"@type":"LocalBusiness","@id":"https://altiskadedyr.no/#global_business",'
+            '"name":"Alti Skadedyr AS","url":"https://altiskadedyr.no","address":{"streetAddress":"Vinnesgata 53","postalCode":"3057","addressLocality":"Solbergelva"}}</script>')
+
+    def test_alti_skadedyr_global_business_fragment_binds(self) -> None:
+        rec = make_rec(name="ALTI SKADEDYR AS", phone=None, street="Vinnesgata 53", postcode="3057", town="SOLBERGELVA")
+        body = "<h1>Sliter du med skadedyr?</h1> Alti Skadedyr AS, Vinnesgata 53, 3057 Solbergelva"
+        pages = {"https://altiskadedyr.no/": "<html><head>" + self.ALTI + "</head><body>" + body + "</body></html>"}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=["altiskadedyr.no"])], ["name_and_register_signal"])
+
+    def test_customer_fragment_on_the_same_page_does_not_bind(self) -> None:
+        ld = self.ALTI.replace("#global_business", "#customer")
+        rec = make_rec(name="ALTI SKADEDYR AS", phone=None, street="Vinnesgata 53", postcode="3057", town="SOLBERGELVA")
+        pages = {"https://altiskadedyr.no/": "<html><head>" + ld + "</head><body><h1>Sliter du med skadedyr?</h1> 3057 Solbergelva</body></html>"}
+        self.assertEqual(run(rec, pages, guesses=["altiskadedyr.no"]), [])
+
+    def test_fragment_words(self) -> None:
+        for fragment in ("organization", "global_business", "main-organization", "site_org", "schema-localbusiness", "Organization-1", "firma"):
+            self.assertTrue(website._own_org_fragment(fragment), fragment)
+        for fragment in ("customer", "client-org", "partner_organization", "review", "author", "person", "product", "offer",
+                         "supplier-company", "brand", "kunde", "", "webpage", "breadcrumb"):
+            self.assertFalse(website._own_org_fragment(fragment), fragment)

@@ -341,6 +341,23 @@ def name_in_part(name: str, part: str) -> bool:
     return False
 
 
+OWN_ORG_FRAGMENT_WORDS = ("organization", "organisation", "company", "business", "corporation", "publisher", "firma", "bedrift", "selskap")
+OTHER_PARTY_FRAGMENT_WORDS = (
+    "customer", "client", "kunde", "partner", "review", "author", "person", "product", "offer", "supplier", "leverandor",
+    "vendor", "seller", "manufacturer", "brand", "sponsor", "member", "employee", "creator", "event", "reference",
+)
+
+
+def _own_org_fragment(fragment: str) -> bool:
+    """A JSON-LD @id fragment that names the site's own organisation anywhere in it ("organization",
+    "global_business", "main-organization", "site_org", "schema-localbusiness") and names no other
+    party ("customer", "partner", "review", "author", "product", "brand" ...)."""
+    words = re.findall(r"[a-z]+", fragment.lower())
+    if any(other in word for word in words for other in OTHER_PARTY_FRAGMENT_WORDS):
+        return False
+    return any(word == "org" or any(own in word for own in OWN_ORG_FRAGMENT_WORDS) for word in words)
+
+
 def _ld_bound_names(soup: BeautifulSoup, site_domain: str | None) -> list[tuple[str, str]]:
     """Names of JSON-LD organisations bound to this site: the WebSite/WebPage publisher or copyright
     holder, or an organisation whose ``url``/``@id`` is on the site's own registered domain. A page can
@@ -379,7 +396,7 @@ def _ld_bound_names(soup: BeautifulSoup, site_domain: str | None) -> list[tuple[
         if not isinstance(value, str) or not value:
             return True
         fragment = urlsplit(value).fragment.lower()
-        return on_site(value) and (not fragment or bool(re.fullmatch(r"(?:organi[sz]ation|org|company|business|localbusiness|corporation|publisher)\w*", fragment)))
+        return on_site(value) and (not fragment or _own_org_fragment(fragment))
 
     for item in items:
         if not _types(item) & ORG_LD_TYPES:
