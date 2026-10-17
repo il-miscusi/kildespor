@@ -1360,6 +1360,7 @@ class SitemapEntry:
     lastmod: str | None
     news_title: str | None = None
     news_date: str | None = None
+    snap: Snapshot | None = None  # the sitemap file this entry was read from (its evidence)
 
 
 def parse_sitemap(text: str) -> tuple[list[SitemapEntry], list[SitemapEntry]]:
@@ -1393,6 +1394,12 @@ def _child_rank(entry: SitemapEntry) -> int:
     return 2
 
 
+def _from(entries: list[SitemapEntry], snap: Snapshot) -> list[SitemapEntry]:
+    for entry in entries:
+        entry.snap = snap
+    return entries
+
+
 def read_sitemaps(plan: Plan, home: Snapshot, site_host: str, wordpress: bool) -> tuple[list[SitemapEntry], list[Snapshot]]:
     """Page entries from the site's sitemap: robots.txt's Sitemap lines (already cached), else
     /sitemap.xml (or /wp-sitemap.xml on WordPress); an index is followed into its news child and its
@@ -1421,7 +1428,7 @@ def read_sitemaps(plan: Plan, home: Snapshot, site_host: str, wordpress: bool) -
         if not pages and not kids:
             continue
         snaps.append(snap)
-        entries.extend(pages)
+        entries.extend(_from(pages, snap))
         children.extend(kids)
         break
     chosen: list[SitemapEntry] = []
@@ -1441,7 +1448,7 @@ def read_sitemaps(plan: Plan, home: Snapshot, site_host: str, wordpress: bool) -
         pages, _kids = parse_sitemap(snap.text())
         if pages:
             snaps.append(snap)
-            entries.extend(pages)
+            entries.extend(_from(pages, snap))
     return [e for e in entries if _site(e.loc) == site_host], snaps
 
 
@@ -1598,7 +1605,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     for entry in sitemap:
         if entry.news_title and entry.news_date:
             when = stamp(entry.news_date)
-            snap = sitemap_snaps[0] if sitemap_snaps else home
+            snap = entry.snap
+            if snap is None:
+                continue
             if when and is_headline(entry.news_title):
                 add_news(NewsItem(entry.news_title, entry.loc, when[0], when[1], snap, f"{entry.news_title} | news:publication_date {entry.news_date}", "news_sitemap", "company_website"))
     feeds = _declared_feeds(own_pages(), site_host)
@@ -1736,7 +1745,7 @@ def _careers_candidates(anchors: list[tuple[str, str, Snapshot, str]], sitemap: 
     for order, entry in enumerate(sitemap):
         rank = is_careers_link(entry.loc, "", site_host)
         if rank == 0 and _norm_url(entry.loc) not in found:
-            found[_norm_url(entry.loc)] = (0, 10000 + order, entry.loc, sitemap_snaps[0] if sitemap_snaps else None, f"sitemap <loc>{entry.loc[:200]}</loc>", "")
+            found[_norm_url(entry.loc)] = (0, 10000 + order, entry.loc, entry.snap, f"sitemap <loc>{entry.loc[:200]}</loc>", "")
     ranked = sorted(found.values(), key=lambda f: (f[0], len(_segments(f[2])), f[1]))
     return [(rank, url, snap, span, text) for rank, _order, url, snap, span, text in ranked]
 

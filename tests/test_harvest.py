@@ -480,3 +480,27 @@ class SiteJobsCheckedTests(unittest.TestCase):
         harvest._extract_site_facts(rec, visit, home, True, None)
         self.assertNotIn("job_posting:site", rec.checked_fields)
         self.assertEqual([c["value"] for c in rec.claims if c["field"] == "careers_page"], ["https://www.fjordbygg.no/karriere/"])
+
+
+class SitemapProvenanceTests(unittest.TestCase):
+    def test_sitemap_facts_cite_the_sitemap_file_they_came_from(self) -> None:
+        """Codex review rc1 finding 8: a news item from a child news sitemap cites that child file,
+        and a careers page found in the page sitemap cites the page sitemap, never the index."""
+        index = "<sitemapindex><sitemap><loc>https://www.fjordbygg.no/news-sitemap.xml</loc></sitemap><sitemap><loc>https://www.fjordbygg.no/page-sitemap.xml</loc></sitemap></sitemapindex>"
+        news = f"""<urlset xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"><url><loc>https://www.fjordbygg.no/nyheter/ny-kontrakt-i-bergen</loc>
+        <news:news><news:publication_date>{RECENT}T08:00:00+02:00</news:publication_date><news:title>Fjordbygg får ny kontrakt i Bergen</news:title></news:news></url></urlset>"""
+        pages_xml = "<urlset><url><loc>https://www.fjordbygg.no/karriere/</loc></url></urlset>"
+        fetcher = FakeFetcher({
+            "https://www.fjordbygg.no/sitemap.xml": (index, "application/xml"),
+            "https://www.fjordbygg.no/news-sitemap.xml": (news, "application/xml"),
+            "https://www.fjordbygg.no/page-sitemap.xml": (pages_xml, "application/xml"),
+        }, robots="User-agent: *\nAllow: /\n")
+        rec = record()
+        visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.fjordbygg.no/", "<html><head><title>Fjordbygg</title></head><body>Org.nr 923 609 016</body></html>")
+        soup, _html, text = parse(home)
+        visit.pages.append((home, soup, text))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+        sources = {c["field"]: rec.evidence[c["evidence_ids"][0]]["source_url"] for c in rec.claims if c["field"] in ("company_news", "careers_page")}
+        self.assertEqual(sources["company_news"], "https://www.fjordbygg.no/news-sitemap.xml")
+        self.assertEqual(sources["careers_page"], "https://www.fjordbygg.no/page-sitemap.xml")
