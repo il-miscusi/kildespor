@@ -205,6 +205,11 @@ class CareersTests(unittest.TestCase):
         self.assertEqual((roles[0].title, roles[0].location), ("Tømrer", "Bergen"))
         self.assertEqual(harvest._clean_url("https://jobs.zaptec.com/?_gl=1*ys5oo6&_ga=2.81&lang=no#top"), "https://jobs.zaptec.com/?lang=no")
 
+    def test_foreign_subsidiary_roles(self) -> None:
+        self.assertTrue(harvest.foreign_page("https://career-lithuania.kitron.com/jobs/8313064-x", "kitron asa"))
+        self.assertTrue(harvest.foreign_page("https://career-denmark.kitron.com/jobs/8450175-procestekniker", "kitron asa"))
+        self.assertFalse(harvest.foreign_page("https://career.kitron.com/jobs/1-operator-arendal", "kitron asa"))
+
     def test_ats_tenant(self) -> None:
         self.assertEqual(harvest.ats_tenant("https://fjordbygg.teamtailor.com/jobs"), "fjordbygg")
         self.assertEqual(harvest.ats_tenant("https://jobs.lever.co/fjordbygg/"), "fjordbygg")

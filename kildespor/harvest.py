@@ -511,7 +511,7 @@ def resembles(account: str, contains: set[str], prefixes: set[str]) -> bool:
 FOREIGN_MARKERS = (
     "sweden", "sverige", "svenska", "danmark", "denmark", "finland", "suomi", "germany", "deutschland", "polska", "poland",
     "estonia", "eesti", "latvia", "lithuania", "lietuva", "netherlands", "nederland", "france", "spain", "espana", "italia",
-    "italy", "unitedkingdom", "brasil", "brazil", "india", "china", "iceland", "island", "baltic", "baltics",
+    "italy", "unitedkingdom", "brasil", "brazil", "india", "china", "iceland", "baltic", "baltics",
 )
 FOREIGN_CODES = ("se", "dk", "fi", "de", "uk", "us", "usa", "pl", "ee", "lt", "lv", "nl", "fr", "es", "it", "is")
 
@@ -527,6 +527,13 @@ def foreign_sibling(account: str, contains: set[str], own_text: str) -> bool:
             if rest in FOREIGN_CODES and rest not in own_text.split():
                 return True
     return False
+
+
+def foreign_page(url: str, own_text: str) -> bool:
+    """A URL whose host or path names another country (a sister company's careers site abroad)."""
+    parts = urlsplit(url)
+    words = _fold_a(f"{parts.hostname or ''} {unquote(parts.path)}")
+    return any(marker in words and marker not in own_text for marker in FOREIGN_MARKERS)
 
 
 def owned_profile(handle: str, contains: set[str], prefixes: set[str], *, allow_id: bool = True, own_text: str = "") -> bool:
@@ -1421,6 +1428,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             roles += [(r, a_snap) for r in roles_on_page(a_snap, a_soup, rec, own_site=False, tenant_ok=tenant_ok)]
         elif snap is not None and (tenant_ok or text == "@careers-page" or ats_name == "finn" or CAREER_TEXT.match(text or "")):
             careers.append((_clean_url(url), snap, span, "ats_link_on_verified_site"))
+
+    # A group careers site also lists its foreign subsidiaries' roles (career-lithuania.kitron.com).
+    roles = [(r, s) for r, s in roles if not foreign_page(r.url, own_text)]
 
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}
