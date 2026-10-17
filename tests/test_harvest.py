@@ -53,6 +53,8 @@ class SocialTests(unittest.TestCase):
         self.assertEqual(cp("https://vimeo.com/fjordbygg")[1], "https://vimeo.com/fjordbygg")
         self.assertEqual(cp("https://www.threads.net/@fjordbygg")[1], "https://threads.net/@fjordbygg")
         self.assertEqual(cp("https://github.com/fjordbygg")[1], "https://github.com/fjordbygg")
+        self.assertEqual(cp("https://www.facebook.com/pages/category/Construction-Company/Fjordbygg-AS-104512345678901/")[2], "pages/category/Construction-Company/Fjordbygg-AS-104512345678901")
+        self.assertEqual(cp("https://linkedin.com/company/the-well---en-verden-av-velv%C3%A6re")[1], "https://linkedin.com/company/the-well---en-verden-av-velv%C3%A6re")
 
     def test_non_profiles_rejected(self) -> None:
         cp = harvest.canonical_profile
@@ -120,6 +122,10 @@ class CareersTests(unittest.TestCase):
         self.assertEqual(f("https://www.fjordbygg.no/karriere", "Karriere", self.SITE), 0)
         self.assertEqual(f("https://www.fjordbygg.no/om-oss/ledige-stillinger/", "Jobb hos oss", self.SITE), 0)
         self.assertEqual(f("https://karriere.fjordbygg.no/", "", self.SITE), 0)
+        self.assertEqual(f("https://02365.no/jobb-som-sjafor/", "", "02365.no"), 0)
+        self.assertEqual(f("https://abchar.no/bli-med-paa-laget", "", "abchar.no"), 0)
+        self.assertIsNone(f("https://freedomfromfear.no/bli-med-meg-til-det-hellige-fjell", "", "freedomfromfear.no"))
+        self.assertIsNone(f("https://www.narvikgolf.no/bli-medlem", "Bli medlem", "narvikgolf.no"))
         self.assertEqual(f("https://www.fjordbygg.no/page/42", "Ledige stillinger", self.SITE), 2)
         self.assertEqual(f("https://fjordbygg.teamtailor.com/jobs", "Se stillinger", self.SITE), 1)
         self.assertEqual(f("https://www.finn.no/job/fulltime/ad.html?finnkode=123456", "", self.SITE), 1)

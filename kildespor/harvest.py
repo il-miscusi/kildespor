@@ -380,6 +380,8 @@ def canonical_profile(raw: str) -> tuple[str, str, str] | None:
         if first == "profile.php":
             ident = re.search(r"(?:^|&)id=(\d{5,})", parts.query)
             handle = f"profile.php?id={ident.group(1)}" if ident else None
+        elif first == "pages" and len(segs) >= 4 and segs[1].lower() == "category":
+            handle = "/".join(segs[:4])  # pages/category/<category>/<Name-123456789>
         elif first == "pages" and len(segs) >= 3 and segs[2].isdigit():
             handle = f"pages/{segs[1]}/{segs[2]}"
         elif first == "people" and len(segs) >= 3 and segs[2].isdigit():
@@ -435,6 +437,8 @@ def account_name(handle: str) -> str:
     if not segs:
         return ""
     head = segs[0].lower()
+    if head == "pages" and len(segs) > 3 and segs[1].lower() == "category":
+        return _alnum(re.sub(r"-?\d{6,}$", "", unquote(segs[3])))
     if head in ("company", "school", "showcase", "channel", "c", "user", "pages", "people") and len(segs) > 1:
         name = segs[1]
     elif head == "p" and len(segs) > 1:
@@ -602,7 +606,7 @@ def profiles_on_page(snap: Snapshot, soup: BeautifulSoup, html: str, contains: s
 
 CAREER_SEGMENT = re.compile(
     r"^(?:karrierer?|careers?|jobb(?:er)?|jobs|(?:ledige?-?)?stillinger|ledige-jobber|ledig-stilling|vacanc(?:y|ies)|join-?us|"
-    r"bli-med(?:-oss)?|bli-en-av-oss|work-(?:with|for|at)-[\w-]+|rekruttering|recruitment|open-positions|jobbmuligheter|"
+    r"bli-med(?:-oss|-p[aå]a?-laget|-i-(?:teamet|laget))?|bli-en-av-oss|jobbe?-som-[\w-]+|work-(?:with|for|at)-[\w-]+|rekruttering|recruitment|open-positions|jobbmuligheter|"
     r"(?:kom-og-)?jobbe?-(?:hos|i|med|for)-[\w-]+|karriere-og-jobb|jobb-og-karriere|job-opportunities|career-opportunities|"
     r"arbeid-hos-oss|vi-ansetter|we-are-hiring|karriere-(?:i|hos)-[\w-]+|(?:ledige-)?stillinger-(?:i|hos)-[\w-]+|jobb-her|jobba-(?:hos-oss|har)|arbeta-hos-oss)(?:\.html?|\.php|\.aspx)?$",
     re.I,
@@ -1297,6 +1301,15 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
 
     # -- page plan -----------------------------------------------------------------------------------
     sitemap, sitemap_snaps = read_sitemaps(plan, home, site_host, wordpress)
+    # Contact and about pages first: careers links, profiles and contacts often sit only there.
+    have = {_kind_of_info(p[0].final_url) for p in own_pages()}
+    for kind, url in _info_links(_anchors(own_pages()), sitemap, site_host):
+        if kind in have or not plan.can(1, 6.0):
+            continue
+        page = plan.page(url)
+        if page is not None and _site(page[0].final_url) == site_host:
+            have.add(kind)
+            _brand_and_contacts(rec, home, [page], exact, company_label, contacts_only=True)
     anchors = _anchors(own_pages())
 
     # Hiring: the careers page (own site first), then the ATS listing it links.
@@ -1407,14 +1420,6 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             if page is not None and _site(page[0].final_url) == site_host:
                 for item in listing_items(page[0], page[1], site_host, require_news_path=False):
                     add_news(item)
-
-    # Contact/about page: social links and contacts placed only there.
-    if not any(CONTACT_SEGMENT.match((_segments(p[0].final_url) or [""])[-1]) for p in own_pages()) and plan.can(1, 6.0):
-        contact = _contact_link(anchors, sitemap, site_host)
-        if contact:
-            page = plan.page(contact)
-            if page is not None and _site(page[0].final_url) == site_host:
-                _brand_and_contacts(rec, home, [page], exact, company_label, contacts_only=True)
 
     # Article pages: the headline and published datetime as the article itself states them.
     for url in _articles_to_read(anchors, news, sitemap, site_host)[: MAX_ARTICLE_FETCHES]:
@@ -1615,8 +1620,16 @@ def _news_listing(anchors: list[tuple[str, str, Snapshot, str]], sitemap: list[S
     return best[2] if best else None
 
 
-def _contact_link(anchors: list[tuple[str, str, Snapshot, str]], sitemap: list[SitemapEntry], site_host: str) -> str | None:
-    best = None
+def _kind_of_info(url: str) -> str | None:
+    segs = _segments(url)
+    if not segs or not CONTACT_SEGMENT.match(segs[-1]):
+        return None
+    return "contact" if re.search(r"kontakt|contact", segs[-1], re.I) else "about"
+
+
+def _info_links(anchors: list[tuple[str, str, Snapshot, str]], sitemap: list[SitemapEntry], site_host: str) -> list[tuple[str, str]]:
+    """(kind, url) for the site's contact page and its about page, best link of each kind first."""
+    best: dict[str, tuple[tuple[int, int], str]] = {}
     for order, (url, text, _snap, _raw) in enumerate(anchors):
         segs = _segments(url)
         if _site(url) != site_host or not segs or len(segs) > 2:
@@ -1624,15 +1637,16 @@ def _contact_link(anchors: list[tuple[str, str, Snapshot, str]], sitemap: list[S
         by_path = bool(CONTACT_SEGMENT.match(segs[-1]))
         by_text = 0 < len(text) <= 30 and bool(CONTACT_TEXT.match(text))
         if by_path or by_text:
-            rank = (0 if re.search(r"kontakt|contact", url + " " + text, re.I) else 1, 0 if by_path else 1, order)
-            if best is None or rank < best[0]:
-                best = (rank, url)
-    if best is None:
-        for entry in sitemap:
-            segs = _segments(entry.loc)
-            if segs and len(segs) <= 2 and CONTACT_SEGMENT.match(segs[-1]):
-                return entry.loc
-    return best[1] if best else None
+            kind = "contact" if re.search(r"kontakt|contact", segs[-1] + " " + text, re.I) else "about"
+            rank = (0 if by_path else 1, order)
+            if kind not in best or rank < best[kind][0]:
+                best[kind] = (rank, url)
+    for entry in sitemap:
+        segs = _segments(entry.loc)
+        if segs and len(segs) <= 2 and CONTACT_SEGMENT.match(segs[-1]):
+            kind = _kind_of_info(entry.loc) or "about"
+            best.setdefault(kind, ((2, 0), entry.loc))
+    return [(kind, best[kind][1]) for kind in ("contact", "about") if kind in best]
 
 
 def _articles_to_read(anchors: list[tuple[str, str, Snapshot, str]], news: dict[str, NewsItem], sitemap: list[SitemapEntry], site_host: str) -> list[str]:
