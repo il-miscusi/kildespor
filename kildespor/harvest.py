@@ -972,7 +972,16 @@ def _ld_location(item: dict[str, Any]) -> str | None:
     return None
 
 
-def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, own_site: bool, tenant_ok: bool, site_wide: set[str] | None = None) -> list[Role]:
+def roles_on_page(
+    snap: Snapshot,
+    soup: BeautifulSoup,
+    rec: CompanyRecord,
+    *,
+    own_site: bool,
+    tenant_ok: bool,
+    site_wide: set[str] | None = None,
+    rejected: set[str] | None = None,
+) -> list[Role]:
     """Open roles listed on a careers page (own site) or an ATS listing page.
 
     JSON-LD JobPosting must name this employer (or name none on a page that is the
@@ -984,19 +993,28 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
     today = utc_today()
     roles: list[Role] = []
     seen: set[str] = set()
+    # Postings refused here (another employer, expired) stay refused in every later pass, and a
+    # page whose structured data names another employer lends no anchor its authority.
+    rejected = rejected if rejected is not None else set()
+    contrary = False
     for item in json_ld_items(soup):
         if "JobPosting" not in _types(item) or not item.get("title"):
             continue
         employer = item.get("hiringOrganization")
+        expires = str(item.get("validThrough") or "")[:10] or None
+        item_url = urljoin(page_url, str(item.get("url") or "")) if item.get("url") else None
+        refused = bool(employer and not _ld_employer_is_ours(item, rec)) or bool(expires and expires < today)
         if employer and not _ld_employer_is_ours(item, rec):
+            contrary = True
+        if refused:
+            if item_url and _norm_url(item_url) != _norm_url(page_url):
+                rejected.add(_norm_url(item_url))
+            rejected.add("title:" + _clean(item["title"]).lower())
             continue
         if not employer and not (own_site or tenant_ok):
             continue
-        expires = str(item.get("validThrough") or "")[:10] or None
-        if expires and expires < today:
-            continue
         title = _clean(item["title"])[:200]
-        url = urljoin(page_url, str(item.get("url") or "")) if item.get("url") else page_url
+        url = item_url or page_url
         if not safe_link(url):
             url = page_url
         key = _norm_url(url) + "|" + title.lower()
@@ -1005,7 +1023,7 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
         seen.add(key)
         posted = stamp(item.get("datePosted"))
         roles.append(Role(title, url, posted[0] if posted else None, expires, _ld_location(item), "json_ld_jobposting", f'JSON-LD JobPosting title = "{title}"', "json_ld_jobposting"))
-    if not own_site and not tenant_ok:
+    if (not own_site and not tenant_ok) or contrary:
         return roles
     links: list[Role] = []
     for anchor in soup.find_all("a", href=True):
@@ -1031,6 +1049,8 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
         if not title or ROLE_NAV_TEXT.match(title) or ROLE_BOILERPLATE.search(title) or ROLE_SECTION.match(title) or re.fullmatch(r"[\d.\s/:-]+", title):
             continue
         key = _norm_url(url)
+        if key in rejected or "title:" + title.lower() in rejected:
+            continue  # refused by the structured data in this or an earlier pass
         if key in seen or title.lower() in {r.title.lower() for r in links} or (site_wide and key in site_wide):
             continue  # a link the homepage also carries is navigation, not a listed role
         seen.add(key)
@@ -1040,6 +1060,7 @@ def roles_on_page(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, *, ow
         if deadline:
             expires = text_date(deadline.group(1))
             if expires and expires < today:
+                rejected.add(key)
                 continue
         location = LOCATION.search(card)
         located = anchor.find(class_=re.compile(r"location|sted|place|city", re.I))
@@ -1485,6 +1506,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # True only when every careers source this site points to was read in full this run: refresh
     # may then close a site-found role that is gone ("job_posting:site").
     jobs_complete: bool | None = None
+    rejected_roles: set[str] = set()
     if own is not None:
         rank, url, snap, span, _text = own
         page = plan.page(url)
@@ -1495,7 +1517,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             c_snap, c_soup, _ = page
             title = (c_soup.title.get_text(" ", strip=True) if c_soup.title else "") or url
             careers.append((_clean_url(c_snap.final_url), c_snap, f"careers page: {title[:200]}", "careers_page_on_verified_site"))
-            roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True, site_wide=site_wide)]
+            roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
             listing = None if roles else _job_listing_link(c_snap, c_soup)
             if listing and listing.endswith(".rss") and plan.can(1, 6.0):
                 feed = plan.raw(listing, headers={"Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.5"})
@@ -1504,7 +1526,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             elif listing and plan.can(1, 6.0):
                 l_page = plan.page(listing)
                 if l_page is not None and _site(l_page[0].final_url) == _site(c_snap.final_url):
-                    roles += [(r, l_page[0]) for r in roles_on_page(l_page[0], l_page[1], rec, own_site=True, tenant_ok=True, site_wide=site_wide)]
+                    roles += [(r, l_page[0]) for r in roles_on_page(l_page[0], l_page[1], rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
                 else:
                     jobs_complete = False
             elif listing:
@@ -1542,12 +1564,12 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if page is not None and not ERROR_PAGE.search(page[0].final_url + " " + ((page[1].title.get_text(" ", strip=True) if page[1].title else "")[:200])):
             a_snap, a_soup, _ = page
             careers.append((_clean_url(a_snap.final_url), a_snap, f"applicant-tracking page ({ats_name}): {(a_soup.title.get_text(' ', strip=True) if a_soup.title else '')[:160]}", "ats_page_linked_from_verified_site"))
-            roles += [(r, a_snap) for r in roles_on_page(a_snap, a_soup, rec, own_site=False, tenant_ok=tenant_ok)]
+            roles += [(r, a_snap) for r in roles_on_page(a_snap, a_soup, rec, own_site=False, tenant_ok=tenant_ok, rejected=rejected_roles)]
         elif snap is not None and (tenant_ok or text == "@careers-page" or ats_name == "finn" or CAREER_TEXT.match(text or "")):
             careers.append((_clean_url(url), snap, span, "ats_link_on_verified_site"))
 
     # A group careers site also lists its foreign subsidiaries' roles (career-lithuania.kitron.com).
-    roles = [(r, s) for r, s in roles if not foreign_page(r.url, own_text)]
+    roles = [(r, s) for r, s in roles if not foreign_page(r.url, own_text) and _norm_url(r.url) not in rejected_roles and "title:" + r.title.lower() not in rejected_roles]
 
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}

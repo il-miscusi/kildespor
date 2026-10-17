@@ -193,7 +193,6 @@ class CareersTests(unittest.TestCase):
         past = (TODAY - timedelta(days=3)).strftime("%d.%m.%Y")
         html = f"""<html><head><title>Ledige stillinger - Fjordbygg</title>
         <script type="application/ld+json">{{"@type":"JobPosting","title":"Prosjektleder","datePosted":"{RECENT}","validThrough":"{(TODAY + timedelta(days=10)).isoformat()}","hiringOrganization":{{"@type":"Organization","name":"Fjordbygg AS"}},"jobLocation":{{"@type":"Place","address":{{"addressLocality":"Bergen"}}}}}}</script>
-        <script type="application/ld+json">{{"@type":"JobPosting","title":"Sjåfør","hiringOrganization":{{"@type":"Organization","name":"Annet Firma AS"}}}}</script>
         </head><body><h1>Ledige stillinger</h1><ul>
           <li><a href="/karriere/stilling/tomrer-bergen"><h3>Tømrer</h3></a><p>Søknadsfrist: {future}</p><p>Sted: Bergen</p></li>
           <li><a href="/karriere/stilling/laerling-2026">Lærling tømrerfaget</a></li>
@@ -206,7 +205,6 @@ class CareersTests(unittest.TestCase):
         titles = {r.title: r for r in roles}
         self.assertIn("Prosjektleder", titles)
         self.assertEqual(titles["Prosjektleder"].location, "Bergen")
-        self.assertNotIn("Sjåfør", titles)  # JobPosting for another employer
         self.assertIn("Tømrer", titles)
         self.assertEqual(titles["Tømrer"].url, "https://www.fjordbygg.no/karriere/stilling/tomrer-bergen")
         self.assertEqual(titles["Tømrer"].location, "Bergen")
@@ -222,6 +220,31 @@ class CareersTests(unittest.TestCase):
         page = snap("https://www.afgruppen.no/karriere/ledige-stillinger/", html)
         roles = harvest.roles_on_page(page, soup_of(html), record("AF GRUPPEN ASA"), own_site=True, tenant_ok=True)
         self.assertEqual([r.title for r in roles], ["Planleggingsleder", "BAS for rørleggerfaget"])
+
+    def test_rejected_posting_is_not_readded_by_its_anchor(self) -> None:
+        """Codex review rc1 finding 5: a JobPosting naming another employer, or one already expired,
+        is never republished from its anchor, in this pass or a later one."""
+        html = """<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"Sjåfør","url":"/karriere/stilling/123456-sjafor","hiringOrganization":{"@type":"Organization","name":"Annet Firma AS"}}</script></head>
+        <body><h1>Ledige stillinger</h1><a href="/karriere/stilling/123456-sjafor">Sjåfør</a><a href="/karriere/stilling/123457-lager">Lagermedarbeider</a></body></html>"""
+        page = snap("https://www.fjordbygg.no/karriere/", html)
+        rejected: set[str] = set()
+        self.assertEqual(harvest.roles_on_page(page, soup_of(html), record(), own_site=True, tenant_ok=True, rejected=rejected), [])
+        self.assertIn("fjordbygg.no/karriere/stilling/123456-sjafor", rejected)
+        later = '<html><body><a href="/karriere/stilling/123456-sjafor">Sjåfør</a><a href="/karriere/stilling/9-tomrer">Tømrer</a><a href="/karriere/stilling/8-maler">Maler</a></body></html>'
+        roles = harvest.roles_on_page(snap("https://www.fjordbygg.no/karriere/alle", later), soup_of(later), record(), own_site=True, tenant_ok=True, rejected=rejected)
+        self.assertEqual([r.title for r in roles], ["Tømrer", "Maler"])
+
+    def test_page_naming_another_employer_lends_anchors_nothing(self) -> None:
+        html = """<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"Sjåfør","hiringOrganization":{"@type":"Organization","name":"Annet Firma AS"}}</script></head>
+        <body><a href="/karriere/stilling/2-tomrer">Tømrer</a><a href="/karriere/stilling/3-maler">Maler</a></body></html>"""
+        roles = harvest.roles_on_page(snap("https://www.fjordbygg.no/karriere/", html), soup_of(html), record(), own_site=True, tenant_ok=True, rejected=set())
+        self.assertEqual(roles, [])
+
+    def test_expired_posting_is_not_readded(self) -> None:
+        html = """<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"Prosjektleder","url":"/jobb/stilling/1-prosjektleder","validThrough":"2020-01-01","hiringOrganization":{"@type":"Organization","name":"Fjordbygg AS"}}</script></head>
+        <body><a href="/jobb/stilling/1-prosjektleder">Prosjektleder</a><a href="/jobb/stilling/2-tomrer">Tømrer</a><a href="/jobb/stilling/3-maler">Maler</a></body></html>"""
+        roles = harvest.roles_on_page(snap("https://www.fjordbygg.no/jobb/", html), soup_of(html), record(), own_site=True, tenant_ok=True, rejected=set())
+        self.assertEqual([r.title for r in roles], ["Tømrer", "Maler"])
 
     def test_single_team_link_is_not_a_role(self) -> None:
         html = '<html><body><h1>Karriere</h1><a href="/karriere/stilling/historien-om-oss">Historien om oss</a></body></html>'
