@@ -390,3 +390,28 @@ class RobotsSitemaps(unittest.TestCase):
         self.assertTrue(robots.allows("https://x.no/"))
         self.assertIsNone(Robots(["User-agent: *", "Disallow:"], "KildesporBot").site_maps())
         self.assertIsNone(Robots([], disallow_all=True).site_maps())
+
+
+class DeclaredSiteOwnershipChanges(unittest.TestCase):
+    def test_short_live_page_with_sitemap_alone_is_not_ours(self) -> None:
+        rec = make_rec(name="FJORD KONSULT AS", phone=None, hjemmeside="oldsite.no")
+        pages = {"https://oldsite.no/": html("Welcome", "<div id=root></div>")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
+        self.assertFalse(hasattr(website, "_sitemap_size"))
+
+    def test_successor_site_under_former_name_beats_loose_name_match(self) -> None:
+        # NORDLYS HOLDING AS was NORDLYS AS; the new NORDLYS AS runs nordlys.no.
+        rec = make_rec(name="NORDLYS HOLDING AS", phone=None, hjemmeside="nordlys.no")
+        rec.context["entity"]["historiskeNavn"] = [{"navn": "NORDLYS AS", "tilDato": "2023-05-01"}]
+        pages = {"https://nordlys.no/": html("Nordlys | Elektro i Bergen", "Nordlys leverer elektrotjenester. 5013 Bergen")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
+
+    def test_holding_needs_its_whole_name_on_its_declared_site(self) -> None:
+        rec = make_rec(name="NORDLYS HOLDING AS", phone=None, hjemmeside="nordlys.no")
+        pages = {"https://nordlys.no/": html("Velkommen", "Nordlys leverer elektrotjenester.")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
+
+    def test_declared_site_naming_another_owner_is_refused(self) -> None:
+        rec = make_rec(name="FJORD KONSULT AS", phone=None, hjemmeside="fjordkonsult.no")
+        pages = {"https://fjordkonsult.no/": html("Fjord Konsult", "Fjord Konsult er nå en del av oss. © 2025 Vestland Rådgivning AS")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])

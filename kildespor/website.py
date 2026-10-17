@@ -128,8 +128,11 @@ def _fold(text: str) -> str:
     return strip_accents(text.lower().replace("æ", "ae").replace("ø", "o").replace("å", "a"))
 
 
-def name_corroboration(legal_name: str, subunits: list[dict[str, Any]], page_text: str, final_url: str) -> str | None:
-    """A short span proving the company name appears on the page or forms the domain, else None."""
+def name_corroboration(legal_name: str, subunits: list[dict[str, Any]], page_text: str, final_url: str, strict: bool = False) -> str | None:
+    """A short span proving the company name appears on the page or forms the domain, else None.
+
+    ``strict`` (holding companies) needs the whole name: a family word alone ("Nordlys" for NORDLYS
+    HOLDING AS) names the operating sister as often as the holding."""
     folded_page = _fold(page_text)
     host = registered_domain(urlsplit(final_url).hostname or "").split(".")[0].replace("-", "")
     names = [legal_name] + [s.get("name") or "" for s in subunits[:5]]
@@ -145,7 +148,7 @@ def name_corroboration(legal_name: str, subunits: list[dict[str, Any]], page_tex
             at = folded_page.find(phrase)
             return f"name on page: …{page_text[max(0, at - 40): at + len(phrase) + 40]}…"
         distinctive = [t for t in tokens if len(t) >= 5 and t not in GENERIC_NAME_WORDS]
-        if distinctive and all(re.search(rf"\b{re.escape(t)}\b", folded_page) for t in distinctive) and len(distinctive) >= max(1, len(tokens) - 1):
+        if not strict and distinctive and all(re.search(rf"\b{re.escape(t)}\b", folded_page) for t in distinctive) and len(distinctive) >= max(1, len(tokens) - 1):
             at = folded_page.find(distinctive[0])
             return f"name words {', '.join(distinctive)} on page: …{page_text[max(0, at - 40): at + 60]}…"
     return None
@@ -1112,16 +1115,24 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
         rec.context["website_ambiguous_reason"] = reason
         return None
     legal_name = sig.names[0] if sig.names else ""
-    corroboration = name_corroboration(legal_name, rec.context.get("subunits") or [], text, snap.final_url)
-    if corroboration:
-        return f"{base}_name_on_site", snap, corroboration, foreign_any, group_on_page
+    # Ownership conflicts are checked before any name evidence: a register entry can outlive the site.
+    current_hit = any(name_in_part(n, part) for n in sig.names for _, part in parts)
     former_hit = next((f for f in sig.former for _, part in parts if name_in_part(f, part) or _stem_matches_name(site_domain, [f], 4)), None)
-    if former_hit:
+    if former_hit and not current_hit:
         # The site carries a name this company has since given up (ABCHAR AS -> CMW HOLDING AS): the
         # operating business, and its site, usually moved to a new company that took the old name.
         rec.context["website_ambiguous"] = snap.final_url
         rec.context["website_ambiguous_reason"] = f"the listed site {snap.final_url} carries the former name {former_hit}, not the current one"
         return None
+    our_cores = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
+    mentions = entity_mentions(parts)
+    if mentions and not set(mentions) & our_cores:
+        rec.context["website_ambiguous"] = snap.final_url
+        rec.context["website_ambiguous_reason"] = f"the listed site {snap.final_url} names another legal entity ({mentions[0]}) as its owner"
+        return None
+    corroboration = name_corroboration(legal_name, rec.context.get("subunits") or [], text, snap.final_url, strict=sig.holding)
+    if corroboration:
+        return f"{base}_name_on_site", snap, corroboration, foreign_any, group_on_page
     # A JavaScript shell or a short title: the name in the page's metadata, or the domain spelling it.
     meta_text = " ".join(part for _, part in parts)
     for attrs in ({"name": "description"}, {"property": "og:description"}):
@@ -1137,27 +1148,9 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
     rule = _register_rules(sig, ev, origin, site_domain, final_host, parts, False)
     if rule:
         return f"{base}_{rule[0]}", rule[2], rule[1], foreign_any, group_on_page
-    if len(text) < 600 and fetcher is not None and not sig.holding:
-        sitemap = _sitemap_size(fetcher, visit, snap.final_url)
-        if sitemap >= 5:
-            return f"{base}_live_site", snap, f"register-listed site is live: its sitemap lists {sitemap} pages on {site_domain}", foreign_any, group_on_page
     rec.context["website_ambiguous"] = snap.final_url
     rec.context["website_ambiguous_reason"] = f"the listed site {snap.final_url} shows neither this organisation number nor the company name"
     return None
-
-
-def _sitemap_size(fetcher: Fetcher, visit: SiteVisit, url: str) -> int:
-    """Pages on the site's own domain listed in /sitemap.xml (a sitemap index counts its sitemaps)."""
-    parts = urlsplit(url)
-    domain = registered_domain(parts.hostname or "")
-    try:
-        snap = fetcher.get(f"{parts.scheme}://{parts.netloc}/sitemap.xml", retries=0, timeout=(5.0, min(10.0, max(3.0, visit.time_left()))))
-    except Exception:
-        return 0
-    if not snap.ok:
-        return 0
-    locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", snap.text())
-    return sum(1 for loc in locs if registered_domain(urlsplit(loc).hostname or "") == domain)
 
 
 def _fetch_candidate(visit: SiteVisit, rec: CompanyRecord, url: str) -> tuple[tuple[Snapshot, BeautifulSoup, str] | None, str | None, bool, bool]:
