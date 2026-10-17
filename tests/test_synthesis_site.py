@@ -316,5 +316,42 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(out["changes"][0]["sources"], ["ev-new", "ev-old"])
 
 
+class AskTests(unittest.TestCase):
+    def run_of(self):
+        from kildespor.ask import Run
+
+        return Run([published(envelope_of(rich_record())), published(envelope_of(bare_holding())), published(envelope_of(sole_proprietor()))])
+
+    def test_company_questions_cite_sources(self) -> None:
+        run = self.run_of()
+        ceo = run.answer("who is the CEO of FJORD DATA AS")
+        self.assertTrue(ceo["supported"])
+        self.assertIn("Kari Nordmann", ceo["answer"])
+        self.assertTrue(ceo["citations"][0]["source_url"].startswith("https://data.brreg.no/"))
+        hiring = run.answer("is 938702675 hiring")
+        self.assertIn("Senior utvikler", hiring["answer"])
+        nope = run.answer("is NORDMANN HOLDING AS hiring")
+        self.assertFalse(nope["supported"])
+        self.assertIn("not proof", nope["answer"])
+        does = run.answer("what does FJORD DATA AS do")
+        self.assertIn("computer consultancy", does["answer"])
+
+    def test_screening(self) -> None:
+        run = self.run_of()
+        oslo = run.answer("hiring companies in Oslo")
+        self.assertEqual([r["organisation_number"] for r in oslo["results"]], ["938702675"])
+        self.assertTrue(all(c["source_url"] for r in oslo["results"] for c in r["citations"]))
+        self.assertEqual(run.answer("revenue over 10 MNOK")["count"], 1)
+        self.assertEqual(run.answer("companies with a website but no social profile")["count"], 0)
+        self.assertEqual(run.answer("companies without a website")["count"], 2)
+        self.assertEqual(run.answer("loss-making companies")["count"], 1)
+        self.assertTrue(run.answer("what changed")["notes"])
+
+    def test_unsupported(self) -> None:
+        run = self.run_of()
+        self.assertFalse(run.answer("what is the sentiment around FJORD DATA AS")["supported"])
+        self.assertFalse(run.answer("what is the weather tomorrow")["supported"])
+
+
 if __name__ == "__main__":
     unittest.main()
