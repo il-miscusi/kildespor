@@ -979,10 +979,20 @@ def website_candidates(rec: CompanyRecord, only_nav: bool = False) -> list[tuple
             cached = caches.candidates(rec.organisation_number)
         except Exception:
             cached = []
+        hints = rec.context.setdefault("candidate_pages", {})
         for item in cached:
             if item.get("kind") == "website":
                 site = normalise_site_url(item.get("url"))
                 if site and not social_profile(site):
+                    parts = urlsplit(site)
+                    if (parts.path or "/") != "/":
+                        # A cache may point at the page that printed the number (/kontakt/). The site is
+                        # its domain's root; that page is read as a contact page, never published as one.
+                        hints[_host_key(site)] = site
+                        site = urlunsplit((parts.scheme, parts.netloc, "/", "", ""))
+                    for extra in (item.get("page_url"), item.get("source_record")):
+                        if isinstance(extra, str) and extra.startswith("http") and _host_key(extra) == _host_key(site):
+                            hints[_host_key(site)] = extra
                     add(site, f"cache_{item.get('source') or 'unknown'}")
     guesses: list[str] = []
 
@@ -1190,9 +1200,13 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
     named = legal_core and (2 * len(set(legal_core) & folded_words) >= len(set(legal_core)) or (len(stem) >= 4 and stem in folded_words))
     # Worth reading the contact/about pages (where the org number usually is) only when the site
     # shows something of this company: its number, a register contact, or its name.
-    plausible = declared or bool(ev.numbers.get(org)) or bool(ev.contacts) or bool(named)
+    hint = (rec.context.get("candidate_pages") or {}).get(site_domain)
+    plausible = declared or origin.startswith("cache_") or bool(ev.numbers.get(org)) or bool(ev.contacts) or bool(named)
     if plausible and not proven():
-        for link in _contact_links(snap, soup)[: 3 if declared else 2]:
+        links = _contact_links(snap, soup)[: 3 if declared else 2]
+        if hint and hint.split("#")[0] != snap.final_url.split("#")[0]:
+            links = [hint] + [link for link in links if link != hint][:1]
+        for link in links:
             if visit.time_left() < 4:
                 break
             try:

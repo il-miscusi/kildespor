@@ -670,3 +670,13 @@ class NoindexCandidates(unittest.TestCase):
         self.assertFalse(website._name_like_domain("hjernenett.no", sig))
         self.assertTrue(website._name_like_domain("lundbeck.com", website.RegisterSignals(make_rec(name="H. LUNDBECK AS"))))
         self.assertFalse(website._name_like_domain("gruppen.no", website.RegisterSignals(make_rec(name="AF GRUPPEN ASA"))))
+
+
+class NoindexContactPages(unittest.TestCase):
+    def test_number_on_the_indexed_contact_page_publishes_the_root(self) -> None:
+        cache = FakeCaches(social=[{"url": "https://flytbok.no/kontakt/", "kind": "website", "platform": None, "source": "noindex",
+                                    "match_rule": "single", "source_record": "noindex:2026-10-17"}])
+        rec = make_rec(name="FLYTBOK AS", phone=None)
+        pages = {"https://flytbok.no/": html("Båtbok", "<a href='/om'>Om</a> Velkommen"),
+                 "https://flytbok.no/kontakt/": html("Kontakt", f"Flytbok AS Org. nr.: {ORG}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [("organisation_number_on_site", "https://flytbok.no/")])
