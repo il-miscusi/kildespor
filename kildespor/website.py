@@ -399,8 +399,10 @@ class RegisterSignals:
                 self.streets.append((lines[0], str(addr["postnummer"])))
         self.places = [(str(a["postnummer"]), str(a["poststed"])) for a in (address, postal) if a.get("postnummer") and a.get("poststed")]
         self.people = sorted({r["name"] for r in rec.context.get("roles") or [] if r.get("holder_type") == "person" and r.get("role_code") in ROLE_CODES_FOR_IDENTITY and r.get("name")})
+        # Current legal name and subunit names only. A former name is a candidate source, never
+        # identity: after a restructuring the operating business often moves to a new company that
+        # takes the old name ("ABC AS" -> "ABC HOLDING AS" + a new "ABC AS" at the same address).
         self.names = [n for n in _names_of(rec) if n]
-        self.names += [h.get("navn") for h in entity.get("historiskeNavn") or [] if h.get("navn")]
         form = ((entity.get("organisasjonsform") or {}).get("kode") or "").upper()
         words = set(core_tokens(entity.get("navn") or ""))
         self.housing = form in HOUSING_FORMS or bool(words & HOUSING_WORDS)
