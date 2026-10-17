@@ -10,8 +10,10 @@
 | `pam-stilling-feed.nav.no` (NAV vacancy feed) | active job ads with employer organisation number and homepage | NAV's official feed API with its published public token, fetched at run time; read once per run for the last 45 days | job ads NAV redistributes for reuse |
 
 Not used: search engines, LinkedIn, Meta (Facebook/Instagram), Glassdoor,
-Indeed, Google, review sites, or any unofficial client for them. A profile on
-those platforms appears only as an outbound link from a verified company site.
+Indeed, Google, review sites, or any unofficial client for them; none of those
+platforms is ever fetched. A profile on them is published only when a verified
+company site links to it, or when Wikidata states it on the item that carries
+this exact organisation number (P2333; the claim cites the Wikidata statement).
 `w2.brreg.no/kunngjoring/` is not fetched because its robots.txt disallows it.
 
 ## Rate and politeness
