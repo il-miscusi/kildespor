@@ -17,10 +17,12 @@ keeps places with a Norwegian address, and matches them to register entities
    equals the entity's business, postal or location postcode.
 
 A ``_subunit`` suffix marks a match on a sub-unit's register data, credited to its
-parent company. Rules 1-3 must also be corroborated by the place itself (a name
-token of four or more letters shared with the company or one of its sub-units, or a
-shared postcode); otherwise the rule carries an ``_uncorroborated`` suffix and is weak
-(an accountant's or manager's office registered as a client's contact address). Every key must point at exactly one company; a place that matches
+parent company. Rules 1-3 must also be corroborated by the place's name: it shares
+a distinctive token (four or more letters, found in at most ``RARE_TOKEN_DF`` register
+names) with the company or one of its sub-units. A match corroborated only by a
+shared postcode carries a ``_postcode_only`` suffix, one with neither an
+``_uncorroborated`` suffix; both are weak (a holding company's restaurant, a property
+owner's tenant, an accountant's or lawyer's office registered as the contact address). Every key must point at exactly one company; a place that matches
 two companies at its strongest rule is dropped, and so is a domain, e-mail or social
 URL shared by more than a handful of places (chains, directories). Phones are never
 used for matching. At most three places per company. Rows cite
@@ -50,6 +52,7 @@ MAX_PLACES_PER_ORG = 3
 MAX_PLACES_PER_DOMAIN = 5   # a website domain on more places than this is a chain or a directory
 MAX_PLACES_PER_EMAIL = 5
 MAX_PLACES_PER_SOCIAL = 3
+RARE_TOKEN_DF = 300  # a name token in more register names than this (hamar, bygg, eiendom) corroborates nothing
 LICENCES = {
     "meta": "CDLA-Permissive-2.0", "microsoft": "CDLA-Permissive-2.0", "foursquare": "Apache-2.0",
     "alltheplaces": "CC0-1.0", "pinmeto": "CDLA-Permissive-2.0", "brightquery": "CDLA-Permissive-2.0",
@@ -165,9 +168,10 @@ def main() -> None:
         cur = idx[kind][key].get(u.parent)
         idx[kind][key][u.parent] = u.subunit if cur is None else (cur and u.subunit)
 
+    token_df = Counter(t for u in units if not u.subunit for t in set(norm_name(u.name).split()))
     for u in units:
         if u.parent in universe:
-            org_tokens[u.parent].update(t for t in norm_name(u.name).split() if len(t) >= 4)
+            org_tokens[u.parent].update(t for t in norm_name(u.name).split() if len(t) >= 4 and token_df[t] <= RARE_TOKEN_DF)
             org_pcs[u.parent].update(u.postcodes)
         if not u.subunit:
             legal_name[u.orgnr] = u.name
@@ -243,8 +247,8 @@ def main() -> None:
             continue
         rule, _, sub = min((f for f in found if f[1] == org), key=lambda f: (LEVEL[f[0]], f[2]))
         name = f"overture_{rule}" + ("_subunit" if sub else "")
-        if rule != "name_postcode" and not (set(key.split()) & org_tokens[org] or pcs & org_pcs[org]):
-            name += "_uncorroborated"
+        if rule != "name_postcode" and not set(key.split()) & org_tokens[org]:
+            name += "_postcode_only" if pcs & org_pcs[org] else "_uncorroborated"
         rule_counts[name] += 1
         matches[org].append((LEVEL[rule], -(p.get("confidence") or 0), name, p))
 
@@ -283,6 +287,10 @@ def main() -> None:
                              "postcodes": [a.get("postcode") for a in p.get("addresses") or [] if a], "websites": webs,
                              "socials": list(p.get("socials") or []), "id": p["id"]})
 
+    best: dict[tuple[str, str], tuple] = {}
+    for r in rows:  # rows are in strength order per company; keep the first row per URL
+        best.setdefault((r[0], r[3].lower().rstrip("/")), r)
+    rows = list(best.values())
     out = Path(args.out)
     n = write_tsv_gz(out / "candidates-overture.tsv.gz", CANDIDATE_HEADER, rows)
     orgs_web = {r[0] for r in rows if r[1] == "website"}
