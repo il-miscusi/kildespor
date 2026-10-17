@@ -577,3 +577,24 @@ class SectionSites(unittest.TestCase):
         rec, harvested, visit = self.publish("https://bergbygg.no/no/", {"https://bergbygg.no/no/": html("Berg Bygg", f"Org.nr {ORG}")})
         self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://bergbygg.no/")
         self.assertIsNone(visit.section)
+
+
+class SectionRedirects(unittest.TestCase):
+    def test_root_redirecting_within_its_host_is_the_root(self) -> None:
+        rec = make_rec(name="BERG BYGG AS", phone=None)
+        raw = html("Berg Bygg", f"Org.nr {ORG}").encode()
+        home = Snapshot("https://bergbygg.no/", "https://bergbygg.no/wp/start/", 200, "2026-10-17T00:00:00Z", hashlib.sha256(raw).hexdigest(), "text/html", raw)
+        visit = website.SiteVisit(None, rec, time.monotonic() + 30)
+        with patch("kildespor.harvest._extract_site_facts", lambda *a, **k: None):
+            website._publish_site(rec, visit, home, home, "organisation_number_on_site", "name_derived_domain", f"Org.nr {ORG}", set(), set())
+        self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://bergbygg.no/")
+        self.assertIsNone(visit.section)
+
+    def test_redirect_to_a_section_of_another_host_stays_a_section(self) -> None:
+        rec = make_rec(name="BERG BYGG AS", phone=None)
+        raw = html("Berg Bygg", f"Org.nr {ORG}").encode()
+        home = Snapshot("https://bergbygg.no/", "https://berggruppen.no/berg-bygg/", 200, "2026-10-17T00:00:00Z", hashlib.sha256(raw).hexdigest(), "text/html", raw)
+        visit = website.SiteVisit(None, rec, time.monotonic() + 30)
+        with patch("kildespor.harvest._extract_site_facts", lambda *a, **k: None):
+            website._publish_site(rec, visit, home, home, "organisation_number_on_site", "name_derived_domain", f"Org.nr {ORG}", set(), set())
+        self.assertEqual(rec.claims_for("official_website")[0]["value"]["url"], "https://berggruppen.no/berg-bygg/")

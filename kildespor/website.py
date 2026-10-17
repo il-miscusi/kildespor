@@ -1461,6 +1461,9 @@ def _publish_site(
     if parts.port and not ((parts.scheme == "https" and parts.port == 443) or (parts.scheme == "http" and parts.port == 80)):
         netloc = f"{netloc}:{parts.port}"
     section = _section_path(parts.path)
+    requested = urlsplit(home.requested_url or home.final_url)
+    if section and not _section_path(requested.path) and (requested.hostname or "").removeprefix("www.") == (parts.hostname or "").removeprefix("www."):
+        section = None  # we asked for this host's root and it redirected within itself: the root is what was verified
     # A site verified on a section of a larger domain is published as that section, never as the
     # domain's root, which was not verified and is often a parent's or another company's homepage.
     site_url = urlunsplit((parts.scheme, netloc, section or "/", parts.query if section else "", ""))
