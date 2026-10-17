@@ -32,7 +32,8 @@ than a fact published under the wrong company.
 - No search-engine result is used as evidence. No search engine is used.
 - No scraping of LinkedIn, Meta, Glassdoor, Indeed or Google. Profiles on
   those platforms are recorded only as outbound links from the verified
-  company site; the platforms themselves are not fetched.
+  company site, or from a Wikidata statement on the item that carries this
+  organisation number; the platforms themselves are not fetched.
 - No language model decides identity, fills a field or writes the brief. The
   brief is a deterministic template over published claims.
 - No personal data beyond names in the company-role context. Birth dates from
@@ -53,8 +54,13 @@ than a fact published under the wrong company.
 
 1. Official registers for every company (entity, roles, subunits, accounts,
    group, update feed). A complete output file is written right after.
-2. Website discovery and verification, then site facts (brand, description,
-   contacts, profiles, careers page, JSON-LD jobs and articles, RSS/Atom).
+2. Website discovery and verification (register, e-mail domain, name
+   guesses, declared caches), then site facts from the verified site and its
+   sitemap: brand, description, contacts, company-owned profiles, careers
+   page and open roles (including linked applicant-tracking pages), and dated
+   news (WordPress posts API, RSS/Atom, news sitemaps, listings, articles).
+   Wikidata-listed profiles are published only after the live Wikidata item
+   confirms this organisation number and the profile.
 3. Job ads from NAV's vacancy feed (loaded once in the background), then the
    employer homepage named in a verified ad if no website was verified yet.
 4. Synthesis, refresh diff, envelope, report and viewer.
