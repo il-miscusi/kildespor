@@ -520,6 +520,21 @@ class PublicationDateTests(unittest.TestCase):
         item = harvest.article_meta(snap("https://www.fjordbygg.no/nyheter/ny-kontrakt", html), soup_of(html), ["Fjordbygg"])
         self.assertEqual(item.published, f"{RECENT}T09:00:00+02:00")
 
+    def test_date_block_and_dateline_are_publication_dates(self) -> None:
+        html = f"""<html><head><title>Zaptec Pro er klar for AFIR</title></head><body><h1>Zaptec Pro er klar for AFIR</h1>
+        <dl><div class="date"><dd><time class="text-xs" datetime="{RECENT}T08:00:00.000+02:00">x</time></dd></div></dl>
+        <div class="event-date"><time datetime="2026-12-01">1. desember</time></div><p>Tekst</p></body></html>"""
+        item = harvest.article_meta(snap("https://www.zaptec.com/info-hub/industry-news/afir", html), soup_of(html), ["Zaptec"])
+        self.assertEqual(item.published, f"{RECENT}T08:00:00+02:00")
+        d = date.fromisoformat(RECENT)
+        html2 = f"""<html><head><title>Ny avdeling på Voss</title></head><body><h1>Ny avdeling på Voss</h1>
+        <p class="post-date">Publisert {d.day}.{d.month}.{d.year}</p><p>Arrangementet er 1.12.2026.</p></body></html>"""
+        item2 = harvest.article_meta(snap("https://www.fjordbygg.no/nyheter/ny-avdeling", html2), soup_of(html2), ["Fjordbygg"])
+        self.assertEqual(item2.date, RECENT)
+        html3 = """<html><head><title>Seminar om bygg</title></head><body><h1>Seminar om bygg</h1>
+        <div class="event-date">16.10.2025</div></body></html>"""
+        self.assertIsNone(harvest.article_meta(snap("https://www.fjordbygg.no/nyheter/seminar", html3), soup_of(html3), ["Fjordbygg"]))
+
     def test_atom_updated_alone_is_not_published(self) -> None:
         atom = f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Oppdatert side om tjenester</title>
         <link href="https://www.fjordbygg.no/tjenester-oppdatert"/><updated>{RECENT}T10:00:00Z</updated></entry>

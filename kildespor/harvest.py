@@ -1215,18 +1215,41 @@ _PUBLISHED_META = (
     ("itemprop", "datePublished"), ("name", "pubdate"), ("name", "publishdate"), ("name", "publish_date"), ("name", "publish-date"),
     ("name", "dc.date.issued"), ("name", "DC.date.issued"), ("name", "parsely-pub-date"), ("property", "og:published_time"),
 )
-_BYLINE = re.compile(r"byline|publi|post-?date|entry-?date|entry-?meta|post-?meta|article-?meta|article-?header|entry-?header|post-?header|dateline|dato", re.I)
+_BYLINE = re.compile(r"byline|publi|post-?date|entry-?date|entry-?meta|post-?meta|article-?meta|article-?header|entry-?header|post-?header|dateline|dato|(?<![a-z])date(?![a-z])", re.I)
+_NOT_PUBLICATION = re.compile(r"event|arrangement|deadline|frist|(?<![a-z])(?:start|end|slutt)(?![a-z])|expir|updated|modified|oppdatert", re.I)
+
+
+def _dates_article(node: Any) -> bool:
+    """The node or one of its three nearest containers is marked as the article's own date or byline."""
+    for element in [node] + list(node.parents)[:3]:
+        if getattr(element, "name", None) in (None, "[document]", "html", "body"):
+            return False
+        ident = " ".join(element.get("class") or []) + " " + str(element.get("id") or "") + " " + str(element.get("itemprop") or "")
+        if _NOT_PUBLICATION.search(ident):
+            return False
+        if element.name == "header" or _BYLINE.search(ident) or "datepublished" in ident.lower():
+            return True
+    return False
 
 
 def _byline_time(scope: Any) -> Any:
     """A <time> that dates the article itself: marked datePublished/pubdate, or sitting in the
-    article's header or byline. A <time> in the body (an event, a deadline) does not count."""
+    article's header, byline or date block. A <time> in the body (an event, a deadline) does not count."""
     for tag in scope.find_all("time", attrs={"datetime": True}):
-        if (tag.get("itemprop") or "").lower() == "datepublished" or tag.has_attr("pubdate") or _BYLINE.search(" ".join(tag.get("class") or [])):
+        if (tag.get("itemprop") or "").lower() == "datepublished" or tag.has_attr("pubdate") or _dates_article(tag):
             return tag
-        for parent in list(tag.parents)[:4]:
-            if getattr(parent, "name", None) == "header" or _BYLINE.search(" ".join(parent.get("class") or []) if hasattr(parent, "get") else ""):
-                return tag
+    return None
+
+
+def _byline_text_date(scope: Any) -> tuple[str, str] | None:
+    """(date, the text) of a short dateline in an element marked as the article's date or byline
+    ("Publisert 14. oktober 2026" in <p class="post-date">)."""
+    for string in scope.find_all(string=True):
+        text = str(string).strip()
+        if 6 <= len(text) <= 40 and string.parent is not None and string.parent.name not in ("script", "style") and _dates_article(string.parent):
+            day = text_date(text)
+            if day:
+                return day, text
     return None
 
 
@@ -1264,6 +1287,10 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> News
         if time_tag is not None:
             published = stamp(time_tag["datetime"])
             span = f'<time datetime="{time_tag["datetime"]}">' if published else None
+        if published is None:
+            dateline = _byline_text_date(scope)
+            if dateline:
+                published, span = (dateline[0], dateline[0]), f"byline: {dateline[1]}"
     # Never a date merely written near the headline: it may be an event, a deadline or a project year.
     if published is None or not _news_window(published[1]):
         return None
