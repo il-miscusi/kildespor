@@ -665,3 +665,21 @@ class SectionSiteTests(unittest.TestCase):
         self.assertIsNone(plan.raw("https://berggruppen.no/sitemap.xml"))
         self.assertIsNone(plan.raw("https://berggruppen.no/wp-json/wp/v2/posts"))
         self.assertEqual(visit.fetched, [])
+
+
+class RecruiterLinkTests(unittest.TestCase):
+    def test_unknown_recruiter_page_cites_the_company_page_and_is_not_fetched(self) -> None:
+        home_html = """<html><head><title>Work System</title></head><body><nav><a href="https://talangpunkten.se/career/work-system/lang/no">Karriere</a></nav>
+        <footer>Org.nr 913 170 296</footer></body></html>"""
+        fetcher = FakeFetcher({}, robots="User-agent: *\nAllow: /\n")
+        rec = record("WORK SYSTEM NORWAY AS", "913170296")
+        visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.worksystem.no/", home_html)
+        soup, _html, text = parse(home)
+        visit.pages.append((home, soup, text))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+        claim = next(c for c in rec.claims if c["field"] == "careers_page")
+        self.assertEqual(claim["value"], "https://talangpunkten.se/career/work-system/lang/no")
+        self.assertEqual(rec.evidence[claim["evidence_ids"][0]]["source_url"], "https://www.worksystem.no/")
+        self.assertFalse(any("talangpunkten" in u for u in fetcher.requested))
+        self.assertNotIn("job_posting:site", rec.checked_fields)

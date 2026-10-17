@@ -1688,6 +1688,13 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         tenant_ok = bool(tenant) and resembles(tenant, contains, prefixes)
         ats_name = (ats_of(url) or ("", ""))[0]
         page = None
+        if not ats_name:
+            # A recruiter host we do not know: its page need not name the company in static HTML, so
+            # the evidence is the company's own page linking it as its careers page; never fetched.
+            if snap is not None and CAREER_TEXT.match(text or ""):
+                careers.append((_clean_url(url), snap, span, "recruiter_link_on_verified_site"))
+            jobs_complete = False
+            continue
         if ats_name != "finn" and not fetched_ats and plan.can(2, 6.0):
             fetched_ats = True
             page = plan.page(url)
