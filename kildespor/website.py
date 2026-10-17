@@ -1267,7 +1267,7 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         registry_site = None
     _publish_nav_profiles(rec, rec.context.get("nav_employer") or {})
     if not only_nav:
-        _publish_cache_socials(rec)
+        _publish_cache_socials(rec, fetcher, deadline)
     candidates = website_candidates(rec, only_nav=only_nav)
     if only_nav and not candidates:
         return
@@ -1479,49 +1479,98 @@ def _social_owners() -> dict[str, set[str]]:
     return _cache_social_owners
 
 
-def _publish_cache_socials(rec: CompanyRecord) -> None:
-    """Social profiles Wikidata ties to this organisation number (P2333, an exact join).
+WIKIDATA_SOCIAL_PROPS = {
+    "facebook": "P2013", "instagram": "P2003", "linkedin": "P4264", "x": "P2002", "youtube": "P2397",
+    "tiktok": "P7085", "pinterest": "P3836", "vimeo": "P4015",
+}
 
-    A profile the caches also give another organisation is skipped. Overture never publishes one.
+
+def _wikidata_values(entity: dict[str, Any], prop: str) -> list[str]:
+    """Non-deprecated string values of one property in a Wikidata entity's claims."""
+    values = []
+    for statement in (entity.get("claims") or {}).get(prop) or []:
+        if statement.get("rank") == "deprecated":
+            continue
+        snak = statement.get("mainsnak") or {}
+        value = (snak.get("datavalue") or {}).get("value")
+        if snak.get("snaktype") == "value" and isinstance(value, str):
+            values.append(value)
+    return values
+
+
+def _publish_cache_socials(rec: CompanyRecord, fetcher: Fetcher | None = None, deadline: float | None = None) -> None:
+    """Social profiles Wikidata ties to this organisation number, confirmed live before publication.
+
+    A cached Wikidata row is only a candidate. The item is fetched from Wikidata itself
+    (Special:EntityData, allowed by its robots.txt; the wbgetentities API as fallback), and a profile
+    is published only when the live item states this organisation number (P2333) and the profile's
+    own property value. That snapshot, its hash and retrieval time are the evidence. Without the
+    live confirmation nothing is published. A profile the caches also give another organisation is
+    skipped, and Overture never publishes a profile.
     """
-    if caches is None:
+    if caches is None or fetcher is None:
         return
     try:
         items = caches.candidates(rec.organisation_number)
     except Exception:
         return
+    by_item: dict[str, list[tuple[str, str, str, str]]] = {}
     for item in items:
-        if item.get("kind") != "social":
-            continue
-        source = item.get("source") or ""
-        rule = item.get("match_rule") or None
-        method = CACHE_SOCIAL_RULES.get((source, rule))
-        if not method:
+        if item.get("kind") != "social" or (item.get("source"), item.get("match_rule")) not in CACHE_SOCIAL_RULES:
             continue
         profile = social_profile(str(item.get("url") or ""))
-        if not profile:
+        match = re.search(r"/wiki/(Q\d+)(?:#(P\d+))?", str(item.get("source_record") or ""))
+        if not profile or not match:
             continue
         platform, clean = profile
-        if _social_owners().get(clean.lower().rstrip("/"), {rec.organisation_number}) - {rec.organisation_number}:
+        prop = match.group(2) or WIKIDATA_SOCIAL_PROPS.get(platform)
+        if not prop or _social_owners().get(clean.lower().rstrip("/"), {rec.organisation_number}) - {rec.organisation_number}:
             continue
-        record = item.get("source_record") or f"{source}:unknown"
-        ev = rec.add_evidence(
-            source_url=record,
-            source_class="licensed_open_dataset",
-            retrieved_at=(item.get("release_date") or utc_today()),
-            content_sha256=None,
-            claim_span=str(item.get("url")),
-            extraction_method=method,
-            access_policy="declared open dataset cache (see CACHE.md); Wikidata CC0, Overture CDLA-Permissive-2.0",
-        )
-        rec.add_claim(
-            family="company_profiles",
-            field_name="social_profile",
-            value={"platform": platform, "url": clean, "handle": urlsplit(clean).path.strip("/")},
-            key=[platform, clean.lower()],
-            evidence_ids=[ev],
-            confidence=0.85,
-            method=f"open_dataset_{method}",
-            label=f"{platform.title()} profile",
-        )
-        rec.set_state("company_profiles", "available", f"profile tied to this organisation number by {source} ({method})")
+        by_item.setdefault(match.group(1), []).append((platform, clean, prop, str(item.get("url"))))
+    for qid, rows in list(by_item.items())[:2]:
+        if deadline is not None and deadline - time.monotonic() < 8:
+            return
+        snap = entity = None
+        for url in (f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
+                    f"https://www.wikidata.org/w/api.php?action=wbgetentities&ids={qid}&props=claims&format=json"):
+            try:
+                got = fetcher.get(url, retries=0, timeout=(5.0, 12.0), headers={"Accept": "application/json"})
+                if got.ok:
+                    entities = got.json().get("entities") or {}
+                    entity = entities.get(qid) or next(iter(entities.values()), None)
+                    snap = got
+                    break
+            except (RobotsDisallowed, RequestBudgetExhausted, UnsafeURL):
+                continue
+            except Exception as exc:
+                rec.error("company_profiles", f"Wikidata confirmation failed: {type(exc).__name__}: {str(exc)[:120]}", url)
+                continue
+        if not snap or not isinstance(entity, dict):
+            continue
+        orgnrs = {re.sub(r"\D", "", v) for v in _wikidata_values(entity, "P2333")}
+        if rec.organisation_number not in orgnrs:
+            continue
+        for platform, clean, prop, listed in rows:
+            handle = urlsplit(clean).path.strip("/").split("/")[-1].lstrip("@").lower()
+            value = next((v for v in _wikidata_values(entity, prop) if v.strip().lstrip("@").lower().rstrip("/").split("/")[-1] == handle), None)
+            if not value:
+                continue
+            ev = rec.evidence_from_snapshot(
+                snap,
+                source_class="licensed_open_dataset",
+                span=f"{qid}: P2333 (organisation number) = {rec.organisation_number}; {prop} = {value}",
+                method="wikidata_p2333_live_item",
+                access_policy="Wikidata item data, CC0-1.0; Special:EntityData is allowed by wikidata.org's robots.txt",
+                url=snap.final_url,
+            )
+            rec.add_claim(
+                family="company_profiles",
+                field_name="social_profile",
+                value={"platform": platform, "url": clean, "handle": urlsplit(clean).path.strip("/")},
+                key=[platform, clean.lower()],
+                evidence_ids=[ev],
+                confidence=0.85,
+                method="wikidata_p2333_exact_orgnr",
+                label=f"{platform.title()} profile",
+            )
+            rec.set_state("company_profiles", "available", f"profile stated on Wikidata item {qid}, which carries this organisation number (P2333)")

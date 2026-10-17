@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 import unittest
 from unittest.mock import patch
@@ -297,25 +298,58 @@ class RobotsAndJsonLd(unittest.TestCase):
 
 
 class CacheSocialProfiles(unittest.TestCase):
-    def test_exact_cache_profiles_published_name_matches_not(self) -> None:
+    SOCIAL = [
+        {"url": "https://www.facebook.com/bergbygg", "kind": "social", "platform": "facebook", "source": "wikidata", "match_rule": "wikidata_p2333_exact_orgnr", "source_record": "https://www.wikidata.org/wiki/Q1#P2013"},
+        {"url": "https://www.instagram.com/bergbygg", "kind": "social", "platform": "instagram", "source": "overture", "match_rule": "overture_name_postcode", "source_record": "overture:2026-09:x"},
+        {"url": "https://www.x.com/bergbygg", "kind": "social", "platform": "x", "source": "overture", "match_rule": "overture_email_exact", "source_record": "overture:2026-09:w"},
+        {"url": "https://www.instagram.com/shared", "kind": "social", "platform": "instagram", "source": "wikidata", "match_rule": "wikidata_p2333_exact_orgnr", "source_record": "https://www.wikidata.org/wiki/Q1#P2003"},
+        {"url": "https://www.instagram.com/shared", "kind": "social", "platform": "instagram", "source": "wikidata", "match_rule": "wikidata_p2333_exact_orgnr", "source_record": "https://www.wikidata.org/wiki/Q2#P2003", "orgnr": OTHER},
+    ]
+
+    class Fetcher:
+        def __init__(self, entity=None, refuse=False):
+            self.entity, self.refuse, self.urls = entity, refuse, []
+
+        def get(self, url, **kwargs):
+            self.urls.append(url)
+            if self.refuse:
+                raise khttp.RobotsDisallowed(url)
+            body = json.dumps({"entities": {"Q1": self.entity}}).encode()
+            return Snapshot(url, url, 200, "2026-10-17T12:00:00Z", hashlib.sha256(body).hexdigest(), "application/json", body)
+
+    @staticmethod
+    def entity(orgnr=ORG):
+        def claim(value):
+            return {"rank": "normal", "mainsnak": {"snaktype": "value", "datavalue": {"value": value}}}
+        return {"claims": {"P2333": [claim(orgnr)], "P2013": [claim("bergbygg")], "P2003": [claim("shared")]}}
+
+    def publish(self, fetcher):
         rec = make_rec()
-        social = [
-            {"url": "https://www.facebook.com/bergbygg", "kind": "social", "platform": "facebook", "source": "wikidata", "match_rule": "wikidata_p2333_exact_orgnr", "source_record": "https://www.wikidata.org/wiki/Q1#P2013"},
-            {"url": "https://www.instagram.com/bergbygg", "kind": "social", "platform": "instagram", "source": "overture", "match_rule": "overture_name_postcode", "source_record": "overture:2026-09:x"},
-            {"url": "https://www.x.com/bergbygg", "kind": "social", "platform": "x", "source": "overture", "match_rule": "overture_email_exact", "source_record": "overture:2026-09:w"},
-            {"url": "https://www.instagram.com/shared", "kind": "social", "platform": "instagram", "source": "overture", "match_rule": "overture_email_exact", "source_record": "overture:2026-09:y"},
-            {"url": "https://www.instagram.com/shared", "kind": "social", "platform": "instagram", "source": "overture", "match_rule": "overture_email_exact", "source_record": "overture:2026-09:z", "orgnr": OTHER},
-        ]
         website._cache_social_owners = None
-        with patch.object(website, "caches", FakeCaches(social=social)):
-            website._publish_cache_socials(rec)
+        with patch.object(website, "caches", FakeCaches(social=self.SOCIAL)):
+            website._publish_cache_socials(rec, fetcher, time.monotonic() + 60)
         website._cache_social_owners = None
-        urls = [c["value"]["url"] for c in rec.claims if c["field"] == "social_profile"]
-        self.assertEqual(urls, ["https://www.facebook.com/bergbygg"])
+        return rec
 
+    def test_live_wikidata_item_confirms_the_profile(self) -> None:
+        fetcher = self.Fetcher(self.entity())
+        rec = self.publish(fetcher)
+        claims = [c for c in rec.claims if c["field"] == "social_profile"]
+        self.assertEqual([c["value"]["url"] for c in claims], ["https://www.facebook.com/bergbygg"])
+        ev = rec.evidence[claims[0]["evidence_ids"][0]]
+        self.assertIsNotNone(ev["content_sha256"])
+        self.assertIn("P2333", ev["claim_span"])
+        self.assertTrue(fetcher.urls[0].startswith("https://www.wikidata.org/wiki/Special:EntityData/Q1.json"))
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_item_without_our_number_publishes_nothing(self) -> None:
+        rec = self.publish(self.Fetcher(self.entity(orgnr=OTHER)))
+        self.assertEqual([c for c in rec.claims if c["field"] == "social_profile"], [])
+
+    def test_refused_or_absent_confirmation_publishes_nothing(self) -> None:
+        rec = self.publish(self.Fetcher(refuse=True))
+        self.assertEqual([c for c in rec.claims if c["field"] == "social_profile"], [])
+        rec = self.publish(None)
+        self.assertEqual([c for c in rec.claims if c["field"] == "social_profile"], [])
 
 
 class SuccessorsAndUmbrellas(unittest.TestCase):

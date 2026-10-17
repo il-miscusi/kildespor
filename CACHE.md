@@ -10,9 +10,14 @@ social profile that a public dataset links to a company) or a screening count
 (how many register entities share a phone number or an e-mail domain). No row
 is a published fact or a precomputed profile. The agent fetches each candidate
 website live and publishes it only after its own identity checks, with the
-live retrieval time as evidence. Every row carries a citable `source_record`
-and the source's licence, so a claim built on a dataset record names that
-record rather than a page the agent did not fetch.
+live retrieval time as evidence. A Wikidata social row is published only after
+the agent fetches that Wikidata item live (`Special:EntityData/<QID>.json`,
+which wikidata.org's robots.txt allows) and the item states both this
+organisation number (P2333) and the profile's own property value; that
+snapshot, its hash and retrieval time are the claim's evidence, and without
+the live confirmation nothing is published. Overture rows never publish a
+social profile: they only propose websites for live verification. Every row
+carries a citable `source_record` and the source's licence.
 
 **The agent runs correctly without them.** Delete any or all of
 `kildespor/data/*.tsv.gz` and every lookup returns an empty result
