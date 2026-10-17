@@ -52,7 +52,9 @@ class IdentityTests(unittest.TestCase):
     def test_domain_guesses(self) -> None:
         self.assertIn("mjorud.no", guess_domains("MJØRUD AS"))
         self.assertIn("af-gruppen.no", guess_domains("AF GRUPPEN ASA"))
-        self.assertEqual(guess_domains("OLSEN HOLDING AS"), [])
+        # Generic words no longer stop guessing: the full name first, then the distinctive words.
+        self.assertEqual(guess_domains("OLSEN HOLDING AS")[0], "olsenholding.no")
+        self.assertIn("olsen.no", guess_domains("OLSEN HOLDING AS"))
         self.assertEqual(guess_domains("A AS"), [])
 
     def test_social_profiles(self) -> None:

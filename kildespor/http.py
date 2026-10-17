@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import re
 import socket
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
+from urllib.parse import unquote, urljoin, urlsplit
 
 import urllib.request
 
@@ -99,6 +99,68 @@ class Snapshot:
             "content_type": self.content_type,
             "redirect_chain": self.redirect_chain,
         }
+
+
+class Robots:
+    """robots.txt rules matched as RFC 9309 and Google do, not as urllib.robotparser does.
+
+    The group for our product token wins over ``*``; within the group the longest matching
+    path pattern decides and ``Allow`` wins a tie; ``*`` and ``$`` are pattern characters.
+    urllib's parser takes the first rule in file order and reads ``*``/``$`` literally, so
+    ``Disallow: /`` followed by ``Allow: /$`` blocked a homepage the site explicitly allows.
+    """
+
+    def __init__(self, lines: list[str], agent: str = "", disallow_all: bool = False) -> None:
+        self.disallow_all = disallow_all
+        self.rules: list[tuple[bool, str]] = []
+        if disallow_all:
+            return
+        groups: list[tuple[list[str], list[tuple[bool, str]]]] = []
+        agents: list[str] = []
+        rules: list[tuple[bool, str]] = []
+        in_rules = False
+        for raw in lines:
+            line = raw.split("#", 1)[0].strip()
+            if ":" not in line:
+                continue
+            key, value = (part.strip() for part in line.split(":", 1))
+            key = key.lower()
+            if key == "user-agent":
+                if in_rules:
+                    groups.append((agents, rules))
+                    agents, rules, in_rules = [], [], False
+                agents.append(value.lower())
+            elif key in ("allow", "disallow"):
+                in_rules = True
+                if agents and value:
+                    rules.append((key == "allow", value))
+        if agents:
+            groups.append((agents, rules))
+        token = agent.lower()
+        mine = [r for a, r in groups if token and token in a]
+        chosen = mine or [r for a, r in groups if "*" in a]
+        for group_rules in chosen:
+            self.rules.extend(group_rules)
+
+    @staticmethod
+    def _matches(pattern: str, path: str) -> bool:
+        anchored = pattern.endswith("$")
+        body = pattern[:-1] if anchored else pattern
+        regex = "".join(".*" if ch == "*" else re.escape(ch) for ch in body)
+        return re.match(regex + ("$" if anchored else ""), path) is not None
+
+    def allows(self, url: str) -> bool:
+        if self.disallow_all:
+            return False
+        parts = urlsplit(url)
+        path = unquote(parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        best: tuple[int, bool] | None = None
+        for allow, pattern in self.rules:
+            if self._matches(unquote(pattern), path):
+                rank = (len(pattern), allow)
+                if best is None or rank > best:
+                    best = rank
+        return True if best is None else best[1]
 
 
 def _ip_is_public(address: str) -> bool:
@@ -251,7 +313,7 @@ class Fetcher:
         self.per_host_limit = per_host_limit
         self.host_limits = host_limits or {}
         self._semaphores: dict[str, threading.BoundedSemaphore] = {}
-        self._robots: dict[str, RobotFileParser | None] = {}
+        self._robots: dict[str, Robots | None] = {}
         self._lock = threading.Lock()
         self._local = threading.local()
         self.requests = 0
@@ -303,19 +365,21 @@ class Fetcher:
             parser = None
             try:
                 snap = self._raw_get(origin + "/robots.txt", check_robots=False, max_bytes=500_000)
-                if snap.status in (401, 403):
-                    parser = RobotFileParser()
-                    parser.parse(["User-agent: *", "Disallow: /"])
+                if snap.status >= 500:
+                    # RFC 9309 2.3.1.4: an unreachable robots.txt means complete disallow.
+                    parser = Robots([], disallow_all=True)
                 elif snap.ok and "html" not in snap.content_type.lower():
-                    parser = RobotFileParser()
-                    parser.parse(snap.text().splitlines())
+                    parser = Robots(snap.text().splitlines(), ROBOTS_AGENT)
+                # Any 4xx (401 and 403 included) is "unavailable": RFC 9309 2.3.1.3 lets a
+                # crawler access everything. Reading 401/403 as "Disallow: /" kept us off
+                # register-declared sites whose CDN merely refuses robots.txt to bots.
             except Exception:
                 parser = None
             with self._lock:
                 self._robots[origin] = parser
         if parser is None:
             return True
-        return parser.can_fetch(ROBOTS_AGENT, url)
+        return parser.allows(url)
 
     def _raw_get(
         self,
@@ -430,6 +494,20 @@ class Fetcher:
     def begin_company(self, cap: int | None) -> None:
         self._local.cap = cap
         self._local.cap_start = getattr(self._local, "count", 0)
+
+    def company_used(self) -> int:
+        """Requests this thread has spent since ``begin_company``."""
+        return getattr(self._local, "count", 0) - getattr(self._local, "cap_start", 0)
+
+    def raise_company_cap(self, extra: int) -> None:
+        """Let the current company spend ``extra`` more requests than it has used so far.
+
+        Called once a company's own website is verified: its contact, sitemap, careers and
+        news pages are worth more of the run's pool than a company with no site at all.
+        """
+        cap = getattr(self._local, "cap", None)
+        if cap is not None:
+            self._local.cap = max(cap, self.company_used() + extra)
 
     def thread_requests(self) -> int:
         return getattr(self._local, "count", 0)

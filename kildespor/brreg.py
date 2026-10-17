@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
 import io
 import json
 from typing import Any, Iterable
@@ -128,7 +129,8 @@ def _entity_claims(rec: CompanyRecord, data: dict[str, Any], *, snap: Snapshot |
             source_url=url,
             source_class="official_registry_bulk",
             retrieved_at=utc_now(),
-            content_sha256=None,
+            # The hash of the snapshot row this value was read from, so the evidence can be replayed.
+            content_sha256=hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
             claim_span=_span(path, value),
             extraction_method="brreg_bulk_snapshot_field",
             access_policy=POLICY,
@@ -321,7 +323,14 @@ def fetch_subunits(fetcher: Fetcher, rec: CompanyRecord) -> None:
             "started": unit.get("oppstartsdato"),
             "website": unit.get("hjemmeside"),
         }
-        rec.context["subunits"].append(value)
+        # Contact details and former names help verify a website; they stay in the working
+        # context and are not published as workplace facts.
+        rec.context["subunits"].append({
+            **value,
+            "email": (unit.get("epostadresse") or "").strip().lower() or None,
+            "phones": [unit.get(k) for k in ("telefon", "mobil") if unit.get(k)],
+            "former_names": [h.get("navn") for h in unit.get("historiskeNavn") or [] if h.get("navn")],
+        })
         span = f'underenhet {unit.get("organisasjonsnummer")}: {unit.get("navn")}, {address}'
         ev = rec.evidence_from_snapshot(snap, source_class="official_subunits", span=span, method="brreg_subunits_api", access_policy=POLICY)
         rec.add_claim(
