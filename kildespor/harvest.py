@@ -1262,6 +1262,39 @@ def _strip_site_suffix(title: str, brands: list[str]) -> str:
     return title.strip()
 
 
+def _article_like(item: dict[str, Any]) -> bool:
+    return any("Article" in t or "Posting" in t or "Release" in t for t in _types(item)) or "Report" in _types(item)
+
+
+def _refers_to(item: dict[str, Any], page_url: str) -> bool:
+    refs: list[Any] = [item.get("url"), item.get("@id")]
+    main = item.get("mainEntityOfPage")
+    refs += [main.get("@id"), main.get("url")] if isinstance(main, dict) else [main]
+    key = _norm_url(page_url)
+    for ref in refs:
+        if isinstance(ref, str) and ref.strip():
+            try:
+                if _norm_url(urljoin(page_url, ref.strip().split("#")[0])) == key:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def page_article(soup: BeautifulSoup, page_url: str) -> dict[str, Any] | None:
+    """The JSON-LD article (or WebPage) that describes this page: bound to it by url, @id or
+    mainEntityOfPage, or the page's only article object. A related or embedded article never
+    lends this page its date."""
+    items = [i for i in json_ld_items(soup) if i.get("datePublished") and (_article_like(i) or "WebPage" in _types(i))]
+    bound = [i for i in items if _refers_to(i, page_url)]
+    if bound:
+        return next((i for i in bound if _article_like(i)), bound[0])
+    articles = [i for i in items if _article_like(i)]
+    if len(articles) == 1 and all(_article_like(i) for i in items):
+        return articles[0]
+    return None
+
+
 def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> NewsItem | None:
     """Headline and published datetime read from an article page itself."""
     published = None
@@ -1274,13 +1307,12 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> News
                 span = f'{attr}="{name}" content="{tag["content"].strip()}"'
                 break
     if published is None:
-        for item in json_ld_items(soup):
-            types = _types(item)
-            if item.get("datePublished") and (any("Article" in t or "Posting" in t or "Release" in t for t in types) or "WebPage" in types):
-                published = stamp(item["datePublished"])
-                if published:
-                    span = f'JSON-LD datePublished "{item["datePublished"]}"'
-                    break
+        item = page_article(soup, snap.final_url)
+        if item is not None:
+            published = stamp(item["datePublished"])
+            if published:
+                span = f'JSON-LD datePublished "{item["datePublished"]}"'
+
     if published is None:
         scope = soup.find("article") or soup.find("main") or soup
         time_tag = _byline_time(scope)
@@ -1636,11 +1668,17 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             news[key] = item
 
     for snap, soup, _ in own_pages():
+        this_page = page_article(soup, snap.final_url)
         for item in json_ld_items(soup):
             if _types(item) & {"NewsArticle", "BlogPosting", "Article", "PressRelease", "Report"} and item.get("datePublished"):
                 title = _clean(item.get("headline") or item.get("name") or "")
                 when = stamp(item["datePublished"])
-                link = safe_link(urljoin(snap.final_url, str(item.get("url") or "")), site_host) if item.get("url") else snap.final_url
+                if item.get("url"):
+                    link = safe_link(urljoin(snap.final_url, str(item["url"])), site_host)  # its own page, its own date
+                elif item is this_page:
+                    link = snap.final_url
+                else:
+                    continue  # an embedded article with no address of its own dates nothing here
                 if when and is_headline(title):
                     add_news(NewsItem(title, link, when[0], when[1], snap, f'JSON-LD "{title[:150]}" datePublished {item["datePublished"]}', "json_ld_article", "company_website"))
     for entry in sitemap:

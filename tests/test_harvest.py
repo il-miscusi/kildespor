@@ -551,6 +551,21 @@ class PublicationDateTests(unittest.TestCase):
         <div class="event-date">16.10.2025</div></body></html>"""
         self.assertIsNone(harvest.article_meta(snap("https://www.fjordbygg.no/nyheter/seminar", html3), soup_of(html3), ["Fjordbygg"]))
 
+    def test_related_article_date_does_not_date_this_page(self) -> None:
+        """Codex review rc2 N5: a page embedding a related article's JSON-LD takes its date only
+        from the object bound to the page."""
+        page = "https://www.fjordbygg.no/nyheter/prosjektet-pa-voss"
+        html = f"""<html><head><title>Prosjektet på Voss</title>
+        <script type="application/ld+json">{{"@type":"NewsArticle","headline":"Prosjektet på Voss","datePublished":"2019-05-02T10:00:00+02:00","mainEntityOfPage":{{"@id":"{page}/"}}}}</script>
+        <script type="application/ld+json">{{"@type":"NewsArticle","headline":"Ny kontrakt i Bergen","datePublished":"{RECENT}T10:00:00+02:00"}}</script>
+        </head><body><article><h1>Prosjektet på Voss</h1></article></body></html>"""
+        self.assertIsNone(harvest.article_meta(snap(page, html), soup_of(html), ["Fjordbygg"]))  # 2019: outside the window
+        unbound = html.replace(f',"mainEntityOfPage":{{"@id":"{page}/"}}', "")
+        self.assertIsNone(harvest.article_meta(snap(page, unbound), soup_of(unbound), ["Fjordbygg"]))  # two unbound: none
+        sole = f"""<html><head><title>Ny kontrakt i Bergen</title><script type="application/ld+json">{{"@type":"NewsArticle","headline":"Ny kontrakt i Bergen","datePublished":"{RECENT}T10:00:00+02:00"}}</script></head>
+        <body><h1>Ny kontrakt i Bergen</h1></body></html>"""
+        self.assertEqual(harvest.article_meta(snap(page, sole), soup_of(sole), ["Fjordbygg"]).date, RECENT)
+
     def test_atom_updated_alone_is_not_published(self) -> None:
         atom = f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Oppdatert side om tjenester</title>
         <link href="https://www.fjordbygg.no/tjenester-oppdatert"/><updated>{RECENT}T10:00:00Z</updated></entry>
