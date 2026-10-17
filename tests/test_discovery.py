@@ -507,3 +507,17 @@ class HyphenatedNames(unittest.TestCase):
         rec = make_rec(name="FRØYA RØR OG SVEISESERVICE AS", phone=None, hjemmeside="froyaror.no")
         pages = {"https://froyaror.no/": html("Frøya Rør", "Rørlegger på Frøya. Kopirett - Frøya Rør- og Sveiseservice AS - 2023")}
         self.assertEqual(len(run(rec, pages, guesses=[])), 1)
+
+
+class EmployerNames(unittest.TestCase):
+    def test_sister_company_employer_is_not_ours(self) -> None:
+        rec = make_rec(name="FJORDBYGG AS")
+        job = {"@type": "JobPosting", "title": "Eiendomsforvalter", "hiringOrganization": {"@type": "Organization", "name": "Fjordbygg Eiendom AS"}}
+        self.assertFalse(website._ld_employer_is_ours(job, rec))
+        self.assertFalse(website._ld_employer_is_ours({**job, "hiringOrganization": "Fjordbygg Eiendom"}, rec))
+        self.assertFalse(website._ld_org_is_ours({"@type": "Organization", "name": "Fjordbygg"}, make_rec(name="FJORDBYGG EIENDOM AS")))
+
+    def test_exact_name_or_number_is_ours(self) -> None:
+        rec = make_rec(name="FJORDBYGG AS")
+        self.assertTrue(website._ld_employer_is_ours({"hiringOrganization": {"name": "Fjordbygg AS"}}, rec))
+        self.assertTrue(website._ld_employer_is_ours({"hiringOrganization": {"name": "Fjordbygg Eiendom AS", "taxID": ORG}}, rec))

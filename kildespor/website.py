@@ -185,14 +185,12 @@ def _names_of(rec: CompanyRecord) -> list[str]:
 
 
 def _name_matches(candidate: str, rec: CompanyRecord) -> bool:
+    """The name equals one of ours (legal name, subunit names, verified brand) once the legal form is
+    dropped. A longer or shorter name is another company: "Fjordbygg Eiendom AS" is not FJORDBYGG AS."""
     key = " ".join(_fold(t) for t in name_tokens(candidate))
     if not key:
         return False
-    for name in _names_of(rec):
-        other = " ".join(_fold(t) for t in name_tokens(name))
-        if other and (key == other or key.startswith(other + " ") or other.startswith(key + " ")):
-            return True
-    return False
+    return any(key == " ".join(_fold(t) for t in name_tokens(name)) for name in _names_of(rec))
 
 
 def _ld_numbers(item: dict[str, Any]) -> set[str]:
