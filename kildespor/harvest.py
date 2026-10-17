@@ -1197,15 +1197,15 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
         if require_news_path and not is_article_url(url, site_host):
             continue
         published = None
-        time_tag = block.find("time")
+        time_tag = next((t for t in block.find_all("time") if not _update_date(t)), None)
         if time_tag is not None:
             published = stamp(time_tag.get("datetime")) or stamp(time_tag.get_text(" ", strip=True))
         if published is None:
             # A dateline beside the item's own title ("14.10.2026", "Publisert 14. oktober 2026"),
-            # never a date inside a sentence of the teaser.
+            # never a date inside a sentence of the teaser, never an update date.
             for string in block.find_all(string=True):
                 text = str(string).strip()
-                if 6 <= len(text) <= 40 and (day := text_date(text)):
+                if 6 <= len(text) <= 40 and string.parent is not None and not _update_date(string.parent) and (day := text_date(text)):
                     published = (day, day)
                     break
         if published is None:
@@ -1248,10 +1248,30 @@ def _dates_article(node: Any) -> bool:
     return False
 
 
+UPDATE_LABEL = re.compile(r"oppdatert|endret|revidert|updated|modified|revised|last\s+change", re.I)
+
+
+def _update_date(node: Any) -> bool:
+    """The date is labelled as an update ("Sist oppdatert", "Endret", "Updated", "Last modified"):
+    judged on the node's own text and on a short parent (the label usually sits beside the date)."""
+    if "datemodified" in str(node.get("itemprop") or "").lower() if hasattr(node, "get") else False:
+        return True
+    texts = [node.get_text(" ", strip=True) if hasattr(node, "get_text") else str(node)]
+    parent = node.parent
+    if parent is not None and getattr(parent, "name", None) not in (None, "[document]", "html", "body"):
+        text = parent.get_text(" ", strip=True)
+        if len(text) <= 80:
+            texts.append(text)
+    return any(UPDATE_LABEL.search(t) for t in texts)
+
+
 def _byline_time(scope: Any) -> Any:
     """A <time> that dates the article itself: marked datePublished/pubdate, or sitting in the
-    article's header, byline or date block. A <time> in the body (an event, a deadline) does not count."""
+    article's header, byline or date block. A <time> in the body (an event, a deadline) does not
+    count, nor one labelled as an update ("Sist oppdatert")."""
     for tag in scope.find_all("time", attrs={"datetime": True}):
+        if _update_date(tag):
+            continue
         if (tag.get("itemprop") or "").lower() == "datepublished" or tag.has_attr("pubdate") or _dates_article(tag):
             return tag
     return None
@@ -1262,7 +1282,7 @@ def _byline_text_date(scope: Any) -> tuple[str, str] | None:
     ("Publisert 14. oktober 2026" in <p class="post-date">)."""
     for string in scope.find_all(string=True):
         text = str(string).strip()
-        if 6 <= len(text) <= 40 and string.parent is not None and string.parent.name not in ("script", "style") and _dates_article(string.parent):
+        if 6 <= len(text) <= 40 and string.parent is not None and string.parent.name not in ("script", "style") and _dates_article(string.parent) and not _update_date(string.parent):
             day = text_date(text)
             if day:
                 return day, text

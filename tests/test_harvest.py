@@ -574,6 +574,16 @@ class PublicationDateTests(unittest.TestCase):
         <body><h1>Ny kontrakt i Bergen</h1></body></html>"""
         self.assertEqual(harvest.article_meta(snap(page, sole), soup_of(sole), ["Fjordbygg"]).date, RECENT)
 
+    def test_update_date_in_a_byline_is_not_a_publication_date(self) -> None:
+        """Codex review rc2, finding 9 (partial): "Sist oppdatert ..." inside class="byline"."""
+        d = date.fromisoformat(RECENT)
+        html = f"""<html><head><title>Prosjektet på Voss</title></head><body><article><h1>Prosjektet på Voss</h1>
+        <div class="byline">Sist oppdatert {d.day}.{d.month}.{d.year}</div>
+        <div class="byline"><span>Oppdatert</span> <time datetime="{RECENT}T10:00:00+02:00">{RECENT}</time></div></article></body></html>"""
+        self.assertIsNone(harvest.article_meta(snap("https://www.fjordbygg.no/nyheter/voss", html), soup_of(html), ["Fjordbygg"]))
+        listing = f"""<html><body><ul><li><a href="/nyheter/prosjektet-pa-voss">Prosjektet på Voss er ferdig</a><span>Endret {d.day}.{d.month}.{d.year}</span></li></ul></body></html>"""
+        self.assertEqual(harvest.listing_items(snap("https://www.fjordbygg.no/nyheter/", listing), soup_of(listing), "fjordbygg.no", require_news_path=False), [])
+
     def test_atom_updated_alone_is_not_published(self) -> None:
         atom = f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Oppdatert side om tjenester</title>
         <link href="https://www.fjordbygg.no/tjenester-oppdatert"/><updated>{RECENT}T10:00:00Z</updated></entry>
