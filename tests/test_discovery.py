@@ -25,6 +25,7 @@ class FakeCaches:
         self.domains = set(shared_domains)
         self.social = list(social)
         self.holders = {}
+        self.contacts = {}
 
     def available(self):
         return ["shared-phones.tsv.gz", "shared-email-domains.tsv.gz"]
@@ -45,12 +46,15 @@ class FakeCaches:
         return {"phones": [], "emails": [], "websites": []}
 
     def _load(self, key, builder):
+        if key == "register-contacts":
+            return self.contacts
         index = {}
         for item in self.social:
             index.setdefault(item.get("orgnr", ORG), []).append((item["url"], item["kind"], item.get("platform"), item["source"], item.get("match_rule") or "", "", ""))
         return index
 
     _build_candidates = None
+    _build_contacts = None
 
 
 class NoScreenCaches(FakeCaches):
@@ -87,6 +91,7 @@ def run(rec: CompanyRecord, pages: dict[str, str], cache=None, guesses=None) -> 
     def fetch(self, url):  # noqa: ANN001
         return fixtures.get(url)
 
+    website._CONTACT_INDEX = None
     with patch.object(website, "caches", cache if cache is not None else FakeCaches()), \
          patch.object(website, "resolve_public", side_effect=lambda host: any(host in u for u in pages)), \
          patch.object(website, "_prefetch_dns", lambda hosts: None), \
@@ -108,8 +113,11 @@ class RegisterContactRule(unittest.TestCase):
     def test_registered_phone_on_brand_site_is_accepted(self) -> None:
         rec = make_rec(name="HANDVERKER MOXNESS AS", phone="41 22 33 44")
         pages = {"https://snekkersentralen.no/": html("Snekkersentralen", "Vi bygger terrasser. Ring 412 23 344 i dag. Strandgaten 1, 5013 Bergen")}
-        out = run(rec, pages, guesses=["snekkersentralen.no"])
-        self.assertEqual(out, [("register_contact_on_site", "https://snekkersentralen.no/")])
+        # A brand that shares no word with the legal name cannot pass on contact details alone.
+        self.assertEqual(run(rec, pages, guesses=["snekkersentralen.no"]), [])
+        pages = {"https://moxnessbygg.no/": html("Moxness Bygg", "Vi bygger terrasser. Ring 412 23 344 i dag.")}
+        out = run(rec, pages, guesses=["moxnessbygg.no"])
+        self.assertEqual(out, [("register_contact_on_site", "https://moxnessbygg.no/")])
 
     def test_a_lone_phone_match_is_not_enough(self) -> None:
         rec = make_rec(name="HANDVERKER MOXNESS AS", phone="41 22 33 44")
@@ -151,7 +159,7 @@ class RegisterContactRule(unittest.TestCase):
         pages = {"https://fjordmarin.com/": html("Båtservice", "Ring 41 22 33 44")}
         self.assertEqual(run(rec, pages, cache=NoScreenCaches(), guesses=["fjordmarin.com"]), [])
         rec = make_rec(name="FJORD MARIN AS", phone="41 22 33 44", email="post@fjordmarin.no")
-        pages = {"https://fjordmarin.no/": html("Båtservice", "Ring 41 22 33 44")}
+        pages = {"https://fjordmarin.no/": html("Båtservice | Fjord Marin", "Ring 41 22 33 44")}
         out = run(rec, pages, cache=NoScreenCaches(), guesses=["fjordmarin.no"])
         self.assertEqual([m for m, _ in out], ["register_contact_on_site"])
 
@@ -436,3 +444,21 @@ class JsonLdBinding(unittest.TestCase):
         soup = page("https://digitaltbyra.no/", html("Digitalt Byrå", "", self.CUSTOMER))[1]
         labels = [label for label, _ in website.identity_parts(soup, "", "digitaltbyra.no")]
         self.assertNotIn("JSON-LD name", labels)
+
+
+class ContactsHeldByOthers(unittest.TestCase):
+    def test_lent_email_domain_and_phone_do_not_prove_another_brand(self) -> None:
+        # NORDLYS PRODUKSJON AS registers Solglimt's e-mail domain and its director's phone.
+        rec = make_rec(name="NORDLYS PRODUKSJON AS", phone="91 22 33 44", email="kari@solglimt.no")
+        pages = {"https://solglimt.no/": html("Solglimt", "Kontakt: kari@solglimt.no, 91 22 33 44, Strandgaten 1, 5013 Bergen")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
+
+    def test_phone_held_by_a_company_outside_the_group_is_shared(self) -> None:
+        rec = make_rec(name="NORDLYS PRODUKSJON AS", phone="91 22 33 44")
+        cache = FakeCaches()
+        cache.contacts = {ORG: ("91223344", "", ""), OTHER: ("91223344", "", "")}
+        pages = {"https://nordlysproduksjon.no/": html("Nordlys", "Ring 91 22 33 44")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=["nordlysproduksjon.no"]), [])
+        rec = make_rec(name="NORDLYS PRODUKSJON AS", phone="91 22 33 44")
+        cache.contacts = {ORG: ("91223344", "", "")}
+        self.assertEqual([m for m, _ in run(rec, pages, cache=cache, guesses=["nordlysproduksjon.no"])], ["register_contact_on_site"])

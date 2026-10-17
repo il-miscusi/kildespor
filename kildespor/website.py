@@ -415,6 +415,36 @@ def entity_mentions(parts: list[tuple[str, str]]) -> list[str]:
     return found
 
 
+_CONTACT_INDEX: tuple[dict[str, set[str]], dict[str, set[str]]] | None = None
+_CONTACT_INDEX_LOCK = __import__("threading").Lock()
+
+
+def _contact_index() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """phone8 -> companies and e-mail domain -> companies, inverted once from the register-contacts cache."""
+    global _CONTACT_INDEX
+    if _CONTACT_INDEX is not None:
+        return _CONTACT_INDEX
+    with _CONTACT_INDEX_LOCK:
+        if _CONTACT_INDEX is None:
+            phones: dict[str, set[str]] = {}
+            domains: dict[str, set[str]] = {}
+            try:
+                rows = caches._load("register-contacts", caches._build_contacts) if caches is not None else {}  # type: ignore[union-attr]
+            except Exception:
+                rows = {}
+            for orgnr, row in (rows or {}).items():
+                phone_field, email_field = row[0], row[1]
+                for raw in phone_field.split("|"):
+                    digits = re.sub(r"\D", "", raw)
+                    if len(digits) >= 8:
+                        phones.setdefault(digits[-8:], set()).add(orgnr)
+                for raw in email_field.split("|"):
+                    if "@" in raw:
+                        domains.setdefault(registered_domain(raw.rsplit("@", 1)[1].strip().lower()), set()).add(orgnr)
+            _CONTACT_INDEX = (phones, domains)
+    return _CONTACT_INDEX
+
+
 class RegisterSignals:
     """What the register says about how to reach the company, to be looked for on a candidate site."""
 
@@ -449,6 +479,7 @@ class RegisterSignals:
         self.holding = bool(words & HOLDING_WORDS)
         self.in_group = bool(entity.get("erIKonsern")) or bool(rec.context.get("group_orgs"))
         self.group = set(rec.context.get("group_orgs") or set())
+        self.org = rec.organisation_number
 
     # -- screens --------------------------------------------------------------------------
     @staticmethod
@@ -477,11 +508,19 @@ class RegisterSignals:
         except Exception:
             return True
 
+    def other_holders(self, kind: str, key: str) -> set[str]:
+        """Companies outside our corporate group that list this phone (kind "phone", last eight digits)
+        or e-mail domain (kind "email") in the register. Two to four holders slip under the shared
+        screen's five-holder threshold; any holder outside the group makes the detail shared."""
+        phones, domains = _contact_index()
+        index = phones if kind == "phone" else domains
+        return set(index.get(key, ())) - {self.org} - self.group
+
     def email_domain_shared(self, domain: str) -> bool:
         """Shared with other companies. A corporate group's own domain (afgruppen.no is used by 17 group
         companies) is not shared for a member of that group: no more holders than the group has members."""
         if not self.domain_shared(domain):
-            return False
+            return bool(self.other_holders("email", domain))
         if domain in FREE_MAIL or not self.group:
             return True
         try:
@@ -1014,12 +1053,15 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
     if not name_hit and any(name_in_part(f, part) for f in sig.former for _, part in parts):
         return None  # the site runs under a name this company gave up; a successor company may hold it now
     contacts = ev.contacts
-    # Rule 1: the registered phone or e-mail address, not shared with other register entities.
+    # Rule 1: the registered phone or e-mail address, held by no other company outside our group, and
+    # a distinctive word of our current name in the site's own identity text (title, site name, h1,
+    # bound JSON-LD, copyright). Contact details alone cannot tell us from the business that lent them.
     screen = {"phone": RegisterSignals.screen_ready("phone"), "email": RegisterSignals.screen_ready("email")}
     own_domain = site_domain in sig.email_domains
     contact_hit = None
     if "phone8" in contacts:
-        unshared = (not RegisterSignals.phone_shared(contacts["phone8"][0])) if screen["phone"] else own_domain
+        phone = contacts["phone8"][0]
+        unshared = (not RegisterSignals.phone_shared(phone) and not sig.other_holders("phone", phone)) if screen["phone"] else own_domain
         if unshared:
             contact_hit = contacts["phone"]
     if contact_hit is None and "email_address" in contacts:
@@ -1028,27 +1070,23 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
         if unshared:
             contact_hit = contacts["email"]
     if origin == "shared_email_domain":
-        contact_hit = None  # a domain five or more entities use: its contact details are not ours alone
+        contact_hit = None  # a domain other companies use: its contact details are not ours alone
     if contact_hit is not None:
         # A holding or group company shares contact details with its operating sister or parent, and an
-        # e-mail domain is no independent proof of the site it was derived from: these need the name too.
-        # So does a site whose identity text carries only the first part of our name ("Head Energy" for
-        # HEAD ENERGY NORGRID AS, "Sjø-Sport" for SJØ-SPORT MANDAL AS): that is the umbrella brand.
+        # e-mail domain is no independent proof of the site it was derived from: these need the whole
+        # name. So does a site whose identity text carries only the first part of our name ("Head
+        # Energy" for HEAD ENERGY NORGRID AS, "Sjø-Sport" for SJØ-SPORT MANDAL AS): the umbrella brand.
         need_name = sig.holding or sig.in_group or origin == "former_name_domain" or (origin in EMAIL_ORIGINS and not screen["email"]) or _umbrella_brand(sig, parts)
-        # One coincidence is not enough (a reassigned number, a shared family mailbox): a second
-        # register signal, or a word of our name in the site's identity text or domain, must agree.
-        same = ("phone",) if contact_hit is contacts.get("phone") else ("email", "email_domain")
-        others = [k for k in ("email", "phone", "street", "postcode_town", "person", "email_domain") if k in contacts and k not in same]
         legal_core = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
         id_words = set(" ".join(_norm_part(part) for _, part in parts).replace("|", " ").split())
-        stem = site_domain.split(".")[0].replace("-", "")
-        affinity = any(len(t) >= 4 and t not in GENERIC_NAME_WORDS and (t in id_words or t in stem) for t in legal_core)
-        # Accountants, auditors, lawyers and property managers lend clients their phone and mailbox:
-        # their site carries the client's contact details without being the client's.
+        affinity = any(
+            t not in GENERIC_NAME_WORDS and t not in STRIP_GUESS_WORDS and len(t) >= 4
+            and (t in id_words or (len(t) >= 5 and any(t in w for w in id_words)))
+            for t in legal_core
+        )
+        # Accountants, auditors, lawyers and property managers lend clients their phone and mailbox.
         provider = SERVICE_PROVIDER_WORDS.search(" ".join(part for _, part in parts)) and not SERVICE_PROVIDER_WORDS.search(sig.names[0] if sig.names else "")
-        if provider and not (name_hit or stem_full or affinity):
-            return None
-        if (not need_name or name_hit or stem_full) and (others or affinity or name_hit or stem_full):
+        if (affinity or name_hit) and not (provider and not name_hit) and (not need_name or name_hit or stem_full):
             return "register_contact_on_site", contact_hit[0], contact_hit[1]
     # Rule 2: the whole legal name in the homepage's identity text, plus one register signal on the site.
     if name_hit:
