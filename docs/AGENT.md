@@ -1,0 +1,57 @@
+# Research and abstention policy
+
+## Identity first
+
+The organisation number is the only identity key. A legal name, brand, domain
+or social handle is a candidate until it is tied back to the exact entity.
+
+| candidate | accepted when | otherwise |
+|---|---|---|
+| register-listed website (entity or subunit) | it is the company's own declaration in the Entity Register, the site is reachable and not parked | `not_available` (unreachable or parked) |
+| register-listed website showing other organisation numbers only | published with relationship `registry_listed_site_names_another_entity`; its contacts, brand and profiles are **not** attributed | brand and profiles marked `ambiguous` |
+| register-listed website of a group member | published with relationship `group_site` | |
+| domain derived from the legal or subunit name | the site (home, contact, about or privacy page) shows **this** organisation number, checked with the mod-11 checksum, and does not list three or more unrelated organisation numbers | `ambiguous` (several numbers) or skipped |
+| NAV job ad | employer name equals the legal name or a subunit name, **and** the ad page shows the organisation number of this entity or one of its subunits | not published |
+| social or video profile | linked from a verified company website (anchors or JSON-LD `sameAs`); share buttons, personal profiles and post links are rejected | `not_available` |
+
+Directory and aggregator hosts (proff.no, gulesider.no, 1881.no, finn.no and
+similar) are never accepted as a company website.
+
+When the match is uncertain the agent abstains. A missing fact costs less
+than a fact published under the wrong company.
+
+## What is never done
+
+- No fabricated or estimated values. Financial figures come only from the
+  Register of Company Accounts, as filed.
+- No zero in place of a missing value. Missing items are omitted, and the
+  area carries an explicit availability state and reason.
+- No search-engine result is used as evidence. No search engine is used.
+- No scraping of LinkedIn, Meta, Glassdoor, Indeed or Google. Profiles on
+  those platforms are recorded only as outbound links from the verified
+  company site; the platforms themselves are not fetched.
+- No language model decides identity, fills a field or writes the brief. The
+  brief is a deterministic template over published claims.
+- No personal data beyond names in the company-role context. Birth dates from
+  the roles register are discarded.
+
+## Availability states
+
+| state | meaning |
+|---|---|
+| `available` | at least one evidence-backed claim is published |
+| `not_available` | the source was checked and has nothing (the reason names what was checked) |
+| `blocked` | the source refused the request or robots.txt disallows it |
+| `not_applicable` | the question does not apply (e.g. deleted entity, input not an organisation number) |
+| `ambiguous` | a candidate exists but could not be tied to this exact entity |
+| `failed` | the source errored or the time budget ran out before the area was researched |
+
+## Order of work
+
+1. Official registers for every company (entity, roles, subunits, accounts,
+   group, update feed). A complete output file is written right after.
+2. Website discovery and verification, then site facts (brand, description,
+   contacts, profiles, careers page, JSON-LD jobs and articles, RSS/Atom).
+3. Job ads on arbeidsplassen.nav.no for entities with registered employees or
+   a careers page.
+4. Synthesis, refresh diff, envelope, report and viewer.
