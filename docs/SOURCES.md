@@ -67,6 +67,7 @@ date, licence, row count, size and build command for each file):
 |---|---|---|
 | `candidates-wikidata.tsv.gz` | Wikidata P2333 items: website and social ids (queried 2026-10-17) | CC0-1.0 |
 | `candidates-overture.tsv.gz` | Overture Maps places, release 2026-09-23.1, matched to register companies | CDLA-Permissive-2.0 / Apache-2.0 / CC0-1.0 per place |
+| `candidates-noindex.tsv.gz` | our own robots-honouring crawl of public `.no` sites (17 Oct 2026): domains whose page printed the organisation number as its owner's; no page text | facts we extracted, MIT (this repository) |
 | `shared-phones.tsv.gz`, `shared-email-domains.tsv.gz` | Brreg bulk register: phone numbers and e-mail domains held by five or more companies | NLOD 2.0 |
 | `register-contacts.tsv.gz` | Brreg bulk register: phones, e-mails and sub-unit websites per company | NLOD 2.0 |
 

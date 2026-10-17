@@ -31,6 +31,14 @@ class CachesTest(unittest.TestCase):
             "923609016\tsocial\tinstagram\thttps://instagram.com/equinor\toverture_email_exact\toverture:2026-09-23.0:abc",
             "short\trow",
         ])
+        _write(d / "candidates-noindex.tsv.gz", "orgnr\trank\tdomain\tpage_url\trule\tdomain_orgnrs\tretrieved_at", [
+            "923609016\t1\tstyret.com\thttps://equinor.styret.com/om\tsingle\t3\t2026-10-17T10:00:00Z",
+            "923609016\t2\tequinor.no\tHTTPS://www.Equinor.no:443/kontakt/\tsingle\t1\t2026-10-17T11:00:00Z",
+            "923609016\t3\teqn.no\thttps://eqn.no/\traw\t1\t2026-10-17T12:00:00Z",
+            "932688573\t1\tbjørnstad.no\thttps://bjørnstad.no/personvern\tsingle\t1\t2026-10-17T09:00:00Z",
+            "932688573\t2\txn--trgaset-r1a.no\thttp://xn--trgaset-r1a.no/\tld\t1\t2026-10-17T09:30:00Z",
+            "932688573\t3\tbad\tftp://bad/\tsingle\t1\t2026-10-17T09:30:00Z",
+        ])
         _write(d / "shared-phones.tsv.gz", "phone8\tcount", ["22334455\t12"])
         _write(d / "shared-email-domains.tsv.gz", "domain\tcount", ["obos.no\t300", "gmail.com\tgeneric"])
         _write(d / "register-contacts.tsv.gz", "orgnr\tphones\temails\twebsites", [
@@ -44,8 +52,8 @@ class CachesTest(unittest.TestCase):
 
     def test_candidates(self) -> None:
         got = caches.candidates("923 609 016")
-        self.assertEqual(len(got), 3)
-        self.assertEqual({c["source"] for c in got}, {"wikidata", "overture"})
+        self.assertEqual(len(got), 6)
+        self.assertEqual({c["source"] for c in got}, {"wikidata", "overture", "noindex"})
         web = [c for c in got if c["kind"] == "website"][0]
         self.assertIsNone(web["platform"])
         self.assertEqual(web["release_date"], "2026-10-17")
@@ -57,6 +65,30 @@ class CachesTest(unittest.TestCase):
         self.assertEqual(caches.candidates("999999999"), [])
         got[0]["url"] = "mutated"
         self.assertNotEqual(caches.candidates("923609016")[0]["url"], "mutated")
+
+    def test_noindex(self) -> None:
+        got = caches.candidates("923609016")
+        self.assertEqual([c["source"] for c in got], ["overture", "wikidata", "wikidata", "noindex", "noindex", "noindex"])
+        idx = [c for c in got if c["source"] == "noindex"]
+        # the sole owner's domain first; the shared platform (3 owners) and the raw-only number last, by rank
+        self.assertEqual([c["url"] for c in idx], ["https://www.equinor.no/", "https://equinor.styret.com/", "https://eqn.no/"])
+        first = idx[0]
+        self.assertEqual(first["kind"], "website")
+        self.assertIsNone(first["platform"])
+        self.assertEqual(first["match_rule"], "single")
+        self.assertEqual(first["source_record"], "https://www.equinor.no/kontakt/")
+        self.assertEqual((first["rank"], first["domain"], first["domain_orgnrs"]), (2, "equinor.no", 1))
+        self.assertEqual(first["retrieved_at"], "2026-10-17T11:00:00Z")
+        self.assertEqual(first["release_date"], "2026-10-17")
+        self.assertEqual(idx[2]["match_rule"], "raw")
+        # IDN hosts stay usable by the agent's own normalisation, in Unicode or punycode
+        from kildespor.website import normalise_site_url, registered_domain
+        from urllib.parse import urlsplit
+        idn = caches.candidates("932688573")
+        self.assertEqual([c["url"] for c in idn], ["https://bjørnstad.no/", "http://xn--trgaset-r1a.no/"])
+        self.assertEqual(registered_domain(urlsplit(normalise_site_url(idn[0]["url"])).hostname), "bjørnstad.no")
+        self.assertEqual(registered_domain(urlsplit(normalise_site_url(idn[1]["url"])).hostname), "xn--trgaset-r1a.no")
+        self.assertEqual(caches.describe()["candidates-noindex.tsv.gz"], 5)
 
     def test_shared(self) -> None:
         self.assertTrue(caches.shared_phone("+47 22 33 44 55"))
@@ -92,7 +124,7 @@ class CachesTest(unittest.TestCase):
     def test_damaged_file(self) -> None:
         (Path(self.tmp.name) / "candidates-wikidata.tsv.gz").write_bytes(b"not gzip")
         caches.reset(self.tmp.name)
-        self.assertEqual(len(caches.candidates("923609016")), 1)
+        self.assertEqual(len([c for c in caches.candidates("923609016") if c["source"] != "noindex"]), 1)
 
     def test_threads(self) -> None:
         caches.reset(self.tmp.name)
@@ -102,7 +134,7 @@ class CachesTest(unittest.TestCase):
             t.start()
         for t in threads:
             t.join()
-        self.assertEqual(results, [3] * 16)
+        self.assertEqual(results, [6] * 16)
 
 
 if __name__ == "__main__":

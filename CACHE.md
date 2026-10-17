@@ -6,7 +6,8 @@ Kildespor ships a few small files in `kildespor/data/`, read by
 declared").
 
 **The caches hold candidates only.** A row is a candidate URL (a website or a
-social profile that a public dataset links to a company) or a screening count
+social profile that a public dataset links to a company, or a website whose own
+page printed the company's organisation number) or a screening count
 (how many register entities share a phone number or an e-mail domain). No row
 is a published fact or a precomputed profile. The agent fetches each candidate
 website live and publishes it only after its own identity checks, with the
@@ -35,11 +36,12 @@ restricted to it. Nothing is keyed to an evaluation draw.
 |---|---|---|---|---|---|---|---|
 | `candidates-wikidata.tsv.gz` | Wikidata Query Service: items with a Norwegian organisation number (P2333) and their website and social ids | queried 2026-10-17 | CC0-1.0 | 6,869 (3,690 websites, 1,507 Facebook, 1,003 Instagram, 607 X, 395 LinkedIn, 390 YouTube) | 3,600 | 124 KB | `python3 tools/build_wikidata.py` |
 | `candidates-overture.tsv.gz` | Overture Maps places, release `2026-09-23.1` (249,910 places with a Norwegian address), matched to the Brreg bulk register of 2026-10-17 | 2026-09-23 | per place: CDLA-Permissive-2.0 (Overture, Meta, Microsoft, PinMeTo), Apache-2.0 (Foursquare), CC0-1.0 (AllThePlaces); the row's `licence` lists its place's | 72,067 (25,458 websites, 46,285 Facebook, 151 Instagram, 80 X, 44 LinkedIn, 30 YouTube, 19 TikTok) | 45,506 | 2.4 MB | `python3 tools/build_overture.py --release 2026-09-23.1` |
+| `candidates-noindex.tsv.gz` | our own crawl of public `.no` websites: domains whose page printed the organisation number next to an ownership label (see below) | crawled 2026-10-17 08:19–13:08 UTC | facts we extracted, shipped under this repository's MIT licence; no page content | 24,842 websites (up to 3 per company) | 23,305 | 0.5 MB | `python3 tools/build_noindex.py noindex.tsv.gz` |
 | `shared-phones.tsv.gz` | Brreg Enhetsregisteret bulk (`enheter` + `underenheter`, `telefon`, `mobil`), 2,047,495 entities | 2026-10-17 | NLOD-2.0 | 2,325 | — | 10 KB | `python3 tools/build_brreg.py` |
 | `shared-email-domains.tsv.gz` | same (`epostadresse`), plus a fixed list of mailbox providers | 2026-10-17 | NLOD-2.0 | 2,844 | — | 16 KB | `python3 tools/build_brreg.py` |
 | `register-contacts.tsv.gz` | same: phones and e-mails of each universe company and its sub-units, sub-unit websites | 2026-10-17 | NLOD-2.0 | 156,873 | 156,873 | 2.4 MB | `python3 tools/build_brreg.py` |
 
-Total 4.9 MB. Overture's data is a mix of contributed sources; each place keeps
+Total 5.4 MB. Overture's data is a mix of contributed sources; each place keeps
 its `sources[].dataset` list and the row's `licence` field names every licence
 that applies to it. Attribution: Overture Maps Foundation and its places
 contributors (Meta, Microsoft, Foursquare, AllThePlaces, PinMeTo), as listed at
@@ -60,6 +62,7 @@ so a rebuild from the same inputs gives the same bytes.
 | file | columns |
 |---|---|
 | `candidates-<source>.tsv.gz` | `orgnr kind platform url match_rule source_record release_date licence` |
+| `candidates-noindex.tsv.gz` | `orgnr rank domain page_url rule domain_orgnrs retrieved_at` |
 | `shared-phones.tsv.gz` | `phone8 count` (last eight digits) |
 | `shared-email-domains.tsv.gz` | `domain count` (`generic` for mailbox providers) |
 | `register-contacts.tsv.gz` | `orgnr phones emails websites` (`\|`-separated) |
@@ -94,6 +97,52 @@ e-mail or social URL that appears on more than a handful of Norwegian places
 are blocked, a place that matches two companies at its strongest rule is
 dropped, and each company keeps at most three places.
 
+## The `.no` reverse organisation-number index (`candidates-noindex.tsv.gz`)
+
+Built from our own polite crawl of public websites on 17 October 2026
+(08:19–13:08 UTC), from Kaggle CPU sessions:
+
+- Hosts: `.no` registered domains in Common Crawl's domain-level web graph
+  (releases 2025 Jul–Sep to 2026 Jul–Sep, 379,950 domains), the website and
+  e-mail domains of universe companies in the Brreg bulk file (55,783), and
+  `.no` names derived from universe companies' legal names (most do not
+  resolve). Common Crawl supplied only the host list, used under its terms of
+  use; no Common Crawl page content was used.
+- Fetching: User-Agent `KildesporBot/0.3 (+https://github.com/il-miscusi/kildespor)`;
+  robots.txt fetched once per origin and honoured (a robots.txt that times
+  out, refuses the connection or answers 401/403/429/5xx means the host is not
+  crawled; Crawl-delay honoured); at most the homepage plus one
+  contact/privacy/about/terms page per host, at most two connections per
+  origin, 8 s timeouts, no retries; 970,628 requests in all.
+- Kept: an (organisation number, domain) pair when the page printed a
+  mod-11-valid number in the universe next to an ownership label
+  (`org.nr`, `organisasjonsnummer`, `foretaksregisteret`, `MVA`, `VAT`, …) and
+  the page's owner was unambiguous. At most three domains per company, ranked;
+  domains printed as their own by more than five companies are dropped.
+
+What ships is only the pair, the page URL that printed the number, how the
+owner was decided and the crawl time: no page text. The pairs are facts we
+extracted, shipped under this repository's licence. Like every other cache row
+they are candidates: `caches.candidates()` returns them as `kind="website"`,
+`source="noindex"` with the page's `scheme://host/` as `url` and the page URL
+as `source_record`, after every other source's rows, and the agent fetches the
+site live and runs its own identity checks before it publishes anything. A
+company page that prints the number is good evidence but not proof that it is
+the main site (gold set: 28 of 30 top-ranked domains were Builderr's; the two
+misses were a sister brand's site and an information site, both owned by the
+company).
+
+| `rule` | how the page's owner was decided | order |
+|---|---|---|
+| `single` | exactly one labelled number on the page | by rank |
+| `footer` | one labelled number inside `<footer>` | by rank |
+| `copyright` | one labelled number within 150 characters of © | by rank |
+| `ld` | JSON-LD `vatID` / `taxID` / `orgNumber` | by rank |
+| `raw` | one labelled number found only in script or attribute text | last |
+
+A row whose domain several companies print as their own (`domain_orgnrs` > 1: a
+shared platform such as `styret.com`, a group site, a franchise) also goes last.
+
 ## Rebuilding
 
 The scripts in `tools/` need Python 3.10+; `build_overture.py` also needs
@@ -104,7 +153,13 @@ their inputs when no local copy is passed.
 python3 tools/build_wikidata.py                   # WDQS query, ~30 s
 python3 tools/build_brreg.py                      # Brreg bulk (~310 MB download)
 python3 tools/build_overture.py --release 2026-09-23.1   # Overture places scan + Brreg bulk
+python3 tools/build_noindex.py noindex.tsv.gz     # trims the crawl's merged index to the shipped columns
 ```
+
+The crawl behind `noindex.tsv.gz` ran as Kaggle kernels in the campaign
+workspace (`noindex_*` kernels, merged by `noindex_m`), not from this
+repository; `tools/build_noindex.py` keeps universe rows and the columns above
+and drops the crawl's page snippets.
 
 The shipped files were built on Kaggle CPU sessions that run these same
 scripts unchanged (the kernels embed `tools/` at push time).

@@ -10,6 +10,8 @@ empty result.
 Files (gzipped TSV, first line is the header):
 
 * ``candidates-<source>.tsv.gz``: ``orgnr kind platform url match_rule source_record release_date licence``
+* ``candidates-noindex.tsv.gz``: ``orgnr rank domain page_url rule domain_orgnrs retrieved_at`` (our own
+  crawl: the page at ``page_url`` printed the organisation number as its owner's)
 * ``shared-phones.tsv.gz``: ``phone8 count`` (last eight digits, held by >= 5 register entities)
 * ``shared-email-domains.tsv.gz``: ``domain count`` (held by >= 5 entities, or a generic mailbox provider)
 * ``register-contacts.tsv.gz``: ``orgnr phones emails websites`` (``|``-separated; main entity plus its sub-units)
@@ -23,6 +25,7 @@ import re
 import threading
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
 
@@ -70,20 +73,100 @@ def _load(key: str, builder: Any) -> Any:
     return value
 
 
-def _build_candidates() -> dict[str, list[tuple[str, ...]]]:
-    index: dict[str, list[tuple[str, ...]]] = {}
-    for path in sorted(DATA_DIR.glob("candidates-*.tsv.gz")):
+NOINDEX_COLUMNS = ("orgnr", "rank", "domain", "page_url", "rule", "domain_orgnrs", "retrieved_at")
+REPO_LICENCE = "MIT"  # facts we extracted ourselves ship under the repository's licence
+
+
+def _header(path: Path) -> list[str]:
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return fh.readline().rstrip("\n").split("\t")
+    except (OSError, EOFError, UnicodeDecodeError):
+        return []
+
+
+def site_root(page_url: str) -> str | None:
+    """``scheme://host/`` of a page URL: lower-case scheme and host, default port dropped, IDN host kept as given."""
+    try:
+        parts = urlsplit(str(page_url or "").strip())
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").rstrip(".")
+    if scheme not in ("http", "https") or not host or "." not in host:
+        return None
+    if port and port != {"http": 80, "https": 443}[scheme]:
+        host = f"{host}:{port}"
+    return f"{scheme}://{host}/"
+
+
+def _clean_url(url: str) -> str:
+    """A page URL with lower-case scheme and host and no default port (``HTTPS://www.X.no:443`` -> ``https://www.x.no/``)."""
+    root = site_root(url)
+    if not root:
+        return url
+    parts = urlsplit(url.strip())
+    rest = parts.path or "/"
+    return root[:-1] + rest + (f"?{parts.query}" if parts.query else "")
+
+
+def _noindex_rows(path: Path, header: list[str]) -> Iterator[tuple[str, tuple[int, int], tuple[Any, ...]]]:
+    """Rows of the reverse organisation-number index as website candidates, with their sort key."""
+    col = {name: header.index(name) for name in NOINDEX_COLUMNS if name in header}
+    if len(col) < len(NOINDEX_COLUMNS):
+        log.warning("cache file %s lacks columns %s", path, sorted(set(NOINDEX_COLUMNS) - set(col)))
+        return
+    width = max(col.values()) + 1
+    for fields in _rows(path):
+        if len(fields) < width:
+            continue
+        get = lambda name: fields[col[name]].strip()  # noqa: E731
+        url = site_root(get("page_url"))
+        if not url:
+            continue
+        rank = int(get("rank")) if get("rank").isdigit() else 9
+        owners = int(get("domain_orgnrs")) if get("domain_orgnrs").isdigit() else 1
+        rule = get("rule") or "unknown"
+        retrieved = get("retrieved_at")
+        extra = {"rank": rank, "domain": get("domain"), "domain_orgnrs": owners, "retrieved_at": retrieved or None}
+        # A domain several companies print as theirs (a shared platform, a group site) and a number found only
+        # in script or attribute text are the weakest leads: they go after every other candidate.
+        demoted = 1 if owners > 1 or rule == "raw" else 0
+        row = (url, "website", "", "noindex", rule, _clean_url(get("page_url")), retrieved[:10], REPO_LICENCE, extra)
+        yield get("orgnr"), (demoted, rank), row
+
+
+def _build_candidates() -> dict[str, list[tuple[Any, ...]]]:
+    """orgnr -> candidate tuples ``(url, kind, platform, source, rule, record, date, licence, extra)``.
+
+    Dataset files first (in file-name order), then the reverse organisation-number index, whose
+    rows for a company follow its rank with shared-domain and ``raw`` rows last.
+    """
+    index: dict[str, list[tuple[Any, ...]]] = {}
+    late: dict[str, list[tuple[tuple[int, int], tuple[Any, ...]]]] = {}
+    paths = sorted(DATA_DIR.glob("candidates-*.tsv.gz"), key=lambda p: (p.name == "candidates-noindex.tsv.gz", p.name))
+    for path in paths:
         source = path.name[len("candidates-"):-len(".tsv.gz")]
+        header = _header(path)
         n = 0
+        if "page_url" in header:
+            for orgnr, key, row in _noindex_rows(path, header):
+                late.setdefault(orgnr, []).append((key, row))
+                n += 1
+            _rows_loaded[path.name] = n
+            continue
         for fields in _rows(path):
             if len(fields) < 6:
                 continue
             orgnr, kind, platform, url, rule, record = fields[:6]
             date = fields[6] if len(fields) > 6 else ""
             licence = fields[7] if len(fields) > 7 else ""
-            index.setdefault(orgnr, []).append((url, kind, platform, source, rule, record, date, licence))
+            index.setdefault(orgnr, []).append((url, kind, platform, source, rule, record, date, licence, None))
             n += 1
         _rows_loaded[path.name] = n
+    for orgnr, rows in late.items():
+        index.setdefault(orgnr, []).extend(row for _, row in sorted(rows, key=lambda r: r[0]))
     return index
 
 
@@ -123,17 +206,23 @@ def candidates(orgnr: str) -> list[dict[str, Any]]:
     Each item: ``{"url", "kind": "website"|"social", "platform", "source", "match_rule",
     "source_record", "release_date", "licence"}``. ``platform`` is None for websites. ``source_record``
     is a citable record: ``https://www.wikidata.org/wiki/<QID>#<property>`` for Wikidata,
-    ``overture:<release>:<place id>`` for Overture. ``release_date`` is the dataset's
-    release or query date (YYYY-MM-DD); ``licence`` the SPDX id(s) of the record's source
-    dataset (``+``-joined when several). Candidates only: verify each one live before
-    publishing it as found on the web.
+    ``overture:<release>:<place id>`` for Overture, the page that printed the organisation
+    number for ``noindex``. ``release_date`` is the dataset's release or query date
+    (YYYY-MM-DD; the crawl date for ``noindex``); ``licence`` the SPDX id(s) of the record's
+    source dataset (``+``-joined when several). ``noindex`` rows are websites (``url`` is the
+    printing page's ``scheme://host/``) and also carry ``rank``, ``domain``, ``domain_orgnrs``
+    and ``retrieved_at``; they come after the other sources, shared-domain and ``raw`` rows
+    last. Candidates only: verify each one live before publishing it as found on the web.
     """
     rows = _load("candidates", _build_candidates).get(_orgnr(orgnr), ())
-    return [
-        {"url": url, "kind": kind, "platform": platform or None, "source": source, "match_rule": rule,
-         "source_record": record, "release_date": date or None, "licence": licence or None}
-        for url, kind, platform, source, rule, record, date, licence in rows
-    ]
+    out = []
+    for url, kind, platform, source, rule, record, date, licence, extra in rows:
+        item = {"url": url, "kind": kind, "platform": platform or None, "source": source, "match_rule": rule,
+                "source_record": record, "release_date": date or None, "licence": licence or None}
+        if extra:
+            item.update(extra)
+        out.append(item)
+    return out
 
 
 def phone8(number: str) -> str | None:
