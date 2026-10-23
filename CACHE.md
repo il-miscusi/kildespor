@@ -163,3 +163,35 @@ and drops the crawl's page snippets.
 
 The shipped files were built on Kaggle CPU sessions that run these same
 scripts unchanged (the kernels embed `tools/` at push time).
+
+## The ATS tenant index (`ats-tenants.tsv.gz`)
+
+| file | source | build date | licence | rows | companies | size | build |
+|---|---|---|---|---|---|---|---|
+| `ats-tenants.tsv.gz` | Brreg bulk register (NLOD 2.0), public DNS, NAV's vacancy feed, and each tenant's public job list | 2026-10-23 | NLOD-2.0 for the register fields; the rest are facts we derived | 269 (154 Teamtailor and 3 Recruitee by DNS alias, 112 Teamtailor by NAV ad) | 257 | 15 KB | `python3 tools/build_ats.py` (Kaggle CPU, 56 min) |
+
+Columns: `orgnr platform list_url match_rule match_evidence names built_at`.
+
+A row says that one universe company has an applicant-tracking tenant whose
+open ads the agent can read in one keyless request (`kildespor/ats.py`). It
+is a pointer, never a fact: at run time the agent reads the list live, and
+an ad is published only when it names this entity exactly (legal, subunit or
+verified brand name) or, on a list that names no employer at all, when its
+workplace is in Norway. The list response is the claim's evidence, with the
+row's match rule in its access policy. A company the index does not name
+loses nothing: its website's careers page and NAV's feed are read as before.
+
+| `match_rule` | how the tenant was tied to the organisation number |
+|---|---|
+| `register_domain_cname` | a careers host on the company's own domain (`karriere.`, `jobb.`, `jobs.`, `career.`, `careers.`, `jobber.`) is a DNS alias of Teamtailor (`ext.teamtailor.com`) or Recruitee (`secure.recruitee.com`), and that domain is the company's Brreg `hjemmeside`, registered e-mail domain or a sub-unit's website, stated by no other register entity; a domain on which a random name also resolves (a wildcard) is skipped |
+| `nav_ad_employer_orgnr` | an active NAV ad names the company or one of its sub-units by `employer.orgnr` and applies through the tenant, and the tenant's own list names that employer (NAV's employer name or the legal name, exactly); 9 ties failed that check (agencies recruiting for clients) and were dropped |
+
+Inputs of the 23 Oct build: 42,559 universe companies with a domain of their
+own (45,108 domains, 270,648 DNS queries, 212 Teamtailor and 3 Recruitee
+aliases; SuccessFactors, Homerun, ReachMee and Emply aliases were found but
+have no keyless list); 10,683 active NAV ads read entry by entry (840 feed
+pages). 230 Teamtailor and 3 Recruitee lists answered; 59 Teamtailor hosts
+did not serve a feed and were left out. Coverage is small (257 companies,
+0.06% of the universe): most companies on a random draw have no ATS at all,
+and the index's job is the few whose website is not verified at run time or
+does not link its career site.
