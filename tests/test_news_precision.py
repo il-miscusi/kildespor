@@ -235,7 +235,7 @@ class FakeFetcher:
 class PublishTests(unittest.TestCase):
     HOME = """<html><head><title>Fjordbygg</title><link rel="https://api.w.org/" href="https://www.fjordbygg.no/wp-json/">
     <meta name="generator" content="WordPress 6.6"></head><body><p>Fjordbygg AS, org.nr 923 609 016</p></body></html>"""
-    API = "https://www.fjordbygg.no/wp-json/wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list"
+    API = "https://www.fjordbygg.no/wp-json/wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list,excerpt"
 
     def run_site(self, posts: list[dict]) -> CompanyRecord:
         fetcher = FakeFetcher({self.API: (json.dumps(posts), "application/json"), "https://www.fjordbygg.no/feed/": ("<rss><channel></channel></rss>", "application/rss+xml")})
