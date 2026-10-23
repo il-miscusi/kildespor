@@ -2022,6 +2022,13 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
                 title = text
                 break
         if title is None:
+            # A card whose title is a styled <div> or <span> ("ItemListing__title"), not a heading.
+            for node in block.find_all(["div", "span", "p", "strong"], class_=_CARD_TITLE_CLASS):
+                text = node.get_text(" ", strip=True)
+                if is_headline(text) and len(text) <= 200:
+                    title = text
+                    break
+        if title is None:
             text = anchor.get_text(" ", strip=True)
             title = text if is_headline(text) else None
         if title is None:
@@ -2041,6 +2048,7 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
 
 
 _PUBLISHED_MARK = re.compile(r"publi|datepublished|post-?date|entry-?date", re.I)
+_CARD_TITLE_CLASS = re.compile(r"(?:^|[-_])(?:title|heading|headline|tittel|overskrift)(?:$|[-_])", re.I)
 # Site chrome a dated card can sit in without being news: menus, mega-menus, footers and sidebars.
 _CHROME_CLASS = re.compile(r"(?<![a-z])(?:menu|mega|dropdown|submenu|sub-menu|navbar|navigation)(?![a-z])|menu-item|mega-?menu", re.I)
 
