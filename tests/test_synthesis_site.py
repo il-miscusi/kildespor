@@ -214,6 +214,14 @@ class SynthesisTests(unittest.TestCase):
         lead = build_synthesis(rec)["summary_sentences"][0]["text"]
         self.assertIn("its 2025 group (consolidated) accounts show revenue of NOK 480.0 million, up 20% on 2024", lead)
 
+    def test_result_gives_direction_when_no_revenue_is_filed(self) -> None:
+        rec = rich_record()
+        rec.claims = [c for c in rec.claims if c["field"] != "financial.revenue"]
+        syn = build_synthesis(rec)
+        self.assertIn("its 2025 accounts show a net loss of NOK 1.0 million, against a profit of NOK 2.0 million in 2024", syn["summary_sentences"][0]["text"])
+        self.assertNotIn("net result moved", syn["summary"])  # said once, in the lead
+        self.assertEqual(support_problems(rec, syn), [])
+
     def test_every_fact_sentence_is_cited_with_real_ids(self) -> None:
         for rec in (rich_record(), bare_holding(), sole_proprietor()):
             syn = build_synthesis(rec)

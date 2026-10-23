@@ -466,11 +466,17 @@ class _Fin:
                     cite.append(prev_rev)
                 parts.append(text)
             cite.append(rev)
-        net, _ = self.pair("annual_result")
+        net, prev_net = self.pair("annual_result")
         op, _ = self.pair("operating_result")
+        self.lead_has_result_change = False
         if net is not None:
-            parts.append(f"a {_result_words(_amount(net) or 0.0, _cur(net), 'net')}")
+            text = f"a {_result_words(_amount(net) or 0.0, _cur(net), 'net')}"
             cite.append(net)
+            if rev is None and prev_net is not None:  # no revenue to show direction: the result gives it
+                text += f", against {_result_words(_amount(prev_net) or 0.0, _cur(prev_net), 'a')} in {self.prev_year}"
+                cite.append(prev_net)
+                self.lead_has_result_change = True
+            parts.append(text)
         elif op is not None:
             parts.append(f"an {_result_words(_amount(op) or 0.0, _cur(op), 'operating')}")
             cite.append(op)
@@ -1018,7 +1024,7 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     else:
         start = "This is the first run for this company, so nothing is compared yet" if baseline else "Compared with the previous run, no published fact changed in the sources re-checked"
         bits, bits_cite = [], []
-        result_text, result_cite = fin.result_change()
+        result_text, result_cite = fin.result_change() if not getattr(fin, "lead_has_result_change", False) else ("", [])
         if result_text:
             bits.append(result_text)
             bits_cite += result_cite
