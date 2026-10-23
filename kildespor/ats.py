@@ -56,6 +56,7 @@ POLICY = {
     "personio": "Personio public job XML feed (<tenant>.jobs.personio.de/xml), public, no key; robots.txt allows all",
     "recruitee": "Recruitee careers-site offers API (<tenant>.recruitee.com/api/offers/), public, no key",
     "workable": "Workable public jobs widget API (apply.workable.com/api/v1/widget/accounts/<account>), public, no key; robots.txt allows all",
+    "homerun": "Homerun career site: the open vacancies the careers page itself embeds (<job-list> data), no extra request",
 }
 EMPLOYER_FIELD = {
     "teamtailor": "hiringOrganization", "greenhouse": "company_name", "personio": "subcompany", "recruitee": "company_name", "workable": "name",
@@ -417,8 +418,59 @@ def _parse_workable(out: TenantList, body: Any) -> None:
         ))
 
 
+_HOMERUN_LIST = re.compile(r"<job-list\s+v-bind=\"([^\"]+)\"", re.I)
+
+
+def inline_list(page_url: str, html: str) -> TenantList | None:
+    """The vacancies a Homerun career page embeds in its own HTML (``<job-list v-bind="...">``),
+    each with its address and location; Homerun's list names no employer."""
+    if "homerun" not in html[:200000].lower():
+        return None
+    m = _HOMERUN_LIST.search(html)
+    if not m:
+        return None
+    out = TenantList("homerun", page_url)
+    try:
+        content = json.loads(unescape(m.group(1))).get("content") or {}
+        places = {p.get("id"): p for p in content.get("locations") or [] if isinstance(p, dict)}
+        for job in content.get("vacancies") or []:
+            place = places.get(job.get("location_id")) or {}
+            out.ads.append(Ad(
+                title=_clean(job.get("title")),
+                url=str(job.get("url") or "").replace("\\/", "/").strip(),
+                location=_clean(place.get("name")) or None,
+                country=_clean(place.get("country")) or None,
+                ad_id=str(job.get("id") or "") or None,
+            ))
+    except (ValueError, AttributeError, TypeError) as exc:
+        out.error = f"homerun list unreadable: {type(exc).__name__}"
+        out.ads = []
+        return out
+    for ad in out.ads:
+        screen(ad)
+    return out
+
+
 # ---------------------------------------------------------------------------------------------
 # Run time: which ads are this employer's
+
+NORWAY = {"no", "nor", "norway", "norge", "noreg"}
+FOREIGN_PLACE = re.compile(
+    r"\b(?:sweden|sverige|stockholm|g[öo]teborg|malm[öo]|denmark|danmark|copenhagen|k[øo]benhavn|aarhus|finland|helsinki|germany|deutschland|"
+    r"berlin|munich|m[üu]nchen|hamburg|france|paris|lyon|united\s+kingdom|\buk\b|england|london|scotland|ireland|dublin|netherlands|"
+    r"amsterdam|rotterdam|belgium|brussels|poland|polska|warsaw|gda[nń]sk|lithuania|lietuva|vilnius|latvia|riga|estonia|tallinn|"
+    r"spain|madrid|barcelona|portugal|lisbon|italy|milan|rome|switzerland|zurich|austria|vienna|czech|prague|hungary|budapest|"
+    r"romania|bulgaria|croatia|serbia|ukraine|usa|united\s+states|canada|toronto|new\s+york|india|china|shanghai|malaysia|"
+    r"singapore|japan|korea|australia|brazil|mexico|dubai|uae)\b",
+    re.I,
+)
+
+
+def abroad(ad: Ad) -> bool:
+    """The ad's workplace is outside Norway, by its country code or a foreign place in its location."""
+    if ad.country and ad.country.strip().lower() not in NORWAY:
+        return True
+    return bool(ad.location and FOREIGN_PLACE.search(ad.location) and not re.search(r"\b(?:norway|norge)\b", ad.location, re.I))
 
 
 def _keys(rec: Any, extra: list[str] | None) -> set[str]:
@@ -492,6 +544,11 @@ def select(rec: Any, listing: TenantList, *, own_tenant: bool, extra_names: list
                 continue
         elif not own_tenant or several or named:
             refused[ad.url] = "the ad names no employer and the list is not this company's own"
+            continue
+        elif abroad(ad):
+            # A list naming no employer: a workplace abroad is most often a foreign sister's
+            # (Zaptec's Paris and Munich ads), and nothing on the list says otherwise.
+            refused[ad.url] = f"the ad names no employer and its workplace is abroad: {(ad.location or ad.country or '')[:60]}"
             continue
         key = ad.url.split("#")[0].rstrip("/").lower()
         if key in seen:

@@ -166,11 +166,28 @@ class EmployerRule(unittest.TestCase):
 
     def test_list_naming_no_employer(self) -> None:
         tl = ats.parse_list("lever", "https://api.lever.co/v0/postings/spotify?mode=json", fixture("lever-spotify.json"))
+        # Spotify's fixture ads are in Paris: on a list naming no employer, a workplace abroad is a
+        # foreign sister's as often as not
+        kept, refused = ats.select(record("SPOTIFY NORWAY AS"), tl, own_tenant=True)
+        self.assertEqual(kept, [])
+        self.assertTrue(all("abroad" in r for r in refused.values()))
+        for ad in tl.ads:
+            ad.country, ad.location = "NO", "Oslo"
         kept, _ = ats.select(record("SPOTIFY NORWAY AS"), tl, own_tenant=True)
         self.assertEqual(len(kept), len(tl.ads))
         kept, refused = ats.select(record("SPOTIFY NORWAY AS"), tl, own_tenant=False)
         self.assertEqual(kept, [])
         self.assertTrue(all("names no employer" in r for r in refused.values()))
+
+    def test_homerun_page_embeds_its_list(self) -> None:
+        html = fixture("homerun-zaptec.html")
+        tl = ats.inline_list("https://jobs.zaptec.com/", html)
+        self.assertIsNotNone(tl)
+        self.assertGreaterEqual(len(tl.ads), 5)
+        kept, refused = ats.select(record("ZAPTEC ASA", "999164137"), tl, own_tenant=True)
+        self.assertTrue(kept and all(a.country == "NO" or "Norway" in (a.location or "") for a in kept))
+        self.assertTrue(any("abroad" in r for r in refused.values()))  # Paris, Munich
+        self.assertIsNone(ats.inline_list("https://www.zaptec.com/", "<html><body>no list</body></html>"))
 
     def test_exact_names_only(self) -> None:
         body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "Leirvik", "items": [
@@ -238,6 +255,17 @@ class HarvestIntegration(unittest.TestCase):
         self.assertEqual([c["value"]["title"] for c in job_claims(rec)], ["Systemutvikler"])
         self.assertIn("https://karriere.dips.com/jobs.json", fetcher.requested)
         self.assertNotIn("https://karriere.dips.com/jobs.rss", fetcher.requested)
+
+    def test_homerun_careers_site_needs_no_extra_request(self) -> None:
+        home = '<html><head><title>Zaptec</title></head><body><a href="https://jobs.zaptec.com/">Careers</a><footer>Zaptec ASA</footer></body></html>'
+        rec = record("ZAPTEC ASA", "999164137")
+        fetcher = harvest_site(rec, "https://www.zaptec.com/", home, {"https://jobs.zaptec.com/": fixture("homerun-zaptec.html")})
+        claims = job_claims(rec)
+        self.assertTrue(claims)
+        self.assertTrue(all(c["value"]["source"] == "homerun" and "France" not in (c["value"].get("location") or "") for c in claims))
+        ev = rec.evidence[claims[0]["evidence_ids"][0]]
+        self.assertEqual((ev["span_check"], ev["source_url"]), ("verbatim", "https://jobs.zaptec.com/"))
+        self.assertEqual([u for u in fetcher.requested if "zaptec" in u and "sitemap" not in u], ["https://jobs.zaptec.com/"])
 
     def test_unreadable_list_falls_back_to_the_html_path(self) -> None:
         careers = ('<html><head><title>Karriere</title></head><body><h1>Jobb hos oss</h1>'

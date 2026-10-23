@@ -8,6 +8,12 @@
 | `data.brreg.no/regnskapsregisteret/regnskap` | filed annual accounts | official open API, no key | NLOD 2.0 |
 | company websites (register-listed or verified by organisation number) | brand, self-description, contacts, profiles, careers page, JSON-LD jobs and articles, RSS/Atom | static HTTP GET of a few pages per site; robots.txt honoured | company-owned material, cited with source and date |
 | `pam-stilling-feed.nav.no` (NAV vacancy feed) | active job ads with employer organisation number and homepage | NAV's official feed API with its published public token, fetched at run time; read once per run for the last 45 days | job ads NAV redistributes for reuse |
+| applicant-tracking systems' public job lists: Teamtailor `<career host>/jobs.json`, Greenhouse `boards-api.greenhouse.io/v1/boards/<token>/jobs`, Lever `api.lever.co/v0/postings/<tenant>?mode=json`, Ashby `api.ashbyhq.com/posting-api/job-board/<name>`, Personio `<tenant>.jobs.personio.de/xml`, Recruitee `<tenant>.recruitee.com/api/offers/`, Workable `apply.workable.com/api/v1/widget/accounts/<account>` | the open ads of a tenant the verified site is or links, or that the declared ATS index (CACHE.md) ties to the organisation number; one claim per ad naming this employer | one keyless GET per tenant (the list the vendor publishes for career sites and job boards); robots.txt honoured (each host allowed the list path when adopted on 23 Oct 2026); each evidence record carries the access policy | the employer's own published job ads, cited with source and date |
+| `publicapi.jobbnorge.no/v3/Jobs` (Jobbnorge) | open ads, mostly public-sector employers, matched on the employer's exact name plus a registered municipality or postcode | keyless public API (Swagger at `/swagger`), read once per run; the host serves no robots.txt | ads published for redistribution by the board's own public API |
+
+Not read by design: SmartRecruiters' API (its robots.txt disallows every agent but LinkedIn's),
+Webcruiter's candidate pages (robots.txt disallows every agent but Google's), finn.no (terms forbid
+automated use), and Jobylon, Recman and ReachMee lists (per-customer hashes, tokens or login pages).
 
 Not used: search engines, LinkedIn, Meta (Facebook/Instagram), Glassdoor,
 Indeed, Google, review sites, or any unofficial client for them; none of those

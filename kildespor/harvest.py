@@ -1225,16 +1225,21 @@ def _ats_roles(plan: Plan, rec: CompanyRecord, tenant: "ats.Tenant", *, own_tena
         return None, None, None
     if listing.error:
         return None, listing, snap
+    roles = _listed_roles(rec, listing, snap, own_tenant=own_tenant)
+    read[tenant.list_url] = len(roles)
+    return roles, listing, snap
+
+
+def _listed_roles(rec: CompanyRecord, listing: "ats.TenantList", snap: Snapshot, *, own_tenant: bool) -> list[tuple[Role, Snapshot]]:
+    """The ads of an ATS list that ``ats.select`` keeps, as structured roles citing ``snap``."""
     kept, refused = ats.select(rec, listing, own_tenant=own_tenant)
-    read[tenant.list_url] = len(kept)
     rec.context.setdefault("ats_refused", {}).update(refused)
     linked = "the verified website's own career site" if own_tenant else "linked from the verified website"
-    policy = f"{ats.POLICY[tenant.platform]}; tenant {linked}"
-    roles = [
-        (Role(ad.title[:200], ad.url, ad.published, ad.expires, ad.location, tenant.platform, ats.span_of(ad, tenant.platform), f"ats_api_{tenant.platform}_list", ad.employer, policy), snap)
+    policy = f"{ats.POLICY[listing.platform]}; tenant {linked}"
+    return [
+        (Role(ad.title[:200], ad.url, ad.published, ad.expires, ad.location, listing.platform, ats.span_of(ad, listing.platform), f"ats_api_{listing.platform}_list", ad.employer, policy), snap)
         for ad in kept
     ]
-    return roles, listing, snap
 
 
 _TITLE_CLASS = re.compile(r"title|heading|name|tittel|overskrift", re.I)
@@ -2501,6 +2506,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             # public list gives every open ad and the employer each names, in one request.
             own_tenant = ats.tenant_for_page(c_snap.final_url, c_snap.text())
             api_roles = _ats_roles(plan, rec, own_tenant, own_tenant=True)[0] if own_tenant is not None else None
+            inline = ats.inline_list(c_snap.final_url, c_snap.text()) if api_roles is None else None
+            if inline is not None and not inline.error:
+                api_roles = _listed_roles(rec, inline, c_snap, own_tenant=True)  # a Homerun page embeds its list
             if api_roles is not None:
                 roles += api_roles
                 listing = None
@@ -2594,7 +2602,11 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             careers.append((_clean_url(a_snap.final_url), a_snap, f"applicant-tracking page ({ats_name}): {(a_soup.title.get_text(' ', strip=True) if a_soup.title else '')[:160]}", "ats_page_linked_from_verified_site"))
             if NO_OPENINGS.search(a_text):
                 hiring_notes["no_openings"].append(_clean_url(a_snap.final_url))
-            roles += [(r, a_snap) for r in roles_on_page(a_snap, a_soup, rec, own_site=False, tenant_ok=tenant_ok, rejected=rejected_roles)]
+            inline = ats.inline_list(a_snap.final_url, a_snap.text())
+            if inline is not None and not inline.error:
+                roles += _listed_roles(rec, inline, a_snap, own_tenant=tenant_ok)
+            else:
+                roles += [(r, a_snap) for r in roles_on_page(a_snap, a_soup, rec, own_site=False, tenant_ok=tenant_ok, rejected=rejected_roles)]
         elif snap is not None and (tenant_ok or text == "@careers-page" or ats_name == "finn" or CAREER_TEXT.match(text or "")):
             careers.append((_clean_url(url), snap, span, "ats_link_on_verified_site"))
 
