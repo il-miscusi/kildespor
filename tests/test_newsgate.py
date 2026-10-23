@@ -111,6 +111,55 @@ class FeatureTests(unittest.TestCase):
         self.assertTrue(0.0 < p < 1.0)
 
 
+class TitleGate:
+    """A stand-in model: refuses any item whose title carries one of ``words``."""
+
+    threshold = 0.5
+
+    def __init__(self, *words: str) -> None:
+        self.words = words
+
+    def score(self, c: dict) -> float:
+        return 0.1 if any(w in c["title"].lower() for w in self.words) else 0.9
+
+
+class GateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.saved = (newsgate._GATE, newsgate._GATE_LOADED)
+
+    def tearDown(self) -> None:
+        newsgate._GATE, newsgate._GATE_LOADED = self.saved
+
+    def test_gate_refuses_what_the_rules_let_through(self) -> None:
+        newsgate._GATE, newsgate._GATE_LOADED = TitleGate("rullestol"), True
+        rec = run_site([
+            post("Fjordbygg vinner stor kontrakt i Bergen", "kontrakt", ["nyheter"], f"{RECENT}T10:00:00", "Fjordbygg skal bygge."),
+            post("Easy Sport Small rullestol i titan", "easy-sport", ["nyheter"], f"{RECENT}T11:00:00", "Pris 12 990 kr."),
+        ])
+        self.assertEqual([c["value"]["title"] for c in rec.claims if c["field"] == "company_news"], ["Fjordbygg vinner stor kontrakt i Bergen"])
+
+    def test_without_a_model_everything_passes(self) -> None:
+        newsgate._GATE, newsgate._GATE_LOADED = None, True
+        self.assertEqual(newsgate.verdict({"title": "x"}), (True, None))
+
+    def test_all_refused_is_not_available_with_the_reason(self) -> None:
+        newsgate._GATE, newsgate._GATE_LOADED = TitleGate("rullestol"), True
+        rec = run_site([post("Easy Sport Small rullestol i titan", "easy-sport", ["nyheter"], f"{RECENT}T11:00:00", "Pris 12 990 kr.")])
+        state = rec.family_state["public_activity"]
+        self.assertEqual(state["state"], "not_available")
+        self.assertIn("below the news gate", state["reason"])
+
+    def test_shipped_model_loads_and_scores(self) -> None:
+        if not newsgate.MODEL_PATH.exists():
+            self.skipTest("no shipped model")
+        spec = json.loads(newsgate.MODEL_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(spec["sha256"], newsgate.spec_sha256(spec))
+        model = newsgate.Gate(spec)
+        good = {"title": "Fjordbygg vinner kontrakt for ny skole på Voss", "url": "https://www.fjordbygg.no/nyheter/kontrakt-skole-voss/", "method": "wordpress_posts_api",
+                "categories": ["nyheter"], "lead": "Fjordbygg har signert kontrakt med Voss kommune om bygging av ny barneskole.", "own": ["fjordbygg"], "published": f"{RECENT}T10:00:00+02:00"}
+        self.assertEqual(model.score(good), model.score(dict(good)))
+
+
 class UnreadSourceTests(unittest.TestCase):
     """STRONGPOINT ASA, run-rev2d: the post API timed out and the company came out "not_available"."""
 

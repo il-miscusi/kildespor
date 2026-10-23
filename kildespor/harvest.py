@@ -2650,6 +2650,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 "home": home.final_url, "wordpress": wordpress, "group_site": group_site, "own": sorted(entity.own), "other": entity.other}
     gated: dict[str, str] = {}
     scores: dict[int, float | None] = {}
+    near_miss: dict[str, tuple[float, str]] = {}  # gated items' (score, url): read first when nothing passed
     # News sources that could not be read (timeout, 5xx, a 401/403, the request allowance): when
     # nothing is published, absence is then not established and the dated-news state is "failed".
     news_failed: list[str] = []
@@ -2685,8 +2686,13 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 # The article page is the fullest evidence there is: when it says no, an earlier copy goes too.
                 gated[key] = "below the news gate (product, service, guide, commentary or other entity)"
                 news.pop(key, None)
+            if item.method != "article_page_meta" and item.url and score is not None:
+                near_miss[key] = (score, item.url)
+            else:
+                near_miss.pop(key, None)
             return
         gated.pop(key, None)
+        near_miss.pop(key, None)
         current = news.get(key)
         if current is None:
             for other_key, other in news.items():
@@ -2768,7 +2774,14 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 listing_links = _listing_articles(page[0], page[1], site_host)
 
     # Article pages: the headline and published datetime as the article itself states them.
-    to_read = _articles_to_read(anchors, news, sitemap, site_host, listing_links)[: MAX_ARTICLE_FETCHES + (2 if corpus else 0)]
+    to_read = _articles_to_read(anchors, news, sitemap, site_host, listing_links)
+    if not news and near_miss:
+        # Nothing passed the gate on the evidence of a feed, a post API or a card: the two closest
+        # refusals get their own page read first, whose type signals (og:type, Article JSON-LD,
+        # article:published_time, a price or a cart) settle what a title and an excerpt could not.
+        closest = [u for _s, u in sorted(((sc, u) for sc, u in near_miss.values() if _site(u) == site_host), key=lambda t: (-t[0], t[1]))[:2]]
+        to_read = closest + [u for u in to_read if _norm_url(u) not in {_norm_url(c) for c in closest}]
+    to_read = to_read[: MAX_ARTICLE_FETCHES + (2 if corpus else 0)]
     for n_read, url in enumerate(to_read):
         if not plan.can(1, 6.0):
             unread(f"{len(to_read) - n_read} article page(s)", "budget")
