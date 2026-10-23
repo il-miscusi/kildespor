@@ -21,7 +21,7 @@ def main() -> int:
     env_budget = os.environ.get("KILDESPOR_TIME_BUDGET_S")
     parser.add_argument("--time-budget", type=float, default=float(env_budget) if env_budget else None, help="wall-clock budget in seconds; research stops at 88%% of it and the complete output is always on disk (default: 900 + 0.6 per company, at most 2,700)")
     parser.add_argument("--workers", type=int, default=int(os.environ.get("KILDESPOR_WORKERS", "32")), help="concurrent companies (default 32)")
-    parser.add_argument("--per-company-seconds", type=float, default=90.0, help="cap on website+jobs research per company (default 90)")
+    parser.add_argument("--per-company-seconds", type=float, default=120.0, help="cap on website+jobs research per company (default 120)")
     parser.add_argument("--checkpoint-seconds", type=float, default=90.0, help="how often the complete output is rewritten during enrichment")
     parser.add_argument("--max-requests", type=int, default=int(os.environ.get("KILDESPOR_MAX_REQUESTS", "0")), help="hard cap on outbound requests for the run, redirects and retries included (default: --requests-per-company x inputs)")
     parser.add_argument("--requests-per-company", type=float, default=float(os.environ.get("KILDESPOR_REQUESTS_PER_COMPANY", "19")), help="request budget per input used when --max-requests is not set (default 19)")
