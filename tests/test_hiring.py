@@ -521,5 +521,25 @@ class RefreshFromV1Baseline(unittest.TestCase):
         self.assertFalse(rec.claims_for("hiring"))  # job_posting:site not checked, still never carried
 
 
+class TeamtailorSameAdTwiceTest(unittest.TestCase):
+    def test_custom_domain_and_tenant_host_publish_one_ad(self) -> None:
+        def role(url: str, method: str = "ats_api_teamtailor_list") -> tuple[harvest.Role, None]:
+            return harvest.Role("Regnskapsfører", url, None, None, None, "teamtailor", "span", method), None
+
+        roles = [
+            role("https://karriere.okoraad.no/jobs/7401342-regnskapsforer"),
+            role("https://karriere.okoraad.no/jobs/5082339-helgeland"),
+            role("https://okorad.teamtailor.com/jobs/7401342-regnskapsforer"),
+            role("https://okorad.teamtailor.com/jobs/5082339-helgeland"),
+            role("https://example.no/jobs/7401342-other", "json_ld_jobposting"),
+        ]
+        kept = harvest._one_teamtailor_ad_per_job(roles)
+        self.assertEqual([r.url for r, _ in kept], [
+            "https://karriere.okoraad.no/jobs/7401342-regnskapsforer",
+            "https://karriere.okoraad.no/jobs/5082339-helgeland",
+            "https://example.no/jobs/7401342-other",
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()

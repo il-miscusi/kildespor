@@ -1212,6 +1212,24 @@ class Role:
     card: str = ""  # the listing card's text, for a role link
 
 
+_TT_JOB_PATH = re.compile(r"^/jobs/(\d+)(?:-|$)")
+
+
+def _one_teamtailor_ad_per_job(roles: list[tuple["Role", Snapshot]]) -> list[tuple["Role", Snapshot]]:
+    """A custom-domain Teamtailor site (karriere.okoraad.no) and the tenant's own host
+    (okorad.teamtailor.com) serve the same ad under one numeric id: publish the first only."""
+    seen: set[int] = set()
+    kept = []
+    for role, snap in roles:
+        m = _TT_JOB_PATH.match(urlsplit(role.url).path) if role.method == "ats_api_teamtailor_list" else None
+        if m:
+            if int(m.group(1)) in seen:
+                continue
+            seen.add(int(m.group(1)))
+        kept.append((role, snap))
+    return kept
+
+
 def _ats_roles(plan: Plan, rec: CompanyRecord, tenant: "ats.Tenant", *, own_tenant: bool) -> tuple[list[tuple[Role, Snapshot]] | None, "ats.TenantList | None", Snapshot | None]:
     """The open ads of an ATS tenant's keyless public list (one request), as structured roles.
 
@@ -2751,6 +2769,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # them is not read again as an ad page (and a link the list left out was refused there).
     api_read = rec.context.get("ats_read") or {}
     roles = [(r, s) for r, s in roles if r.method != "careers_page_role_link" or (ats.tenant_from_url(r.url) or ats.Tenant("", "", "", "")).list_url not in api_read]
+
+    roles = _one_teamtailor_ad_per_job(roles)
 
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}
