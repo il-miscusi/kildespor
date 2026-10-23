@@ -792,6 +792,23 @@ def registered_domain(host: str) -> str:
     return ".".join(parts[-2:])
 
 
+# Job boards and applicant-tracking hosts: a company's page there is its careers page, never its
+# website (NAV's employer homepage for Norasonde Karriere was norasondegruppen.teamtailor.com).
+JOB_BOARD_DOMAINS = frozenset({
+    "teamtailor.com", "webcruiter.no", "webcruiter.com", "jobylon.com", "reachmee.com", "recman.no", "recman.page",
+    "recman.io", "hr-manager.net", "hrmanager.no", "easycruit.com", "jobbnorge.no", "varbi.com", "smartrecruiters.com",
+    "myworkdayjobs.com", "lever.co", "greenhouse.io", "cvpartner.com", "talentech.com", "emply.com", "emply.net",
+    "workable.com", "recruitee.com", "homerun.co", "personio.de", "personio.com", "ashbyhq.com", "breezy.hr",
+    "finn.no", "cvideo.no",
+})
+JOB_BOARD_HOSTS = ("arbeidsplassen.nav.no",)
+
+
+def job_board_site(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return bool(host) and (registered_domain(host) in JOB_BOARD_DOMAINS or host in JOB_BOARD_HOSTS)
+
+
 def is_directory(host: str) -> bool:
     host = host.lower()
     return any(host == d or host.endswith("." + d) for d in DIRECTORY_HOSTS)
@@ -971,7 +988,7 @@ def website_candidates(rec: CompanyRecord, only_nav: bool = False) -> list[tuple
         if not url:
             return
         key = _host_key(url)
-        if key and key not in seen:
+        if key and key not in seen and not job_board_site(url):
             seen.add(key)
             candidates.append((url, origin))
 

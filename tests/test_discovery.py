@@ -260,6 +260,15 @@ class CandidatesAndBudget(unittest.TestCase):
         self.assertEqual(origins["gammeltfirma.no"], "former_name_domain")
         self.assertEqual(origins["sjobuakafe.no"], "subunit_name_domain")
 
+    def test_job_board_page_is_never_a_website_candidate(self) -> None:
+        rec = make_rec(name="NORASONDE KARRIERE AS", hjemmeside="karriere.webcruiter.no/norasonde")
+        rec.context["nav_employer"] = {"homepage": ["https://norasondegruppen.teamtailor.com/"]}
+        hosts = [website.urlsplit(u).hostname for u, _ in website.website_candidates(rec)]
+        self.assertFalse(any(h and ("teamtailor" in h or "webcruiter" in h) for h in hosts))
+        self.assertEqual(website.website_candidates(rec, only_nav=True), [])
+        self.assertTrue(website.job_board_site("https://arbeidsplassen.nav.no/stillinger"))
+        self.assertFalse(website.job_board_site("https://www.nav.no/"))
+
     def test_shared_email_domain_is_no_candidate(self) -> None:
         rec = make_rec(name="NYTT NAVN AS", email="kunde@forvalter.no")
         with patch.object(website, "caches", FakeCaches(shared_domains={"forvalter.no"})):
