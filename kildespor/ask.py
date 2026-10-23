@@ -14,9 +14,13 @@ viewer's question box (``#/research``):
   revenue and employee ranges, profit or loss, negative equity, website, social
   profiles, hiring signal, dated news, coverage, changes and carried-forward
   facts, ``top N by revenue|employees``;
-* questions about one company named by organisation number or name: who runs
-  or owns it, what it does, how it is doing, whether it is hiring, its web
-  presence, what changed and what is unknown.
+* questions about one company named by organisation number or name: a brief,
+  what it does, how it is doing, who runs or owns it, whether it is hiring
+  (and how many people work there), what it published recently and where it
+  is online, what changed and what is unknown. Each topic is answered by the
+  matching section of the company's cited brief.
+
+``python -m kildespor.serve`` puts the same answers behind ``/research?q=...``.
 
 Every answer lists the claims it used with their source URL and retrieval
 time. A question outside the grammar, or one the evidence cannot answer, gets
@@ -58,6 +62,25 @@ FORMS = {"sole proprietorship": "ENK", "sole proprietorships": "ENK", "public li
 CITE_FOR = {"m": "municipality", "hire": "hiring", "w": "website", "so": "social", "news": "news", "r": "revenue", "e": "employees", "loss": "result", "profit": "result", "negeq": "equity", "dv": "industry", "ic": "industry", "f": "name"}
 
 
+TOPICS = [
+    # (topic, pattern), checked in order; the topic names the brief's section that answers it.
+    ("brief", r"\b(brief|summary|overview|useful|tell me about|in short)\b"),
+    ("who", r"\b(who runs|who leads|who is behind|chair|board|owner|owns|owned|parent|leader|leadership|auditor|accountant|runs)\b"),
+    ("hiring", r"\b(hiring|hire|jobs?|vacanc|recruit|careers?|work there|work here|working here|apply|employees|staff|join)\b"),
+    ("activity", r"\b(publish|published|recent|recently|activity|news|posts?|online|website|web site|homepage|social|facebook|instagram)\b"),
+    ("money", r"\b(revenue|turnover|profit|loss|result|equity|financ|accounts|filing|doing|money|earn|size|big|perform)\b"),
+    ("changed", r"\b(changed?|changes|new|latest|happen|refresh)\b"),
+    ("unknown", r"\b(unknown|missing|not found|gaps?|could not)\b"),
+    ("what", r"\b(what does|what do|do they|business|industry|about|what is|describe)\b"),
+]
+
+
+def topic_of(question: str) -> str | None:
+    """Which section of the brief answers a question about one company (the viewer's topicOf)."""
+    l = question.lower()
+    return next((topic for topic, pattern in TOPICS if re.search(pattern, l)), None)
+
+
 def _num(text: str, unit: str | None) -> float:
     value = float(re.sub(r"\s", "", text).replace(",", "."))
     unit = (unit or "").lower()
@@ -88,12 +111,39 @@ def _title(text: str) -> str:
     return re.sub(r"(^|[\s-])([a-zæøåéü])", lambda m: m.group(1) + m.group(2).upper(), str(text or "").lower())
 
 
+class _LazyEnvelopes(dict):
+    """Envelopes read one at a time from a loader (``kildespor.serve`` reads them by byte offset)."""
+
+    def __init__(self, loader) -> None:
+        super().__init__()
+        self.loader = loader
+
+    def __missing__(self, org: str) -> dict[str, Any]:
+        env = self.loader(org)
+        if env is None:
+            raise KeyError(org)
+        if len(self) > 64:
+            self.clear()
+        self[org] = env
+        return env
+
+
 class Run:
     def __init__(self, envelopes: list[dict[str, Any]]) -> None:
         self.envelopes = {e["organisation_number"]: e for e in envelopes}
         self.rows = [index_row(e) for e in envelopes]
         self.by_org = {r["o"]: r for r in self.rows}
         self.baseline = not any((e.get("refresh") or {}).get("previous_run_id") for e in envelopes)
+
+    @classmethod
+    def from_index(cls, rows: list[dict[str, Any]], loader, baseline: bool = True) -> "Run":
+        """A run built from the viewer's index rows, loading an envelope only when a question is about it."""
+        run = cls.__new__(cls)
+        run.envelopes = _LazyEnvelopes(loader)
+        run.rows = list(rows)
+        run.by_org = {r["o"]: r for r in run.rows}
+        run.baseline = baseline
+        return run
 
     # -- company lookup --------------------------------------------------------------------
     def find_company(self, q: str) -> dict[str, Any] | None:
@@ -283,22 +333,8 @@ class Run:
                 return {**base, "supported": True, "answer": f"The general manager (daglig leder) is {ceo['value'].get('name')}.", "citations": cite([ceo["id"]], ceo["evidence_ids"])}
             fam = families.get("leadership") or {}
             return {**base, "supported": False, "answer": f"Not supported by the evidence: the register lists no general manager for this entity ({fam.get('state', 'not checked')}: {fam.get('reason', '')}).", "citations": []}
-        topic = None
-        if re.search(r"\b(who runs|who leads|chair|board|owner|owns|owned|parent|leader|leadership|auditor|accountant|who is behind)\b", l):
-            topic = "who"
-        elif re.search(r"\b(hiring|hire|jobs?|vacanc|recruit|careers?|work there|work here|apply)\b", l):
-            topic = "hire"
-        elif re.search(r"\b(website|web site|homepage|online|social|facebook|instagram)\b", l):
-            topic = "signals"
-        elif re.search(r"\b(revenue|turnover|profit|loss|result|equity|financ|accounts|doing|money|earn|size|big|employees|staff)\b", l):
-            topic = "money"
-        elif re.search(r"\b(changed?|changes|new|news|recent|latest|happen)\b", l):
-            topic = "changed"
-        elif re.search(r"\b(unknown|missing|not found|gaps?|could not)\b", l):
-            topic = "unknown"
-        elif re.search(r"\b(what does|what do|do they|business|industry|about|what is|describe)\b", l):
-            topic = "what"
-        if topic == "hire":
+        topic = topic_of(l)
+        if topic == "hiring":
             # Only a single job ad answers "is it hiring"; a careers page is context in the reason.
             jobs = [c for c in claims if c["field"] == "job_posting"]
             if not jobs:
@@ -306,7 +342,10 @@ class Run:
                 return {**base, "supported": False, "answer": f"Not supported by the evidence: no single open job ad was found ({fam.get('state', 'not checked')}: {fam.get('reason', '')}). This is not proof that it is not hiring.", "citations": []}
             answer = f"Yes: {len(jobs)} open job ad(s), each a single ad read at its source: " + "; ".join(f"{(c['value'] or {}).get('title')} ({(c['value'] or {}).get('url')})" for c in jobs[:8] if isinstance(c["value"], dict)) + "."
             return {**base, "supported": True, "answer": answer, "citations": [x for c in jobs[:8] for x in cite([c["id"]], c["evidence_ids"])]}
-        found = from_section(topic) if topic else {"answer": syn.get("summary", ""), "citations": [c for s in syn.get("summary_sentences", []) for c in cite(s["claim_ids"], s["evidence_ids"])]}
+        if topic in (None, "brief"):
+            found = {"answer": syn.get("summary", ""), "citations": [c for s in syn.get("summary_sentences", []) for c in cite(s["claim_ids"], s["evidence_ids"])]}
+        else:
+            found = from_section(topic) or (from_section("signals") if topic == "activity" else None)  # "signals": briefs written before 24 Oct
         if not found or not found["answer"]:
             return {**base, "supported": False, "answer": "Not supported by the evidence: nothing in this company's profile answers that.", "citations": []}
         return {**base, "supported": True, **found}
@@ -318,8 +357,9 @@ class Run:
             return {"kind": "none", "question": q, "supported": False, "answer": "Ask a question."}
         company = self.find_company(q)
         plan = self.parse_screen(q)
-        personal = re.search(r"\b(who|what does|what do|is it|are they|does it|tell me|ceo|daglig leder|chair|hiring|revenue|website|doing|owner|changed)\b", q, re.I)
-        if company and personal and len([f for f in plan["filters"] if f["k"] not in ("m", "dv")]) <= 1:
+        personal = re.search(r"\b(who|what does|what do|is it|are they|does it|tell me|ceo|daglig leder|chair|hiring|revenue|website|doing|owner|changed|brief|working|published|recent)\b", q, re.I)
+        screening = len([f for f in plan["filters"] if f["k"] not in ("m", "dv")]) > 1 or re.search(r"\b(companies|which|list|top \d+|largest|biggest)\b", q, re.I)
+        if company and personal and not screening:
             return self.company(company, q)
         if plan["unsupported"] and not plan["filters"]:
             return {"kind": "screen", "question": q, "supported": False, "answer": "Not supported by the evidence: " + "; ".join(plan["unsupported"]) + "."}

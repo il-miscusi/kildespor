@@ -80,6 +80,14 @@ def read_inputs(path: str) -> list[str]:
 
 
 # -- per-company work -----------------------------------------------------------------------
+def research_priority(rec: CompanyRecord, position: int) -> tuple[int, int, int]:
+    """Sort key for the website queue: a register-listed homepage first, then more employees, then
+    input order (deterministic)."""
+    entity = rec.context.get("entity") or {}
+    employees = entity.get("antallAnsatte") or 0
+    return (0 if entity.get("hjemmeside") else 1, -int(employees), position)
+
+
 def official_phase(fetcher: Fetcher, rec: CompanyRecord, snapshot_row: dict[str, Any] | None) -> None:
     started = time.monotonic()
     before = fetcher.thread_requests()
@@ -379,19 +387,10 @@ def run_report(envelopes: list[dict[str, Any]], orgs: list[str], run: dict[str, 
 
 # -- main -----------------------------------------------------------------------------------
 def write_root_index(out_dir: Path, site_dir: Path) -> None:
-    """``index.html`` beside the envelopes, opening the viewer, so it is found where a checker looks first."""
-    try:
-        rel = os.path.relpath(site_dir / "index.html", out_dir).replace(os.sep, "/")
-    except ValueError:
-        return
-    if rel == "index.html":
-        return
-    page = (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-        f'<meta http-equiv="refresh" content="0; url={rel}"><title>Kildespor company profiles</title></head>'
-        f'<body><p><a href="{rel}">Open the Kildespor company viewer</a></p></body></html>\n'
-    )
-    (out_dir / "index.html").write_text(page, encoding="utf-8")
+    """``index.html`` beside the envelopes: the viewer's research page itself, so it is found where a checker looks first."""
+    from .site import write_root_page
+
+    write_root_page(out_dir, site_dir)
 
 
 def default_budget(companies: int) -> float:
@@ -464,6 +463,9 @@ def run_batch(args: Any) -> int:
     checkpoint(final=False)
     workers = max(1, int(args.workers))
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kildespor")
+    # Job lookups are short (mostly no request at all); in their own pool they run as each website
+    # step finishes instead of queueing behind every remaining website step.
+    job_pool = ThreadPoolExecutor(max_workers=max(2, workers // 4), thread_name_prefix="kildespor-jobs")
     # Phase 1: official records (must finish well inside the budget).
     official_deadline = started + budget * 0.40
     futures: dict[Future[None], str] = {pool.submit(official_phase, fetcher, recs[org], snapshot_rows.get(org)): org for org in orgs}
@@ -492,12 +494,14 @@ def run_batch(args: Any) -> int:
         last_checkpoint = time.monotonic()
 
         def admit() -> None:
-            for org in orgs:
-                if org not in queued and recs[org].context.get("entity"):
-                    queued.add(org)
-                    fut = pool.submit(website_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap)
-                    site_of[fut] = org
-                    pending2.add(fut)
+            # Most promising first, so a budget that runs out cuts the companies least likely to
+            # have a findable website, news or job ad: a register-listed homepage, then size.
+            ready = [org for org in orgs if org not in queued and recs[org].context.get("entity")]
+            for org in sorted(ready, key=lambda o: research_priority(recs[o], order[o])):
+                queued.add(org)
+                fut = pool.submit(website_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap)
+                site_of[fut] = org
+                pending2.add(fut)
 
         def jobs_waiting() -> list[str]:
             return sorted(sites_done - jobs_submitted, key=order.__getitem__) if jobs_queued and feed is not None else []
@@ -510,7 +514,7 @@ def run_batch(args: Any) -> int:
                 log(f"NAV feed loaded ({feed.pages} pages, {len(feed.active)} active ads{', error: ' + feed.error if feed.error else ''}); job research queued as website steps finish")
             for org in jobs_waiting():
                 jobs_submitted.add(org)
-                pending2.add(pool.submit(jobs_phase, fetcher, recs[org], enrich_deadline, args.company_request_cap, feed))
+                pending2.add(job_pool.submit(jobs_phase, fetcher, recs[org], enrich_deadline, args.company_request_cap, feed))
             if pending2:
                 done, pending2 = wait(pending2, timeout=min(5.0, max(0.1, enrich_deadline - time.monotonic())), return_when=FIRST_COMPLETED)
                 sites_done.update(site_of[f] for f in done if f in site_of)
@@ -531,6 +535,7 @@ def run_batch(args: Any) -> int:
             if not recs[org].claims_for("public_activity") and (recs[org].family_state.get("public_activity") or {}).get("state") != "failed":
                 recs[org].set_state("public_activity", "not_available", "no dated activity found in the register feeds or on the company's own channels")
     pool.shutdown(wait=False, cancel_futures=True)
+    job_pool.shutdown(wait=False, cancel_futures=True)
 
     envelopes = checkpoint(final=True)
     report = run_report(envelopes, orgs, {**run, "completed_at": utc_now(), "terminal_status": "completed"}, fetcher, started, recs)

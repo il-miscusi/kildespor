@@ -1,14 +1,23 @@
 """Deterministic, evidence-bounded company briefs.
 
-The brief answers six questions a buyer, investor or applicant asks first:
-what the company does, who is behind it, how big it is and how it is doing,
-what changed, what signals it gives (hiring, web presence, group), and what
-this run could not establish. Every sentence is built from published claims
-and carries the claim ids, evidence ids and source links it rests on. Nothing
-is inferred beyond arithmetic on filed figures (year-on-year change, equity
-ratio), which is labelled as computed; anything the run could not establish is
-listed as unknown with its state and reason, never filled in. No language
-model and no network access: the same claims always give the same text.
+The brief opens with two sentences a buyer, applicant or investor can act on:
+what the company does, how big it is and which way its filed figures moved
+(revenue and result with their years, computed from the cited accounts), then
+whether it is hiring now and its latest dated activity. Two more say what
+changed (run to run, or on the record: the latest register change and the
+latest filing against the year before) and what this run could not establish.
+The sections follow, in the order of Builderr's own sample profile: Company
+overview, Latest financials, Who runs it?, Working here, Recent activity, What
+changed, What we could not establish.
+
+Every sentence carries the claim ids, evidence ids and source links it rests
+on, and passes a support check before it is kept (``sentence_support``): each
+number, quoted passage and name it states must be in the claims it cites, or
+be plain arithmetic on two of them. Nothing is inferred beyond that
+arithmetic (year-on-year change, equity ratio), which is labelled as
+computed; anything the run could not establish is listed with its state and
+reason, never filled in. No language model and no network access: the same
+claims always give the same text.
 
 The builder reads claims in both shapes: the internal one (dict values, fields
 ``careers_page``, ``job_posting``, ``company_news``) and the published one
@@ -113,6 +122,20 @@ FAMILY_LABELS = {
     "hiring": "single job ads",
     "public_activity": "dated news",
 }
+STATE_SHORT = {
+    "not_available": "not available",
+    "ambiguous": "ambiguous, withheld",
+    "failed": "failed, could not be checked",
+    "blocked": "blocked by the source",
+    "not_applicable": "not applicable",
+}
+STATE_LONG = {
+    "ambiguous": "ambiguous: a candidate was found but not proven to be this company, so it is withheld",
+    "failed": "failed: it could not be checked in this run",
+    "blocked": "blocked by the source",
+    "not_applicable": "not applicable",
+}
+GENERIC_REASONS = {"checked, nothing found", "no evidence-backed value found", "checked, none found"}
 STATE_WORDS = {
     "not_available": "checked, none found",
     "blocked": "blocked by the source",
@@ -175,7 +198,8 @@ def _signed_money(amount: float, currency: str | None) -> str:
 
 
 def _pct(change: float) -> str:
-    return f"{change * 100:+.0f}%"
+    text = f"{change * 100:+.0f}%"
+    return "0%" if text in ("+0%", "-0%") else text
 
 
 def _result_words(amount: float, currency: str | None, kind: str) -> str:
@@ -249,7 +273,7 @@ class Builder:
         return (fresh or items or [None])[0]
 
     # citations
-    def sources(self, claims: Iterable[dict[str, Any]], extra_ids: Iterable[str] = (), limit: int = 4) -> list[dict[str, Any]]:
+    def sources(self, claims: Iterable[dict[str, Any]], extra_ids: Iterable[str] = (), limit: int = 2) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         ids = [e for c in claims for e in c.get("evidence_ids", [])] + list(extra_ids)
@@ -261,7 +285,7 @@ class Builder:
             if not url or url in seen:
                 continue
             seen.add(url)
-            out.append({"url": url, "retrieved_at": ev.get("retrieved_at"), "evidence_id": ev_id})
+            out.append({"url": url, "retrieved_at": ev.get("retrieved_at")})
             if len(out) >= limit:
                 break
         return out
@@ -282,8 +306,10 @@ class Builder:
         elif not claims and not extra and basis == "fact":
             out["basis"] = "absence"  # a statement about what the checked sources did not contain
         checked = [u for u in checked if u]
-        if checked and not out["sources"]:
-            out["checked_sources"] = sorted(set(checked))[:4]
+        if checked and (not out["sources"] or out["basis"] in ("absence", "unknown")):
+            out["checked_sources"] = sorted(set(checked))[:3]
+        if out["basis"] == "fact":
+            del out["basis"]  # the default: a statement of what the cited claims say
         return out
 
     def add(self, key: str, heading: str, question: str, sentences: list[dict[str, Any] | None]) -> None:
@@ -296,8 +322,6 @@ class Builder:
             "question": question,
             "text": " ".join(s["text"] for s in sentences),
             "sentences": sentences,
-            "claim_ids": sorted({c for s in sentences for c in s["claim_ids"]}),
-            "evidence_ids": sorted({e for s in sentences for e in s["evidence_ids"]}),
         })
 
     def signal(self, key: str, text: str, claims: list[dict[str, Any]], tone: str = "neutral") -> None:
@@ -341,6 +365,136 @@ def _cur(c: dict[str, Any] | None) -> str:
     return "NOK"
 
 
+# The brief's sections, in the order of Builderr's own sample profile and its "Ask" prompts.
+SECTION_SPEC = [
+    ("what", "Company overview", "What does the company do?"),
+    ("money", "Latest financials", "How is the company doing?"),
+    ("who", "Who runs it?", "Who runs and owns the company?"),
+    ("hiring", "Working here", "Is it hiring, and where does it work?"),
+    ("activity", "Recent activity", "What has it published recently, and where is it online?"),
+    ("changed", "What changed", "What changed recently?"),
+    ("unknown", "What we could not establish", "What could not be established, and why?"),
+]
+_GENERIC_BRANDS = {"home", "hjem", "forside", "velkommen", "welcome", "start", "index", "hjemmeside", "homepage", "nettside", "website"}
+
+
+def _clean_brand(brand: str | None, name: str) -> str | None:
+    """A public brand fit for a headline: short, not a page title, not the legal name again."""
+    if not brand or not isinstance(brand, str):
+        return None
+    brand = " ".join(brand.split()).strip(" .,-")
+    if len(brand) < 3 or len(brand) > 40 or len(brand.split()) > 5:
+        return None
+    if any(sep in brand for sep in ("|", "–", "—", " - ", ":", "»", "«", "·")):
+        return None
+    if brand.lower() in _GENERIC_BRANDS or brand.lower() in name.lower():
+        return None
+    return brand
+
+
+def _change_words(a: float, p: float) -> str:
+    """'up 25% on 2024' style wording for a change from p to a (p > 0)."""
+    change = (a - p) / abs(p)
+    pct = round(abs(change) * 100)
+    if pct == 0:
+        return "about unchanged"
+    return f"{'up' if change > 0 else 'down'} {pct:,}%"
+
+
+def _job_title(c: dict[str, Any], limit: int = 70) -> str:
+    v = c["value"] if isinstance(c.get("value"), dict) else {}
+    return _quote(v.get("title") or v.get("job_title") or "", limit)
+
+
+def _hiring_where(state: dict[str, Any]) -> str:
+    """Where the run looked for job ads, in a few words, from the hiring family's reason."""
+    reason = str(state.get("reason") or "")
+    places = []
+    if "careers page" in reason:
+        places.append("on its careers page")
+    if "NAV" in reason or any("nav.no" in str(u) for u in state.get("checked_sources") or []):
+        places.append("in NAV's vacancy feed")
+    return " or ".join(places) if places else "in the sources checked"
+
+
+class _Fin:
+    """The latest filed statement and the year before: the group (consolidated) accounts when the company
+    files them for its latest year, since a parent's own accounts say little about the business it runs;
+    otherwise the company accounts. The scope is always named in the text."""
+
+    def __init__(self, stmts: dict[tuple[str, str], dict[str, dict[str, Any]]]) -> None:
+        self.type = self.year = self.prev_year = None
+        self.cur: dict[str, dict[str, Any]] = {}
+        self.prev: dict[str, dict[str, Any]] = {}
+        latest = {t: max((y for (tt, y) in stmts if tt == t and y.isdigit()), default=None) for t in ("SELSKAP", "KONSERN")}
+        order = ("KONSERN", "SELSKAP") if latest["KONSERN"] and (not latest["SELSKAP"] or latest["KONSERN"] >= latest["SELSKAP"]) else ("SELSKAP", "KONSERN")
+        for account_type in order:
+            if latest[account_type]:
+                self.type, self.year = account_type, latest[account_type]
+                self.cur = stmts[(account_type, self.year)]
+                self.prev_year = str(int(self.year) - 1)
+                self.prev = stmts.get((account_type, self.prev_year)) or {}
+                break
+
+    @property
+    def scope(self) -> str:
+        return "group (consolidated) " if self.type == "KONSERN" else ""
+
+    def pair(self, metric: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        cur, prev = self.cur.get(metric), self.prev.get(metric)
+        if cur is None or _amount(cur) is None:
+            return None, None
+        if prev is None or _amount(prev) is None or _cur(prev) != _cur(cur):
+            prev = None
+        return cur, prev
+
+    def headline_clause(self) -> tuple[str, list[dict[str, Any]]]:
+        """'its 2025 accounts show revenue of NOK 50.0 million, up 25% on 2024, and a net loss of NOK 1.0 million'."""
+        if not self.year:
+            return "", []
+        parts, cite = [], []
+        rev, prev_rev = self.pair("revenue")
+        if rev is not None:
+            a = _amount(rev) or 0.0
+            if a == 0:
+                parts.append("no operating revenue")
+            else:
+                text = f"revenue of {money(a, _cur(rev))}"
+                p = _amount(prev_rev) if prev_rev is not None else None
+                if p:
+                    text += f", {_change_words(a, p)} on {self.prev_year}"
+                    cite.append(prev_rev)
+                parts.append(text)
+            cite.append(rev)
+        net, prev_net = self.pair("annual_result")
+        op, _ = self.pair("operating_result")
+        self.lead_has_result_change = False
+        if net is not None:
+            text = f"a {_result_words(_amount(net) or 0.0, _cur(net), 'net')}"
+            cite.append(net)
+            if rev is None and prev_net is not None:  # no revenue to show direction: the result gives it
+                text += f", against {_result_words(_amount(prev_net) or 0.0, _cur(prev_net), 'a')} in {self.prev_year}"
+                cite.append(prev_net)
+                self.lead_has_result_change = True
+            parts.append(text)
+        elif op is not None:
+            parts.append(f"an {_result_words(_amount(op) or 0.0, _cur(op), 'operating')}")
+            cite.append(op)
+        if not parts:
+            return "", []
+        joined = parts[0] if len(parts) == 1 else (", ".join(parts[:-1]) + ("," if "," in parts[0] else "") + " and " + parts[-1])
+        return f"its {self.year} {self.scope}accounts show " + joined, cite
+
+    def result_change(self) -> tuple[str, list[dict[str, Any]]]:
+        """How the net result moved from the year before, or '' when there is no comparable year."""
+        net, prev_net = self.pair("annual_result")
+        if net is None or prev_net is None:
+            return "", []
+        a, p = _amount(net) or 0.0, _amount(prev_net) or 0.0
+        return (f"the {self.scope}net result moved from {_result_words(p, _cur(prev_net), 'a')} in {self.prev_year} "
+                f"to {_result_words(a, _cur(net), 'a')} in {self.year}"), [prev_net, net]
+
+
 def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = None, baseline: bool = True) -> dict[str, Any]:
     extra_ev = {e["id"]: e for ch in (changes or []) for e in (ch.get("previous_evidence") or []) if e.get("id")}
     b = Builder(rec, extra_ev)
@@ -348,10 +502,9 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     name_c = b.first("legal_name")
     name = name_c["value"] if name_c else org
     brand_c = b.first("public_brand_name")
-    brand = brand_c["value"].strip() if brand_c and isinstance(brand_c["value"], str) else None
-    if brand and (brand.lower() in name.lower() or len(brand) < 3):
-        brand = None
-    display = f"{brand} ({name})" if brand else name
+    brand = _clean_brand(brand_c["value"] if brand_c else None, str(name))
+    display = f"{name} ({brand})" if brand else name
+    name_cite = [name_c] + ([brand_c] if brand else [])
     form_c = b.first("legal_form")
     form_code = (form_c["value"] or {}).get("code") if form_c and isinstance(form_c["value"], dict) else None
     form_en = LEGAL_FORMS_EN.get(str(form_code or "").upper())
@@ -368,113 +521,126 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     employees_c = b.first("registered_employees")
     site_c = b.first("official_website")
     site_url = (site_c["value"] or {}).get("url") if site_c and isinstance(site_c["value"], dict) else (site_c["value"] if site_c else None)
-
-    # ---- (a) what the company does ------------------------------------------------------------
-    s: list[dict[str, Any] | None] = []
-    used = [name_c, form_c, muni_c, founded_c, ind_c]
-    if form_en:
-        lead = f"{display} is {'an' if form_en[0] in 'aeiou' else 'a'} {form_en}"
-    elif form_c:
-        lead = f"{display} is a registered Norwegian entity ({(form_c['value'] or {}).get('description')})"
-    else:
-        lead = f"{display} is a registered Norwegian entity"
-    if town:
-        lead += f" in {town}"
-    if founded_c and founded_c.get("value"):
-        lead += f", founded in {str(founded_c['value'])[:4]}"
+    inactive = bool(status_c and status_c["value"] not in ("active", None))
     industry_en = nace_en(ind_code) if ind_code and not str(ind_code).startswith("00") else None
     phrase = INDUSTRY_PHRASES.get(str(ind_code or "")[:5])
     if phrase and str(ind_code or "").startswith("97.00") and str(form_code or "").upper() in ("BRL", "ESEK", "BBL"):
-        phrase = "under industry code"  # the legal form already says what kind of entity it is
-    if phrase == "under industry code":
-        lead += f" (industry code {ind_code})"
-        phrase = None
+        phrase = None  # the legal form already says what kind of entity it is
+    housing = str(form_code or "").upper() in ("BRL", "ESEK", "BBL") and str(ind_code or "")[:2] in ("97", "68")
+    if housing:
+        doing = ""  # "a housing cooperative working in activities of housing cooperatives" says it twice
     elif phrase:
-        lead += f", {phrase} (industry code {ind_code})"
+        doing = phrase
     elif industry_en:
-        lead += f", working in {_lc(industry_en)} (industry code {ind_code})"
+        doing = f"working in {_lc(industry_en)}"
     elif ind_c and ind_code and not str(ind_code).startswith("00"):
-        lead += f", registered under industry code {ind_code} ({ind_no})"
+        doing = f"registered under industry code {ind_code} ({ind_no})"
+    else:
+        doing = ""
+    kind = form_en or "registered Norwegian entity"
+    article = "an" if kind[0] in "aeiou" else "a"
+    stmts = _accounts(b)
+    fin = _Fin(stmts)
+    roles = [c for c in b.claims("role") if isinstance(c["value"], dict)]
+    units = [c for c in b.claims("registered_workplace") if isinstance(c["value"], dict)]
+    groups = [c for c in b.claims("group_relationship") if isinstance(c["value"], dict)]
+    jobs = sorted(b.claims("job_posting"), key=lambda c: job_date(c["value"]), reverse=True)
+    socials = [c for c in b.claims("social_profile") if isinstance(c["value"], (dict, str))]
+    news = sorted(b.claims("company_news"), key=lambda c: news_date(c["value"]), reverse=True)
+
+    # ---- dated events on record (register, filings, own channels) -------------------------------
+    events: list[tuple[str, str, list[dict[str, Any]], str]] = []  # (date, text, claims, kind)
+    for c in news:
+        d = news_date(c["value"])
+        if d:
+            events.append((d, f'news on its website: "{_quote(c["value"].get("title", ""), 90)}"', [c], "news"))
+    for c in jobs:
+        d = job_date(c["value"])
+        if d:
+            events.append((d, f'job ad published: "{_job_title(c)}"', [c], "job"))
+    for c in b.claims("registry_role_change"):
+        v = c["value"] if isinstance(c["value"], dict) else {}
+        d = str(v.get("date") or c.get("effective_date") or "")[:10]
+        group = {"DAGL": "general manager", "STYR": "board", "REVI": "auditor", "REGN": "accountant"}.get(v.get("group_code"), (v.get("event") or "role").replace(" registration last changed", "").lower())
+        if d:
+            events.append((d, f"change to the {group} registration", [c], "role"))
+    for c in b.claims("former_name"):
+        v = c["value"] if isinstance(c["value"], dict) else {}
+        if v.get("to") and v.get("name"):
+            events.append((str(v["to"])[:10], f"renaming from {v.get('name')}", [c], "name"))
+    for c in units:
+        d = c.get("effective_date") or c["value"].get("started")
+        if d:
+            events.append((str(d)[:10], f"registration of workplace {c['value'].get('name')}" + (f" in {_place(c['value'].get('municipality'))}" if c["value"].get("municipality") else ""), [c], "workplace"))
+    for c in groups:
+        v = c["value"]
+        d = v.get("since") or c.get("effective_date")
+        if d and v.get("relationship") in ("parent", "subsidiary", "ultimate_parent"):
+            if v.get("relationship") == "subsidiary":
+                events.append((str(d)[:10], f"group link to subsidiary {v.get('name')}", [c], "subsidiary"))
+            else:
+                events.append((str(d)[:10], f"group link to parent {v.get('name')}", [c], "group"))
+    cap = b.first("share_capital")
+    if cap and cap.get("effective_date") and isinstance(cap["value"], dict):
+        events.append((cap["effective_date"][:10], f"share-capital registration of {money(cap['value'].get('amount'), cap['value'].get('currency'))}", [cap], "capital"))
+    if employees_c and employees_c.get("effective_date"):
+        events.append((employees_c["effective_date"][:10], f"employee-count update to {employees_c['value']}", [employees_c], "employees"))
+    updates = sorted((c for c in b.claims("registry_update") if isinstance(c["value"], dict) and c["value"].get("date")), key=lambda c: c["value"]["date"], reverse=True)
+    if updates:
+        events.append((str(updates[0]["value"]["date"])[:10], "update to the Entity Register record", updates[:1], "register"))
+    if fin.year:
+        figure = fin.cur.get("revenue") or fin.cur.get("annual_result")
+        if figure:
+            events.append((f"{fin.year}-12-31", f"financial year {fin.year} ended (latest filed accounts)", [figure], "accounts"))
+    # Subsidiary links registered on one day are one event.
+    by_day: dict[str, list[tuple[str, str, list[dict[str, Any]], str]]] = {}
+    for e in events:
+        if e[3] == "subsidiary":
+            by_day.setdefault(e[0], []).append(e)
+    for day, items in by_day.items():
+        if len(items) > 1:
+            names = [c["value"].get("name") for _, _, cs, _ in items for c in cs]
+            merged = (day, f"group links to {len(items)} subsidiaries, including {_list(sorted(names)[:2], 2)}", [c for _, _, cs, _ in items for c in cs], "subsidiary")
+            events = [e for e in events if e not in items] + [merged]
+    # Newest first; on the same day a specific change outranks the register's generic "record updated".
+    events.sort(key=lambda e: (e[0], e[3] != "register", e[3], e[1]), reverse=True)
+    register_events = [e for e in events if e[3] not in ("news", "job", "accounts")]
+
+    sections: dict[str, list[dict[str, Any] | None]] = {}
+
+    # ---- company overview ----------------------------------------------------------------------
+    s: list[dict[str, Any] | None] = []
+    ident = f"{display} is {article} {kind}"
+    if form_c and not form_en:
+        ident += f" ({(form_c['value'] or {}).get('description')})"
+    if town:
+        ident += f" in {town}"
+    if founded_c and founded_c.get("value"):
+        ident += f", founded in {str(founded_c['value'])[:4]}"
+    used = name_cite + [form_c, muni_c, founded_c, ind_c]
+    if phrase:
+        ident += f", {phrase} (industry code {ind_code})"
+    elif industry_en:
+        ident += f", working in {_lc(industry_en)} (industry code {ind_code})"
+    elif ind_c and ind_code and not str(ind_code).startswith("00"):
+        ident += f", registered under industry code {ind_code} ({ind_no})"
     elif ind_c:
-        lead += "; the register gives no industry code"
-    if status_c and status_c["value"] not in ("active", None):
-        lead += f". The register marks it as {status_c['value']}"
+        ident += "; the register gives no industry code"
+    if inactive:
+        ident += f". The register marks it as {status_c['value']}"
         used.append(status_c)
         b.signal("status", f"Registry status: {status_c['value']}", [status_c], "negative")
-    lead_sentence = b.sentence(lead + ".", used)
-    s.append(lead_sentence)
-    own_words = None
+    s.append(b.sentence(ident + ".", used))
     if desc_c:
         where = f" ({_host(site_url)})" if site_url else ""
-        own_words = b.sentence(f'On its own website{where} it describes itself as: "{_quote(desc_c["value"], 200)}".', [desc_c])
-        s.append(own_words)
+        s.append(b.sentence(f'On its own website{where} it describes itself as: "{_quote(desc_c["value"], 200)}".', [desc_c] + ([site_c] if site_url else [])))
     if activity_c:
         label = "activity" if activity_c["field"] == "registered_activity" else "purpose"
         s.append(b.sentence(f'The register states its {label} (in Norwegian) as: "{_quote(activity_c["value"], 220)}".', [activity_c]))
-    b.add("what", "What the company does", "What does the company do?", s)
+    sections["what"] = s
 
-    # ---- (b) who is behind it ------------------------------------------------------------------
-    roles = [c for c in b.claims("role") if isinstance(c["value"], dict)]
-    def holders(code: str) -> list[dict[str, Any]]:
-        return [c for c in roles if c["value"].get("role_code") == code]
-    ceo, chair = holders("DAGL"), holders("LEDE")
-    members = [c for c in roles if c["value"].get("group_code") == "STYR" and c["value"].get("role_code") in ("LEDE", "NEST", "MEDL")]
-    owner = holders("INNH") + holders("KOMP")
-    partners = holders("DTPR") + holders("DTSO")
-    auditor, accountant, manager = holders("REVI"), holders("REGN"), holders("FFØR")
+    # ---- latest financials ---------------------------------------------------------------------
     s = []
-    if ceo and chair and ceo[0]["value"].get("name") == chair[0]["value"].get("name"):
-        s.append(b.sentence(f"{ceo[0]['value']['name']} is both general manager (daglig leder) and chair of the board.", [ceo[0], chair[0]]))
-    else:
-        if ceo:
-            s.append(b.sentence(f"The general manager (daglig leder) is {ceo[0]['value'].get('name')}.", ceo[:1]))
-        if chair:
-            s.append(b.sentence(f"The board is chaired by {chair[0]['value'].get('name')}.", chair[:1]))
-    if members:
-        others = [c["value"].get("name") for c in members if c not in chair]
-        if others:
-            s.append(b.sentence(f"The board has {len(members)} member{'s' if len(members) != 1 else ''} including the chair; the others are {_list(others, 4)}.", members))
-        elif len(members) == 1 and chair:
-            s.append(b.sentence("The chair is the only board member.", members))
-    if owner:
-        s.append(b.sentence(f"Owner: {owner[0]['value'].get('name')} ({ROLE_EN.get(owner[0]['value'].get('role_code'), owner[0]['value'].get('role'))}).", owner[:1]))
-    if partners:
-        s.append(b.sentence(f"Partners: {_list([c['value'].get('name') for c in partners], 4)}.", partners))
-    groups = [c for c in b.claims("group_relationship") if isinstance(c["value"], dict)]
-    parents = [c for c in groups if c["value"].get("relationship") == "parent"]
-    ultimate = [c for c in groups if c["value"].get("relationship") == "ultimate_parent"]
-    subs = [c for c in groups if c["value"].get("relationship") == "subsidiary"]
-    if parents:
-        p = parents[0]["value"]
-        share = f" ({p.get('ownership')} owned)" if p.get("ownership") else ""
-        text = f"It is a subsidiary{share} of {p.get('name')} ({p.get('organisation_number')})"
-        cite = parents[:1]
-        if ultimate and ultimate[0]["value"].get("organisation_number") != p.get("organisation_number"):
-            text += f", in the group ultimately owned by {ultimate[0]['value'].get('name')} ({ultimate[0]['value'].get('organisation_number')})"
-            cite = cite + ultimate[:1]
-        s.append(b.sentence(text + ".", cite))
-    elif ultimate:
-        u = ultimate[0]["value"]
-        s.append(b.sentence(f"It belongs to the group ultimately owned by {u.get('name')} ({u.get('organisation_number')}).", ultimate[:1]))
-    if subs:
-        named = [c["value"].get("name") for c in subs]
-        s.append(b.sentence(f"It owns {len(subs)} registered subsidiar{'y' if len(subs) == 1 else 'ies'}: {_list(named, 3)}.", subs[:6]))
-    if manager:
-        s.append(b.sentence(f"Business manager (forretningsfører): {manager[0]['value'].get('name')}.", manager[:1]))
-    if auditor:
-        s.append(b.sentence(f"Auditor: {auditor[0]['value'].get('name')}.", auditor[:1]))
-    if accountant:
-        s.append(b.sentence(f"Accountant: {accountant[0]['value'].get('name')}.", accountant[:1]))
-    if not roles:
-        st = b.state("leadership")
-        reason = st.get("reason") or "not checked"
-        s.append(b.sentence(f"No public roles are recorded ({reason}).", [], checked=st.get("checked_sources", [])))
-    b.add("who", "Who is behind it", "Who runs and owns it?", s)
-
-    # ---- (c) scale and financial shape ---------------------------------------------------------
-    stmts = _accounts(b)
-    s = []
-    money_lines: list[dict[str, Any]] = []
     for account_type in ("SELSKAP", "KONSERN"):
         years = sorted(y for (t, y) in stmts if t == account_type)
         if not years:
@@ -487,10 +653,10 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         parts: list[str] = []
         cite: list[dict[str, Any]] = []
         rev, prev_rev = cur.get("revenue"), (prev or {}).get("revenue")
-        if rev is not None:
-            text = f"revenue of {money(_amount(rev), _cur(rev))}"
+        if rev is not None and _amount(rev) is not None:
+            text = f"revenue of {money(_amount(rev), _cur(rev))}" if _amount(rev) else f"no operating revenue ({money(0.0, _cur(rev))})"
             cite.append(rev)
-            if prev_rev is not None and _cur(prev_rev) == _cur(rev):
+            if prev_rev is not None and _amount(prev_rev) is not None and _cur(prev_rev) == _cur(rev):
                 a, p = _amount(rev) or 0.0, _amount(prev_rev) or 0.0
                 pct = f", {_pct((a - p) / abs(p))}" if p else ""
                 text += f" ({_signed_money(a - p, _cur(rev))}{pct} on {prev_year})"
@@ -505,16 +671,13 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
             text = f"a {_result_words(_amount(net) or 0.0, _cur(net), 'net')}"
             cite.append(net)
             if prev_net is not None and _amount(prev_net) is not None and _cur(prev_net) == _cur(net):
-                pn = _amount(prev_net) or 0.0
-                text += f" (against {_result_words(pn, _cur(prev_net), 'a')} in {prev_year})"
+                text += f" (against {_result_words(_amount(prev_net) or 0.0, _cur(prev_net), 'a')} in {prev_year})"
                 cite.append(prev_net)
             parts.append(text)
         if parts:
-            sentence = f"Its {latest} {scope}accounts show " + _list(parts, 5) + "."
-            money_lines.append(b.sentence(sentence, cite))
-            s.append(money_lines[-1])
+            s.append(b.sentence(f"Its {latest} {scope}accounts show " + _list(parts, 5) + ".", cite))
         eq, assets = cur.get("equity"), cur.get("total_assets")
-        if eq is not None and assets is not None and _amount(assets):
+        if eq is not None and assets is not None and _amount(eq) is not None and _amount(assets):
             ratio = (_amount(eq) or 0.0) / (_amount(assets) or 1.0)
             text = f"Equity was {money(_amount(eq), _cur(eq))} at the end of {latest}"
             prev_eq = (prev or {}).get("equity")
@@ -541,126 +704,131 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
             filed = b.first("latest_filed_accounts_year")
             if filed and str(filed["value"]).isdigit() and int(filed["value"]) > int(latest):
                 s.append(b.sentence(f"The register records accounts for {filed['value']} as filed, but their figures were not yet in the accounts API; the figures above are for {latest}.", [filed]))
+    no_accounts = None
     if not stmts:
         st = b.state("annual_accounts")
         rule = NOT_OBLIGED_TO_FILE.get(str(form_code or "").upper())
         reason = st.get("reason") or "not checked in this run"
         text = f"No filed accounts figures are available ({reason})"
+        cite = []
         if rule and st.get("state") != "failed":
             text += f"; as a {form_en}, it is likely exempt: {rule}"
+            cite = [form_c] if form_c else []
         filed = b.first("latest_filed_accounts_year")
-        cite = [form_c] if rule and form_c else []
         if filed:
             text += f". The register lists {filed['value']} as the latest filed year"
             cite.append(filed)
-        s.append(b.sentence(text + ".", cite, checked=st.get("checked_sources", [])))
+        no_accounts = b.sentence(text + ".", cite, checked=st.get("checked_sources", []))
+        s.append(no_accounts)
+    sections["money"] = s
+
+    # ---- who runs it ---------------------------------------------------------------------------
+    def holders(code: str) -> list[dict[str, Any]]:
+        return [c for c in roles if c["value"].get("role_code") == code]
+
+    ceo, chair = holders("DAGL"), holders("LEDE")
+    members = [c for c in roles if c["value"].get("group_code") == "STYR" and c["value"].get("role_code") in ("LEDE", "NEST", "MEDL")]
+    owner = holders("INNH") + holders("KOMP")
+    partners = holders("DTPR") + holders("DTSO")
+    auditor, accountant, manager = holders("REVI"), holders("REGN"), holders("FFØR")
+    s = []
+    if ceo and chair and ceo[0]["value"].get("name") == chair[0]["value"].get("name"):
+        s.append(b.sentence(f"{ceo[0]['value']['name']} is both general manager (daglig leder) and chair of the board.", [ceo[0], chair[0]]))
+    else:
+        if ceo:
+            s.append(b.sentence(f"The general manager (daglig leder) is {ceo[0]['value'].get('name')}.", ceo[:1]))
+        if chair:
+            s.append(b.sentence(f"The board is chaired by {chair[0]['value'].get('name')}.", chair[:1]))
+    if members:
+        others = [c["value"].get("name") for c in members if c not in chair]
+        if others:
+            rest = "the other is" if len(others) == 1 else "the others are"
+            s.append(b.sentence(f"The board has {len(members)} member{'s' if len(members) != 1 else ''} including the chair; {rest} {_list(others, 4)}.", members))
+        elif len(members) == 1 and chair:
+            s.append(b.sentence("The chair is the only board member.", members))
+    if owner:
+        s.append(b.sentence(f"Owner: {owner[0]['value'].get('name')} ({ROLE_EN.get(owner[0]['value'].get('role_code'), owner[0]['value'].get('role'))}).", owner[:1]))
+    if partners:
+        s.append(b.sentence(f"Partners: {_list([c['value'].get('name') for c in partners], 4)}.", partners))
+    parents = [c for c in groups if c["value"].get("relationship") == "parent"]
+    ultimate = [c for c in groups if c["value"].get("relationship") == "ultimate_parent"]
+    subs = [c for c in groups if c["value"].get("relationship") == "subsidiary"]
+    if parents:
+        p = parents[0]["value"]
+        share = f" ({p.get('ownership')} owned)" if p.get("ownership") else ""
+        text = f"It is a subsidiary{share} of {p.get('name')} ({p.get('organisation_number')})"
+        cite = parents[:1]
+        if ultimate and ultimate[0]["value"].get("organisation_number") != p.get("organisation_number"):
+            text += f", in the group ultimately owned by {ultimate[0]['value'].get('name')} ({ultimate[0]['value'].get('organisation_number')})"
+            cite = cite + ultimate[:1]
+        s.append(b.sentence(text + ".", cite))
+    elif ultimate:
+        u = ultimate[0]["value"]
+        s.append(b.sentence(f"It belongs to the group ultimately owned by {u.get('name')} ({u.get('organisation_number')}).", ultimate[:1]))
+    if subs:
+        named = [c["value"].get("name") for c in subs]
+        s.append(b.sentence(f"It owns {len(subs)} registered subsidiar{'y' if len(subs) == 1 else 'ies'}: {_list(named, 3)}.", subs))
+    if manager:
+        s.append(b.sentence(f"Business manager (forretningsfører): {manager[0]['value'].get('name')}.", manager[:1]))
+    if auditor:
+        s.append(b.sentence(f"Auditor: {auditor[0]['value'].get('name')}.", auditor[:1]))
+    if accountant:
+        s.append(b.sentence(f"Accountant: {accountant[0]['value'].get('name')}.", accountant[:1]))
+    if not roles:
+        st = b.state("leadership")
+        s.append(b.sentence(f"No public roles are recorded ({st.get('reason') or 'not checked'}).", [], checked=st.get("checked_sources", [])))
+    sections["who"] = s
+
+    # ---- working here: job ads, people, places ---------------------------------------------------
+    s = []
+    hiring_state = b.state("hiring")
+    if jobs:
+        nav = [c for c in jobs if _nav_ad(c)]
+        where = []
+        if nav:
+            where.append(f"{len(nav)} in NAV's vacancy feed naming this company or one of its registered workplaces as employer")
+        if len(jobs) > len(nav):
+            where.append(f"{len(jobs) - len(nav)} read on its own careers channel")
+        listed = []
+        for c in jobs[:3]:
+            v = c["value"] if isinstance(c["value"], dict) else {}
+            bits = [x for x in (str(v.get("location") or "").title() or None, f"published {job_date(v)}" if job_date(v) else None, f"apply by {str(v.get('application_due') or v.get('expires'))[:10]}" if (v.get("application_due") or v.get("expires")) else None) if x]
+            listed.append(f'"{_job_title(c)}"' + (f" ({', '.join(bits)})" if bits else ""))
+        s.append(b.sentence(f"Hiring now: {len(jobs)} open job ad{'s' if len(jobs) != 1 else ''} ({'; '.join(where)}): " + _list(listed, 3) + ".", jobs))
+        b.signal("hiring", f"Hiring: {len(jobs)} open job ad{'s' if len(jobs) != 1 else ''}", jobs, "positive")
+    else:
+        reason = hiring_state.get("reason") or "job sources were not checked in this run"
+        state = hiring_state.get("state") or "failed"
+        if state in ("failed", "blocked"):
+            s.append(b.sentence(f"Its job ads could not be fully checked in this run: {reason}.", [], checked=hiring_state.get("checked_sources", [])))
+        else:
+            s.append(b.sentence(f"No single open job ad was found: {reason}. That is not proof that it is not hiring.", [], checked=hiring_state.get("checked_sources", [])))
     size: list[str] = []
     size_cite: list[dict[str, Any]] = []
     if employees_c:
         when = f" (as of {employees_c['effective_date']})" if employees_c.get("effective_date") else ""
         size.append(f"{employees_c['value']} employee{'s' if employees_c['value'] != 1 else ''} in the Entity Register{when}")
         size_cite.append(employees_c)
-    units = [c for c in b.claims("registered_workplace") if isinstance(c["value"], dict)]
     if units:
         towns = sorted({_place(c["value"].get("municipality")) for c in units if c["value"].get("municipality")})
         size.append(f"{len(units)} registered workplace{'s' if len(units) != 1 else ''}" + (f" in {_list(towns, 4)}" if towns else ""))
-        size_cite += units[:6]
+        size_cite += units
     if size:
         s.append(b.sentence("It has " + _list(size) + ".", size_cite))
     elif not employees_c:
         s.append(b.sentence("The register reports no employee count for it.", [], checked=b.state("legal_identity").get("checked_sources", [])))
-    b.add("money", "Size and finances", "How big is it and how is it doing?", s)
+    sections["hiring"] = s
 
-    # ---- (d) what changed ----------------------------------------------------------------------
-    events: list[tuple[str, str, list[dict[str, Any]], str]] = []  # (date, text, claims, kind)
-    for c in b.claims("company_news"):
-        d = news_date(c["value"])
-        if d:
-            events.append((d, f'news on its website: "{_quote(c["value"].get("title", ""), 90)}"', [c], "news"))
-    for c in b.claims("job_posting"):
-        d = job_date(c["value"])
-        if d:
-            events.append((d, f'job ad published: "{_quote(c["value"].get("title", ""), 70)}"', [c], "job"))
-    for c in b.claims("registry_role_change"):
-        v = c["value"] if isinstance(c["value"], dict) else {}
-        d = str(v.get("date") or c.get("effective_date") or "")[:10]
-        group = {"DAGL": "general manager", "STYR": "board", "REVI": "auditor", "REGN": "accountant"}.get(v.get("group_code"), (v.get("event") or "role").replace(" registration last changed", "").lower())
-        if d:
-            events.append((d, f"{group} registration changed", [c], "role"))
-    for c in b.claims("former_name"):
-        v = c["value"] if isinstance(c["value"], dict) else {}
-        if v.get("to"):
-            events.append((str(v["to"])[:10], f"renamed from {v.get('name')}", [c], "name"))
-    for c in units:
-        d = c.get("effective_date") or c["value"].get("started")
-        if d:
-            events.append((str(d)[:10], f"workplace {c['value'].get('name')} registered" + (f" in {_place(c['value'].get('municipality'))}" if c["value"].get("municipality") else ""), [c], "workplace"))
-    for c in groups:
-        v = c["value"]
-        d = v.get("since") or c.get("effective_date")
-        if d and v.get("relationship") in ("parent", "subsidiary", "ultimate_parent"):
-            what = f"became part of {v.get('name')}'s group" if v.get("relationship") != "subsidiary" else f"group link to subsidiary {v.get('name')} registered"
-            events.append((str(d)[:10], what, [c], "group"))
-    cap = b.first("share_capital")
-    if cap and cap.get("effective_date") and isinstance(cap["value"], dict):
-        events.append((cap["effective_date"][:10], f"share capital registered as {money(cap['value'].get('amount'), cap['value'].get('currency'))}", [cap], "capital"))
-    if employees_c and employees_c.get("effective_date"):
-        events.append((employees_c["effective_date"][:10], f"employee count updated to {employees_c['value']}", [employees_c], "employees"))
-    updates = sorted((c for c in b.claims("registry_update") if isinstance(c["value"], dict) and c["value"].get("date")), key=lambda c: c["value"]["date"], reverse=True)
-    if updates:
-        events.append((str(updates[0]["value"]["date"])[:10], "Entity Register record updated", updates[:1], "register"))
-    selskap_years = sorted(y for (t, y) in stmts if t == "SELSKAP" and y.isdigit())
-    if selskap_years:
-        y = selskap_years[-1]
-        cur = stmts[("SELSKAP", y)]
-        figure = cur.get("revenue") or cur.get("annual_result")
-        if figure:
-            events.append((f"{y}-12-31", f"financial year {y} ended (latest filed accounts)", [figure], "accounts"))
-    events.sort(key=lambda e: e[0], reverse=True)
+    # ---- recent activity: dated news, website, profiles ------------------------------------------
     s = []
-    if changes:
-        material = [c for c in changes if c.get("materiality") in ("high", "medium")] or changes
-        lines = [_humanize_change(c) for c in material[:5]]
-        claims_for_change = [{"id": c.get("current_claim_id") or c.get("previous_claim_id"), "evidence_ids": (c.get("current_evidence_ids") or []) + (c.get("previous_evidence_ids") or [])} for c in changes[:12]]
-        more = f" (and {len(changes) - len(lines)} more)" if len(changes) > len(lines) else ""
-        s.append(b.sentence(f"Since the previous run, {len(changes)} change{'s were' if len(changes) != 1 else ' was'} detected: " + "; ".join(lines) + more + ".", claims_for_change, basis="run_to_run"))
-    elif baseline:
-        s.append(b.sentence("This is the first run for this company, so there is no earlier snapshot to compare with; later runs report changes against it.", [], basis="run_to_run"))
+    if news:
+        latest = news[:2]
+        items = [f'"{_quote(c["value"].get("title", ""), 100)}" ({news_date(c["value"])})' for c in latest]
+        s.append(b.sentence(f"{len(news)} dated news item{'s' if len(news) != 1 else ''} on its own channels; the latest {'is' if len(latest) == 1 else 'are'} " + _list(items, 2) + ".", news))
+        b.signal("news", f"Latest news {news_date(news[0]['value'])}", news[:1], "neutral")
     else:
-        s.append(b.sentence("Compared with the previous run, no published fact changed in the sources that were re-checked.", [], basis="run_to_run"))
-    stale = [c for field, items in b.by_field.items() for c in items if c.get("stale")]
-    if stale:
-        fields = sorted({FIELD_WORDS.get(c["field"], c["field"].replace("_", " ")) for c in stale})
-        s.append(b.sentence(f"{len(stale)} fact{'s' if len(stale) != 1 else ''} could not be re-checked this run and {'are' if len(stale) != 1 else 'is'} carried forward from the previous run, marked as not re-checked: {_list(fields, 5)}.", stale[:8], basis="carried_forward"))
-    if events:
-        top = events[:5]
-        s.append(b.sentence("Most recent dated events: " + "; ".join(f"{d} {t}" for d, t, _, _ in top) + ".", [c for _, _, cs, _ in top for c in cs]))
-    b.add("changed", "What changed", "What changed recently?", s)
-    timeline = [
-        {"date": d, "text": t, "kind": k, "claim_ids": sorted({c["id"] for c in cs if c.get("id")}), "evidence_ids": sorted({e for c in cs for e in c.get("evidence_ids", [])})}
-        for d, t, cs, k in events[:30]
-    ]
-
-    # ---- (e) signals: hiring, web footprint, group -------------------------------------------
-    jobs = b.claims("job_posting")
-    socials = [c for c in b.claims("social_profile") if isinstance(c["value"], dict) or isinstance(c["value"], str)]
-    news = sorted(b.claims("company_news"), key=lambda c: news_date(c["value"]), reverse=True)
-    s = []
-    if jobs:
-        titles = [f'"{_quote(c["value"].get("title", ""), 60)}"' for c in jobs[:3] if isinstance(c["value"], dict)]
-        # Only NAV's feed names the employer's organisation number; a site ad was read on the
-        # company's own careers channel and names it (or no one else) as employer.
-        nav = [c for c in jobs if _nav_ad(c)]
-        where = []
-        if nav:
-            where.append(f"{len(nav)} in NAV's vacancy feed verified to this organisation number")
-        if len(jobs) > len(nav):
-            where.append(f"{len(jobs) - len(nav)} read on its own careers channel")
-        s.append(b.sentence(f"Hiring now: {len(jobs)} open job ad{'s' if len(jobs) != 1 else ''} ({'; '.join(where)})" + (f", for example {_list(titles, 3)}" if titles else "") + ".", jobs[:6]))
-        b.signal("hiring", f"Hiring: {len(jobs)} open job ad{'s' if len(jobs) != 1 else ''}", jobs, "positive")
-    else:
-        st = b.state("hiring")
-        s.append(b.sentence(f"No single open job ad was found: {st.get('reason') or 'job sources were not checked in this run'}.", [], checked=st.get("checked_sources", [])))
+        st = b.state("public_activity")
+        s.append(b.sentence("No dated news item was found on its own channels.", [], checked=st.get("checked_sources", [])))
     if site_c:
         method = str((site_c["value"] or {}).get("identity_method", "")) if isinstance(site_c["value"], dict) else ""
         if "organisation_number" in method:
@@ -675,11 +843,7 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         s.append(b.sentence(f"Its website is {site_url} ({proof}).{group_site}", [site_c]))
     if socials:
         platforms = sorted({(c["value"].get("platform") if isinstance(c["value"], dict) else _host(str(c["value"])).split(".")[0]).title() for c in socials})
-        s.append(b.sentence(f"Social profiles linked from its own channels: {_list(platforms, 6)}.", socials[:6]))
-    if news:
-        latest_news = news[0]
-        s.append(b.sentence(f'{len(news)} dated news item{"s" if len(news) != 1 else ""} on its own channels; the latest ({news_date(latest_news["value"])}) is "{_quote(latest_news["value"].get("title", ""), 100)}".', news[:3]))
-        b.signal("news", f"Latest news {news_date(latest_news['value'])}", news[:1], "neutral")
+        s.append(b.sentence(f"Social profiles linked from its own channels: {_list(platforms, 6)}.", socials))
     if site_c or socials:
         b.signal("web", "Verified web presence: " + _list(([_host(site_url)] if site_url else []) + [c["value"].get("platform", "").title() for c in socials if isinstance(c["value"], dict)], 4), ([site_c] if site_c else []) + socials[:3], "neutral")
     if parents or ultimate:
@@ -687,9 +851,51 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         b.signal("group", f"Part of a group ({top_parent['value'].get('name')})", [top_parent], "neutral")
     elif subs:
         b.signal("group", f"Parent of {len(subs)} subsidiar{'y' if len(subs) == 1 else 'ies'}", subs[:3], "neutral")
-    b.add("signals", "Hiring and web presence", "Is it hiring, and where is it online?", s)
+    sections["activity"] = s
 
-    # ---- (f) what remains unknown --------------------------------------------------------------
+    # ---- what changed: run to run, and on record --------------------------------------------------
+    s = []
+    run_line = None
+    if changes:
+        material = [c for c in changes if c.get("materiality") in ("high", "medium")] or changes
+        lines = [_humanize_change(c) for c in material[:5]]
+        claims_for_change = [{"id": c.get("current_claim_id") or c.get("previous_claim_id"), "evidence_ids": (c.get("current_evidence_ids") or []) + (c.get("previous_evidence_ids") or [])} for c in changes]
+        more = f" (and {len(changes) - len(lines)} more)" if len(changes) > len(lines) else ""
+        run_line = b.sentence(f"Since the previous run, {len(changes)} change{'s were' if len(changes) != 1 else ' was'} detected: " + "; ".join(lines) + more + ".", claims_for_change, basis="run_to_run")
+    elif baseline:
+        run_line = b.sentence("This is the first run for this company, so there is no earlier snapshot to compare with; later runs report changes against it.", [], basis="run_to_run")
+    else:
+        run_line = b.sentence("Compared with the previous run, no published fact changed in the sources that were re-checked.", [], basis="run_to_run")
+    s.append(run_line)
+    stale = [c for field, items in b.by_field.items() for c in items if c.get("stale")]
+    if stale:
+        fields = sorted({FIELD_WORDS.get(c["field"], c["field"].replace("_", " ")) for c in stale})
+        s.append(b.sentence(f"{len(stale)} fact{'s' if len(stale) != 1 else ''} could not be re-checked this run and {'are' if len(stale) != 1 else 'is'} carried forward from the previous run, marked as not re-checked: {_list(fields, 5)}.", stale, basis="carried_forward"))
+    filing_text, filing_cite = fin.result_change()
+    rev, prev_rev = fin.pair("revenue")
+    if rev is not None and prev_rev is not None and _amount(prev_rev):
+        a, p = _amount(rev) or 0.0, _amount(prev_rev) or 0.0
+        rev_text = f"revenue went from {money(p, _cur(prev_rev))} in {fin.prev_year} to {money(a, _cur(rev))} in {fin.year} ({_pct((a - p) / abs(p))})"
+        filing_text = rev_text + (" and " + filing_text if filing_text else "")
+        filing_cite = [prev_rev, rev] + filing_cite
+    filing_line = None
+    if filing_text:
+        filing_line = b.sentence(f"In the filed {fin.scope}accounts, {filing_text}.", filing_cite)
+    elif fin.year:
+        figure = fin.cur.get("revenue") or fin.cur.get("annual_result") or next(iter(fin.cur.values()))
+        filing_line = b.sentence(f"The latest filed {fin.scope}accounts are for {fin.year}; the accounts register returned no comparable earlier year.", [figure])
+    if filing_line:
+        s.append(filing_line)
+    if register_events:
+        top = register_events[:4]
+        s.append(b.sentence("Latest changes in the Entity Register: " + "; ".join(f"{t} ({d})" for d, t, _, _ in top) + ".", [c for _, _, cs, _ in top for c in cs]))
+    sections["changed"] = s
+    timeline = [
+        {"date": d, "text": t, "kind": k, "claim_ids": sorted({c["id"] for c in cs if c.get("id")}), "evidence_ids": sorted({e for c in cs for e in c.get("evidence_ids", [])})}
+        for d, t, cs, k in events[:20]
+    ]
+
+    # ---- what we could not establish -------------------------------------------------------------
     unknowns: list[dict[str, Any]] = []
     present = {
         "official_website": bool(site_c),
@@ -712,21 +918,154 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
             state, reason = "not_available", "no dated news item found on the company's own channels" if family == "public_activity" else "no evidence-backed value found"
         if state == "not_applicable" and family in ("workplaces",):
             continue
-        unknowns.append({"family": family, "label": FAMILY_LABELS.get(family, family), "state": state, "state_words": STATE_WORDS.get(state, state), "reason": reason, "checked_sources": (st.get("checked_sources") or [])[:4]})
+        unknowns.append({"family": family, "label": FAMILY_LABELS.get(family, family), "state": state, "state_words": STATE_WORDS.get(state, state), "reason": reason, "checked_sources": (st.get("checked_sources") or [])[:3]})
     s = []
+    for u in unknowns:
+        label = u["label"][:1].upper() + u["label"][1:]
+        generic = u["reason"] in GENERIC_REASONS
+        if u["state"] == "not_available":
+            text = f"{label}: not available ({'checked, none found' if generic else u['reason']})."
+        else:
+            text = f"{label}: {STATE_LONG.get(u['state'], u['state'])}" + ("" if generic else f" ({u['reason']})") + "."
+        s.append(b.sentence(text, [], basis="unknown"))  # its checked sources are in ``unknowns``
     if unknowns:
-        external = [u for u in unknowns if u["family"] in ("official_website", "company_profiles", "hiring", "public_activity")]
-        other = [u for u in unknowns if u not in external]
-        if external:
-            s.append(b.sentence("Not established: " + "; ".join(f"{u['label']} ({u['state_words']}: {u['reason']})" for u in external) + ".", [], basis="unknown", checked=[x for u in external for x in u["checked_sources"]]))
-        if other:
-            s.append(b.sentence("Also missing: " + "; ".join(f"{u['label']} ({u['state_words']})" for u in other) + ".", [], basis="unknown", checked=[x for u in other for x in u["checked_sources"]]))
         s.append(b.sentence("Missing data is reported as missing, never as zero or as a negative fact.", [], basis="unknown"))
     else:
         s.append(b.sentence("Every profile area has at least one evidence-backed fact.", [], basis="unknown"))
-    b.add("unknown", "What remains unknown", "What could not be established?", s)
+    sections["unknown"] = s
 
-    # ---- coverage, headline, 20-second summary -----------------------------------------------
+    # ---- the brief: two sentences to act on, then what changed and what is unknown ----------------
+    lead = f"{display} is {article} {kind}"
+    if town:
+        lead += f" in {town}"
+    if doing:
+        lead += f" {doing}" if not doing.startswith("registered as") else f", {doing}"
+    lead_cite = name_cite + [form_c, muni_c, ind_c]
+    if employees_c:
+        lead += f", with {employees_c['value']} employee{'s' if employees_c['value'] != 1 else ''} in the register"
+        lead_cite.append(employees_c)
+    if inactive:
+        lead += f"; the register marks it as {status_c['value']}"
+        lead_cite.append(status_c)
+    clause, fin_cite = fin.headline_clause()
+    lead_checked: list[str] = []
+    if clause:
+        lead += "; " + clause
+        lead_cite += fin_cite
+    elif not stmts:
+        st = b.state("annual_accounts")
+        rule = NOT_OBLIGED_TO_FILE.get(str(form_code or "").upper())
+        if rule and st.get("state") != "failed":
+            lead += f"; it has no filed accounts figures ({rule})"
+        else:
+            lead += "; no filed accounts figures are available"
+        lead_checked = st.get("checked_sources", [])
+    lead1 = b.sentence(lead + ".", lead_cite, checked=lead_checked)
+
+    if jobs:
+        first = jobs[0]
+        when = f", published {job_date(first['value'])}" if job_date(first["value"]) else ""
+        hire = f'It is hiring: {len(jobs)} open job ad{"s" if len(jobs) != 1 else ""}, the latest "{_job_title(first, 60)}"{when}'
+        hire_cite, hire_checked = jobs, []
+    else:
+        state = hiring_state.get("state") or "failed"
+        if state in ("failed", "blocked"):
+            hire = "Its job ads could not be fully checked in this run"
+        else:
+            hire = f"No open job ad was found {_hiring_where(hiring_state)}"
+        hire_cite, hire_checked = [], hiring_state.get("checked_sources", [])
+    used_event = None
+    if news:
+        c = news[0]
+        act = f'; its latest dated news is "{_quote(c["value"].get("title", ""), 80)}" ({news_date(c["value"])}) on its own website'
+        act_cite = [c]
+    elif register_events:
+        used_event = register_events[0]
+        d, t, cs, k = used_event
+        act = f"; its Entity Register record was last updated on {d}" if k == "register" else f"; the latest dated event on record is the {t} ({d})"
+        act_cite = cs
+    else:
+        act, act_cite = "; no dated activity was found in the sources checked", []
+    if not jobs and not act_cite and hire.startswith("No open job ad was found "):
+        act = ", and no dated activity appears in the sources checked"
+    lead2 = b.sentence(hire + act + ".", hire_cite + act_cite, checked=hire_checked)
+
+    leader = None
+    lead_bits: list[str] = []
+    leader_cite: list[dict[str, Any]] = []
+    if ceo and chair and ceo[0]["value"].get("name") == chair[0]["value"].get("name"):
+        lead_bits.append(f"{ceo[0]['value'].get('name')} is both general manager and board chair")
+        leader_cite += [ceo[0], chair[0]]
+    else:
+        if ceo:
+            lead_bits.append(f"{ceo[0]['value'].get('name')} is general manager")
+            leader_cite.append(ceo[0])
+        if chair:
+            lead_bits.append(f"{chair[0]['value'].get('name')} chairs the board")
+            leader_cite.append(chair[0])
+    if not lead_bits and owner:
+        lead_bits.append(f"{owner[0]['value'].get('name')} is registered as {ROLE_EN.get(owner[0]['value'].get('role_code'), 'owner')}")
+        leader_cite.append(owner[0])
+    group_bit = None
+    if parents:
+        p = parents[0]["value"]
+        group_bit = f"it is a subsidiary of {p.get('name')} ({p.get('organisation_number')})"
+        leader_cite.append(parents[0])
+    elif ultimate:
+        u = ultimate[0]["value"]
+        group_bit = f"it belongs to the group of {u.get('name')} ({u.get('organisation_number')})"
+        leader_cite.append(ultimate[0])
+    if lead_bits or group_bit:
+        text = "; ".join(x for x in (_list(lead_bits, 3), group_bit) if x)
+        leader = b.sentence(text[:1].upper() + text[1:] + ".", leader_cite)
+
+    if changes:
+        changed = run_line
+    else:
+        start = "This is the first run for this company, so nothing is compared yet" if baseline else "Compared with the previous run, no published fact changed in the sources re-checked"
+        bits, bits_cite = [], []
+        result_text, result_cite = fin.result_change() if not getattr(fin, "lead_has_result_change", False) else ("", [])
+        if result_text:
+            bits.append(result_text)
+            bits_cite += result_cite
+        elif fin.year and not clause:
+            figure = fin.cur.get("revenue") or fin.cur.get("annual_result") or next(iter(fin.cur.values()))
+            bits.append(f"its latest filed {fin.scope}accounts are for {fin.year}")
+            bits_cite.append(figure)
+        later = [e for e in register_events if e is not used_event][:1]
+        for d, t, cs, k in later:
+            bits.append(f"the latest register change is the {t} ({d})")
+            bits_cite += cs
+        changed = b.sentence(start + (("; on record, " + ", and ".join(bits)) if bits else "") + ".", bits_cite, basis="fact" if bits else "run_to_run")
+    if unknowns:
+        names = [f"{u['label']} ({STATE_SHORT.get(u['state'], u['state'])})" for u in unknowns if u["family"] in ("official_website", "company_profiles", "hiring", "public_activity", "annual_accounts", "leadership")]
+        names = names or [f"{u['label']} ({STATE_SHORT.get(u['state'], u['state'])})" for u in unknowns]
+        gap = b.sentence("Not established in this run: " + "; ".join(names) + ".", [], basis="unknown", checked=[x for u in unknowns for x in u["checked_sources"]])
+    else:
+        gap = b.sentence("Every profile area has at least one evidence-backed fact.", [], basis="unknown")
+    summary_sentences = [lead1, lead2, leader, changed, gap]
+
+    # ---- support check: every sentence's numbers, names and quotes must be in what it cites ------
+    by_id = {c["id"]: c for items in b.by_field.values() for c in items if c.get("id")}
+    reasons = sorted({str(st.get("reason")) for st in rec.family_state.values() if st.get("reason")})
+    change_values = [c.get(k) for c in (changes or []) for k in ("previous", "current", "summary")]
+    names_on_record = _names_on_record(b)
+    checked_total = dropped = 0
+
+    def keep(sentence: dict[str, Any] | None) -> bool:
+        nonlocal checked_total, dropped
+        if not sentence or not sentence.get("text"):
+            return False
+        checked_total += 1
+        if sentence_support(sentence, by_id, reasons, change_values, names_on_record):
+            dropped += 1
+            return False
+        return True
+
+    for key, heading, question in SECTION_SPEC:
+        b.add(key, heading, question, [x for x in sections.get(key, []) if keep(x)])
+    summary_sentences = [x for x in summary_sentences if keep(x)]
+
     coverage_flags = {
         "company": bool(name_c),
         "financials": bool(stmts),
@@ -739,38 +1078,12 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         "total": len(COVERAGE_AREAS),
         "areas": [{"key": k, "label": label, "available": coverage_flags[k]} for k, label in COVERAGE_AREAS],
     }
-    headline_bits = [display]
     if phrase:
-        headline_bits.append(phrase.replace("registered as ", ""))
-    elif industry_en:
-        headline_bits.append(_lc(industry_en))
-    if town:
-        headline_bits.append(town)
-    summary_sentences = [lead_sentence]
-    if own_words:
-        summary_sentences.append(own_words)
-    who = next((sec for sec in b.sections if sec["key"] == "who"), None)
-    if who and who["sentences"]:
-        summary_sentences.append(who["sentences"][0])
-    if money_lines:
-        summary_sentences.append(money_lines[0])
-    elif not stmts:
-        sec = next((x for x in b.sections if x["key"] == "money"), None)
-        if sec:
-            summary_sentences.append(sec["sentences"][0])
-    if events:
-        d, t, cs, _ = events[0]
-        summary_sentences.append(b.sentence(f"Latest dated event: {t} ({d}).", cs))
-    found: list[str] = []
-    missing: list[str] = []
-    (found if site_url else missing).append(f"website {_host(site_url)}" if site_url else "website")
-    (found if socials else missing).append(f"{len(socials)} social profile{'s' if len(socials) != 1 else ''}" if socials else "social profiles")
-    (found if jobs else missing).append(f"{len(jobs)} open job ad{'s' if len(jobs) != 1 else ''}" if jobs else "job ads")
-    (found if news else missing).append(f"{len(news)} dated news item{'s' if len(news) != 1 else ''}" if news else "dated news")
-    found, missing = [x for x in found if x], [x for x in missing if x]
-    text = ("Online: " + _list(found, 5) + ("; not found: " + _list(missing, 5) if missing else "") + ".") if found else "No verified website, social profile, job ad or dated news item was found (see what remains unknown)."
-    summary_sentences.append(b.sentence(text, ([site_c] if site_c else []) + socials[:3] + jobs[:3] + news[:2], checked=[] if found else [u for x in unknowns for u in x["checked_sources"]]))
-    headline = " · ".join(x for x in headline_bits if x)
+        industry_label = phrase.replace("registered as a ", "").replace("registered as an ", "").replace("registered as ", "")
+    else:
+        industry_label = industry_en or (ind_no if ind_code and not str(ind_code).startswith("00") else "")
+    industry_label = industry_label[:1].upper() + industry_label[1:] if industry_label else ""
+    headline = " · ".join(x for x in (display, industry_label, town) if x)
     return {
         "headline": headline,
         "summary": " ".join(x["text"] for x in summary_sentences),
@@ -781,8 +1094,114 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         "signals": b.signals,
         "unknowns": unknowns,
         "coverage": coverage,
-        "method": "deterministic template over this run's published claims; every sentence cites its claims, evidence and source URLs; computed figures are labelled; no language model",
+        "checks": {"sentences": checked_total, "unsupported_dropped": dropped},
+        "method": "deterministic template over this run's claims; every sentence cites its claims and sources and passes a support check; no language model",
     }
+
+
+# -- sentence-support check --------------------------------------------------------------------
+
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+_QUOTED = re.compile(r'"([^"]{3,})"')
+
+
+def _canon_number(text: str) -> str | None:
+    text = text.replace(",", "")
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return str(int(value)) if value.is_integer() else f"{value:g}"
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _strings(v)]
+    if value is None or isinstance(value, bool):
+        return []
+    return [str(value)]
+
+
+def _amounts(value: Any) -> list[float]:
+    out = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == "amount" and isinstance(v, (int, float)):
+                out.append(float(v))
+            else:
+                out += _amounts(v)
+    return out
+
+
+def _names_on_record(b: Builder) -> set[str]:
+    """Names and titles a sentence could state: people, related companies, workplaces, ads and news."""
+    names: set[str] = set()
+    for field, key in (("role", "name"), ("group_relationship", "name"), ("registered_workplace", "name"), ("job_posting", "title"), ("company_news", "title"), ("former_name", "name")):
+        for c in b.claims(field):
+            v = c["value"] if isinstance(c["value"], dict) else {}
+            text = " ".join(str(v.get(key) or "").split())
+            if len(text) >= 5:
+                names.add(text)
+    return names
+
+
+def sentence_support(sentence: dict[str, Any], claims_by_id: dict[str, dict[str, Any]], reasons: Iterable[str] = (), change_values: Iterable[Any] = (), names_on_record: Iterable[str] = ()) -> list[str]:
+    """What a sentence states that the claims it cites do not contain (empty when fully supported).
+
+    Checked: every cited claim id exists; every number in the text is a value of a cited claim, a
+    formatting of one (``NOK 50.0 million``), arithmetic on two of them (difference, change, ratio),
+    a count no larger than the number of cited claims, part of an availability reason the sentence
+    quotes verbatim, or (for a run-to-run sentence) part of a change record; every quoted passage is a substring of a cited value; and every person, company,
+    ad or news title on record that the sentence names appears in a cited claim."""
+    problems: list[str] = []
+    text = sentence.get("text") or ""
+    basis = sentence.get("basis", "fact")
+    ids = sentence.get("claim_ids") or []
+    cited = [claims_by_id[i] for i in ids if i in claims_by_id]
+    if basis not in ("run_to_run",):
+        problems += [f"cites unknown claim {i}" for i in ids if i not in claims_by_id]
+    strings: list[str] = []
+    amounts: list[float] = []
+    for c in cited:
+        strings += _strings(c.get("value"))
+        strings += [str(c.get(k)) for k in ("effective_date", "reporting_period", "first_observed_at") if c.get(k)]
+        amounts += _amounts(c.get("value"))
+        if isinstance(c.get("value"), (int, float)) and not isinstance(c.get("value"), bool):
+            amounts.append(float(c["value"]))
+    strings += [r for r in reasons if r and r in text]
+    if basis == "run_to_run":
+        strings += [s for x in change_values for s in _strings(x)]
+        amounts += [a for x in change_values for a in _amounts(x)]
+    allowed: set[str] = set()
+    for s in strings:
+        allowed |= {n for n in (_canon_number(m) for m in _NUMBER.findall(s)) if n}
+    formatted = [money(a) for a in amounts] + [money(abs(a)) for a in amounts]
+    for i, a in enumerate(amounts):
+        for p in amounts[:i] + amounts[i + 1:]:
+            formatted.append(money(abs(a - p)))
+            if p:
+                allowed.add(str(round(abs(a - p) / abs(p) * 100)))
+                allowed.add(f"{abs(a - p) / abs(p) * 100:,.0f}".replace(",", ""))
+                allowed.add(str(abs(int(f"{a / p * 100:.0f}"))))
+    for f in formatted:
+        allowed |= {n for n in (_canon_number(m) for m in _NUMBER.findall(f)) if n}
+    allowed |= {str(n) for n in range(0, len(cited) + 1)}
+    allowed |= {str(round(a)) for a in amounts}
+    for m in _NUMBER.findall(text):
+        n = _canon_number(m)
+        if n is not None and n not in allowed:
+            problems.append(f"number {m} is not in the cited claims")
+    flat = [" ".join(s.split()) for s in strings]
+    for q in _QUOTED.findall(text):
+        q = " ".join(q.split()).removesuffix(" …").rstrip(" .")
+        if q and not any(q in s for s in flat):
+            problems.append(f'quote "{q[:40]}" is not in the cited claims')
+    for name in names_on_record:
+        if name in text and not any(name in s for s in flat):
+            problems.append(f"names {name[:40]} without citing it")
+    return problems
 
 
 def _markdown(headline: str, summary: list[dict[str, Any]], sections: list[dict[str, Any]]) -> str:
@@ -801,9 +1220,9 @@ def _markdown(headline: str, summary: list[dict[str, Any]], sections: list[dict[
         carried = " (carried forward from the previous run; not re-checked)" if sentence.get("basis") == "carried_forward" and "carried forward" not in sentence["text"] else ""
         return sentence["text"] + carried + (f" {tag}" if tag else "")
 
-    lines = [f"**{headline}**", "", "In short: " + " ".join(mark(s) for s in summary), ""]
+    lines = [f"**{headline}**", "", "**Company brief** " + " ".join(mark(s) for s in summary), ""]
     for sec in sections:
-        lines += [f"**{sec.get('question') or sec.get('heading')}** " + " ".join(mark(s) for s in sec["sentences"]), ""]
+        lines += [f"**{sec.get('heading')}** " + " ".join(mark(s) for s in sec["sentences"]), ""]
     if refs:
         lines.append("Sources:")
         lines += [f"[{n}] {url} ({note})" for url, (n, note) in sorted(refs.items(), key=lambda kv: kv[1][0])]
