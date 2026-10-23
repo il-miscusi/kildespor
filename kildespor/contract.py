@@ -1,10 +1,11 @@
 """Write envelopes in the evaluator's claim vocabulary, and read them back.
 
-Internally a website, profile, careers page, job ad or news item is one claim
-whose value is a dict (url, platform, title, dates ...). Builderr's feedback
-keys these facts as plain strings: a website by its domain, a profile by
-``facebook.com/<handle>``, a hiring signal by the careers page or the ad's URL,
-a news item as ``"<title> (<published>)"``. On disk every such claim therefore
+Internally a website, profile, job ad or news item is one claim whose value
+is a dict (url, platform, title, dates ...). Builderr's feedback keys these
+facts as plain strings: a website by its domain, a profile by
+``facebook.com/<handle>``, a hiring signal by the URL of one single ad, a news
+item as ``"<title> (<published>)"``. A careers page is never a hiring signal:
+it lists ads, and it appears only as a checked source of the hiring verdict. On disk every such claim therefore
 carries a scalar ``value`` in one of four fields (``official_website``,
 ``social_profile``, ``hiring_signal``, ``dated_news``) and keeps the full dict
 in ``detail``. ``internal()`` reverses this, so refresh compares like with
@@ -26,7 +27,6 @@ NEWS_PATH = re.compile(r"/(?:news|press|aktuelt|nyheter|artikler|blog)(?:/|$)", 
 PUBLISHED_FIELD = {
     "official_website": "official_website",
     "social_profile": "social_profile",
-    "careers_page": "hiring_signal",
     "job_posting": "hiring_signal",
     "company_news": "dated_news",
 }
@@ -95,6 +95,8 @@ def publish(envelope: dict[str, Any]) -> dict[str, Any]:
     published_available: set[str] = set()
     for claim in envelope.get("claims", []):
         field = claim.get("field")
+        if not _publishable(claim):
+            continue
         if field in PUBLISHED_FIELD and claim.get("availability") == "available":
             item = dict(claim)
             item["field"] = PUBLISHED_FIELD[field]
@@ -103,10 +105,8 @@ def publish(envelope: dict[str, Any]) -> dict[str, Any]:
                 item["detail"] = claim["value"]
             if field != item["field"]:
                 item["internal_field"] = field
-            if field in ("careers_page", "job_posting"):
-                item["signal_type"] = field
-                if isinstance(claim.get("value"), dict) and claim["value"].get("title"):
-                    item["title"] = claim["value"]["title"]
+            if field == "job_posting":
+                item["title"] = claim["value"]["title"]
             if field == "company_news" and isinstance(claim.get("value"), dict):
                 item["url"] = claim["value"].get("url")
                 item["published_at"] = claim["value"].get("published") or claim["value"].get("date")
@@ -156,20 +156,36 @@ def publish(envelope: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _publishable(claim: dict[str, Any]) -> bool:
+    """False for a hiring claim that is not one single ad: a careers page (any shape), or a job
+    claim with no title (defence in depth: only a read ad has one)."""
+    field = claim.get("internal_field") or claim.get("field")
+    if field == "careers_page" or claim.get("signal_type") == "careers_page":
+        return False
+    if field in ("job_posting", "hiring_signal") and claim.get("availability") == "available":
+        value = claim.get("detail") if isinstance(claim.get("detail"), dict) else claim.get("value")
+        return isinstance(value, dict) and bool(str(value.get("title") or "").strip())
+    return True
+
+
 def internal(envelope: dict[str, Any]) -> dict[str, Any]:
-    """Undo ``publish`` for one envelope read back from disk (refresh baseline)."""
-    if not any("internal_field" in c or "detail" in c for c in envelope.get("claims", [])):
-        return envelope
+    """Undo ``publish`` for one envelope read back from disk (refresh baseline).
+
+    A baseline written before careers pages stopped being hiring signals still holds them as
+    ``hiring_signal`` claims: they are dropped here, silently, so refresh neither carries them
+    forward as stale nor reports their absence as a closed job."""
     out = dict(envelope)
     claims = []
     for claim in envelope.get("claims", []):
+        if not _publishable(claim):
+            continue
         item = dict(claim)
         origin = item.pop("internal_field", None)
         if origin:
             item["field"] = origin
         if "detail" in item:
             item["value"] = item.pop("detail")
-        if origin in ("careers_page", "job_posting", "company_news"):
+        if origin in ("job_posting", "company_news"):
             for extra in ("signal_type", "title", "url", "published_at"):
                 item.pop(extra, None)
         claims.append(item)
@@ -232,7 +248,7 @@ def kit_profile(envelope: dict[str, Any]) -> dict[str, Any]:
     for claim in claims:
         if len(pages) >= 12:
             break
-        if claim.get("field") not in ("company_news", "careers_page", "job_posting"):
+        if claim.get("field") not in ("company_news", "job_posting"):
             continue
         detail = claim.get("value")
         for ev_id in claim.get("evidence_ids", []):
