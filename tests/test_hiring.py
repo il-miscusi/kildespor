@@ -9,6 +9,7 @@ import hashlib
 import json
 import time
 import unittest
+from pathlib import Path
 from datetime import date, timedelta
 from urllib.robotparser import RobotFileParser
 
@@ -379,6 +380,56 @@ def leirvik() -> tuple[CompanyRecord, str]:
 def envelope_for(rec: CompanyRecord, previous: dict | None, run_id: str) -> dict:
     changes, meta = diff(rec, previous, run_id)
     return build_envelope(rec, run={"run_id": run_id, "completed_at": "2026-10-23T00:00:00Z"}, synthesis=build_synthesis(rec, changes, baseline=bool(meta.get("baseline"))), changes=changes, refresh_meta=meta)
+
+
+class ParentVacanciesAbroad(unittest.TestCase):
+    """Organiser's point 4, "not the parent's vacancies": an ad page that names no employer counts
+    only for a workplace in Norway. pnoinnovation.com, verified for 954803694, lists the PNO
+    group's vacancies (Lyon, a German Werkstudent, EU projects) and names no employer on them.
+    Fixtures: the live ad pages of 23 Oct 2026, trimmed to their main text."""
+
+    FIX = Path(__file__).resolve().parent / "fixtures" / "ats"
+    HOME = '<html><head><title>PNO Innovation</title></head><body><nav><a href="/careers/">Careers</a></nav><footer>PNO Innovation AS, Oslo</footer></body></html>'
+
+    def site(self, ads: dict[str, str]) -> CompanyRecord:
+        links = "".join(f'<a href="{url}">{url.rsplit("/", 2)[-2]}</a>' for url in ads)
+        careers = f"<html><head><title>Careers | PNO</title></head><body><h1>Careers</h1>{links}</body></html>"
+        rec = record("PNO INNOVATION AS", "954803694")
+        rec.context["entity"]["forretningsadresse"] = {"kommune": "OSLO", "poststed": "OSLO"}
+        harvest_site(rec, "https://www.pnoinnovation.com/", self.HOME, {"https://www.pnoinnovation.com/careers/": careers, **ads})
+        return rec
+
+    def test_group_vacancies_abroad_are_refused(self) -> None:
+        rec = self.site({
+            "https://www.pnoinnovation.com/position/werkstudent-m-w-d/": (self.FIX / "pno-werkstudent-m-w-d.html").read_text(encoding="utf-8"),
+            "https://www.pnoinnovation.com/position/product-owner/": (self.FIX / "pno-product-owner.html").read_text(encoding="utf-8"),
+        })
+        self.assertEqual(rec.claims_for("hiring"), [])
+        self.assertEqual(rec.context["harvest"]["ads_refused"], 2)
+
+    @staticmethod
+    def ad(title: str, text: str, ld: str = "") -> str:
+        return f"<html><head><title>{title}</title>{ld}</head><body><main><h1>{title}</h1><p>{text}</p></main></body></html>"
+
+    def test_norwegian_workplace_signals(self) -> None:
+        base = "https://www.pnoinnovation.com/position/"
+        rec = self.site({
+            base + "a-oslo/": self.ad("Innovation Consultant", "We are looking for a consultant to join our team. Location: Oslo"),
+            base + "b-nowhere/": self.ad("Senior Consultant", "We are looking for a senior consultant to join our growing team of experts."),
+            base + "c-norsk/": self.ad("Rådgiver", "Vi søker en rådgiver som har erfaring med søknader og vil jobbe med oss."),
+            base + "d-ld-no/": self.ad("Analyst", "Join us.", '<script type="application/ld+json">{"@type":"JobPosting","title":"Analyst","jobLocation":{"@type":"Place","address":{"addressCountry":"NO","addressLocality":"Oslo"}}}</script>'),
+            base + "e-ld-de/": self.ad("Werkstudent", "Werde Teil unseres Teams.", '<script type="application/ld+json">{"@type":"JobPosting","title":"Werkstudent","jobLocation":{"@type":"Place","address":{"addressCountry":"DE","addressLocality":"Hamburg"}}}</script>'),
+            base + "f-lyon/": self.ad("Consultant R&D Tax Credit (Lyon)", "Rejoignez notre équipe à Lyon, France."),
+        })
+        # kept: a location field in Oslo, a Norwegian-language ad, a JobPosting placed in Norway;
+        # refused: no place at all, a JobPosting in Hamburg, an ad in Lyon
+        kept = sorted(c["value"]["url"].rsplit("/", 2)[-2] for c in rec.claims_for("hiring"))
+        self.assertEqual(kept, ["a-oslo", "c-norsk", "d-ld-no"])
+
+    def test_ad_naming_this_employer_needs_no_place(self) -> None:
+        named = self.ad("Consultant", "Join us.").replace("</main>", "<h2>Om PNO Innovation</h2><p>Advisers in Europe.</p></main>")
+        rec = self.site({"https://www.pnoinnovation.com/position/g-named/": named, "https://www.pnoinnovation.com/position/h-named/": named.replace("Consultant", "Adviser")})
+        self.assertEqual(len(rec.claims_for("hiring")), 2)
 
 
 class DuplicateAds(unittest.TestCase):

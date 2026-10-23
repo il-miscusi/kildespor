@@ -1681,6 +1681,18 @@ def ad_employer_is_ours(ad: AdPage, rec: CompanyRecord, extra_names: list[str] |
     return all(_name_is_ours(name, own_keys, rec) for name in ad.employers)
 
 
+# Places abroad: a page or field naming one is not (only) about a Norwegian workplace.
+FOREIGN_PLACE = re.compile(
+    r"\b(?:sweden|sverige|stockholm|g[öo]teborg|malm[öo]|denmark|danmark|copenhagen|k[øo]benhavn|aarhus|finland|helsinki|germany|deutschland|"
+    r"berlin|munich|m[üu]nchen|hamburg|france|paris|lyon|united\s+kingdom|\buk\b|england|london|scotland|ireland|dublin|netherlands|"
+    r"amsterdam|rotterdam|belgium|brussels|poland|polska|warsaw|gda[nń]sk|lithuania|lietuva|vilnius|latvia|riga|estonia|tallinn|"
+    r"spain|madrid|barcelona|portugal|lisbon|italy|milan|rome|switzerland|zurich|austria|vienna|czech|prague|hungary|budapest|"
+    r"romania|bulgaria|croatia|serbia|ukraine|usa|united\s+states|canada|toronto|new\s+york|india|china|shanghai|malaysia|"
+    r"singapore|japan|korea|australia|brazil|mexico|dubai|uae)\b",
+    re.I,
+)
+
+
 # Larger Norwegian towns: a workplace naming one is in Norway even when the page never says "Norge".
 NORWEGIAN_TOWNS = {
     "oslo", "bergen", "trondheim", "stavanger", "drammen", "fredrikstad", "kristiansand", "sandnes", "tromso", "sarpsborg", "skien",
@@ -1738,12 +1750,12 @@ def norwegian_workplace(ad: AdPage, rec: CompanyRecord, listed_location: str | N
             return False  # a JobPosting placed abroad
     for field_text in (ad.location, listed_location):
         if field_text:
-            if ats.FOREIGN_PLACE.search(field_text) and not _NORWAY_WORD.search(field_text):
+            if FOREIGN_PLACE.search(field_text) and not _NORWAY_WORD.search(field_text):
                 return False
             if _names_norwegian_place(field_text, rec):
                 return True
     text = ad.text or ""
-    if not text or ats.FOREIGN_PLACE.search(text):
+    if not text or FOREIGN_PLACE.search(text):
         return False  # nothing said, or a list of offices abroad ("Belgium, France, ... Norway")
     if _names_norwegian_place(text, rec):
         return True
