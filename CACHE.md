@@ -195,3 +195,24 @@ did not serve a feed and were left out. Coverage is small (257 companies,
 0.06% of the universe): most companies on a random draw have no ATS at all,
 and the index's job is the few whose website is not verified at run time or
 does not link its career site.
+
+### NAV employer names (`ats-nav-names.tsv.gz`)
+
+| file | source | build date | licence | rows | companies | size | build |
+|---|---|---|---|---|---|---|---|
+| `ats-nav-names.tsv.gz` | NAV's vacancy feed (`pam-stilling-feed.nav.no`, public token): every active ad's `businessName` and `employer.orgnr`, with sub-units mapped to their company by the Brreg bulk register | 2026-10-23 | facts we derived from NAV's redistributed ads | 1,453 | 613 | 22 KB | `python3 tools/build_ats.py --nav-names-only` (Kaggle CPU, 42 min) |
+
+Columns: `orgnr business_name ads name_ads built_at`.
+
+NAV's feed lists an ad only by the name the employer advertised under, and
+the agent opens a feed entry only when that name is one of the company's own
+(legal, sub-unit or verified brand). A row adds a name under which NAV listed
+an ad naming this company (or one of its sub-units) by `employer.orgnr` on
+23 October 2026: Norasondegruppen's ads name NORASONDE KARRIERE AS's Bergen
+sub-unit and were never opened. Kept only when the name is none of the
+company's legal or sub-unit names, and when the company's ads are at least half
+of the name's ads or the name has at most eight (76 shared chain names were
+dropped, so a chain's brand does not send every member to open dozens of
+entries). The names choose which live entries to open; an ad is published
+only on its live `employer.orgnr`. They are never used to match Jobbnorge or
+ATS employers.
