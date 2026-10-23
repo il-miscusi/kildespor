@@ -899,3 +899,75 @@ class OrganiserGroupSites(unittest.TestCase):
 def urlunsplit_root(url: str) -> str:
     parts = website.urlsplit(url)
     return f"{parts.scheme}://{parts.netloc}/"
+
+
+class PoolVerifiedIdentity(unittest.TestCase):
+    """Sites the pool verified and the 04f3daf gate refused (campaign/discovery/identity_misses_04f3daf.json)."""
+
+    def run_with_search(self, rec, pages, guesses, namesakes=()):
+        snap = page("https://data.brreg.no/enhetsregisteret/api/enheter?navn=x", "{}")[0]
+        result = (list(namesakes), snap) if namesakes is not None else (None, None)
+        with patch.object(website, "_register_namesakes", return_value=result):
+            return run(rec, pages, guesses=guesses)
+
+    def silent_sea(self):
+        return make_rec(name="SILENT SEA AS", phone=None, street="Ukjent vei 9")
+
+    def test_no_domain_spelling_the_name_with_the_name_in_its_title_and_no_namesake(self) -> None:
+        pages = {"https://silentsea.no/": html("Silent Sea", "Elektrisk fremdrift gjør båtlivet bedre")}
+        self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"]), [("name_and_domain_spells_name", "https://silentsea.no/")])
+
+    def test_a_namesake_in_the_register_refuses(self) -> None:
+        pages = {"https://silentsea.no/": html("Silent Sea", "Elektrisk fremdrift")}
+        rec = self.silent_sea()
+        self.assertEqual(self.run_with_search(rec, pages, ["silentsea.no"], namesakes=["SILENT SEA HOLDING AS (911111111)"]), [])
+        self.assertIn("other entities", rec.context["website_ambiguous_reason"])
+
+    def test_a_failed_register_search_refuses(self) -> None:
+        pages = {"https://silentsea.no/": html("Silent Sea", "Elektrisk fremdrift")}
+        self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"], namesakes=None), [])
+
+    def test_a_com_namesake_never_passes(self) -> None:
+        # estrella.com is a home builder in Arizona, not ESTRELLA AS
+        rec = make_rec(name="ESTRELLA AS", phone=None, street="Ukjent vei 9")
+        pages = {"https://estrella.com/": html("New Homes in Goodyear AZ | Estrella", "Estrella AS")}
+        self.assertEqual(self.run_with_search(rec, pages, ["estrella.com"]), [])
+
+    def test_a_one_word_name_needs_its_legal_form_on_the_page(self) -> None:
+        rec = make_rec(name="ADDVIA AS", phone=None, street="Ukjent vei 9")
+        self.assertEqual(self.run_with_search(rec, {"https://addvia.no/": html("Addvia", "Rådgivning")}, ["addvia.no"]), [])
+        self.assertEqual([m for m, _ in self.run_with_search(rec, {"https://addvia.no/": html("Addvia AS", "Rådgivning")}, ["addvia.no"])],
+                         ["name_and_domain_spells_name"])
+
+    def test_holding_company_or_another_number_never_passes(self) -> None:
+        rec = make_rec(name="NORDLYS HOLDING AS", phone=None, street="Ukjent vei 9")
+        self.assertEqual(self.run_with_search(rec, {"https://nordlysholding.no/": html("Nordlys Holding", "Eiendom")}, ["nordlysholding.no"]), [])
+        pages = {"https://silentsea.no/": html("Silent Sea", f"Levert av Båtfirma AS org.nr {OTHER}")}
+        self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"]), [])
+
+    def test_own_name_run_together_or_misspelt_is_not_another_entity(self) -> None:
+        self.assertTrue(website._mention_is_ours("tpelectronics", {"tp electronics"}))
+        self.assertTrue(website._mention_is_ours("kasen fjellsprenging", {"kasen fjellsprengning"}))
+        self.assertFalse(website._mention_is_ours("erling rolstad", {"erling rolstad eiendom"}))
+        self.assertFalse(website._mention_is_ours("berg byg", {"berg bygg"}))  # short words are never fuzzy
+        rec = make_rec(name="TP ELECTRONICS AS", phone="55 12 34 56")
+        pages = {"https://tpelectronics.no/": html("TPelectronics AS", "Ring oss på 55 12 34 56. Strandgaten 1, 5013 BERGEN")}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=["tpelectronics.no"])], ["register_contact_on_site"])
+
+    def test_entities_in_json_ld_are_unescaped(self) -> None:
+        ld = '<script type="application/ld+json">{"@type":"WebSite","publisher":{"@type":"Organization","name":"O. Hansen &amp; Sønner AS","url":"https://o-hansen.no/"}}</script>'
+        snap, soup, text = page("https://o-hansen.no/", html("Transport", "", ld))
+        self.assertIn(("JSON-LD name", "O. Hansen & Sønner AS"), website.identity_parts(soup, text, "o-hansen.no"))
+
+    def test_colon_inside_our_name_does_not_make_it_another_company(self) -> None:
+        sig = website.RegisterSignals(make_rec(name="NORWEGIAN RE:TEXTILE AS"))
+        self.assertIsNone(website._number_named_for_another(f"© Norwegian Re:Textile AS org.nr {ORG}", ORG, sig))
+        self.assertEqual(website._number_named_for_another(f"© Euroshopper Group AS org.nr {ORG}", ORG, sig), "euroshopper group")
+
+    def test_full_legal_name_beside_the_registered_phone(self) -> None:
+        rec = make_rec(name="MBA ENTREPRENØR AS", phone="52 70 00 00", email="post@mba.no")
+        pages = {"https://mba.no/": html("MBA – DET ER VI SOM BYGGER", "KONTAKT MBA Entreprenør AS Tlf: 52 70 00 00 8601 Mo i Rana")}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=[])], ["register_contact_on_site"])
+        # the brand alone beside the phone is still an umbrella brand
+        pages = {"https://mba.no/": html("MBA – DET ER VI SOM BYGGER", "KONTAKT MBA Tlf: 52 70 00 00 8601 Mo i Rana")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])

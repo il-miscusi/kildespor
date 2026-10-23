@@ -38,6 +38,7 @@ RSS/Atom feed.
 """
 from __future__ import annotations
 
+import html as htmllib
 import json
 import re
 import time
@@ -287,10 +288,13 @@ def _number_named_for_another(span: str, org: str, sig: "RegisterSignals") -> st
     words = [w for w in core_tokens(match.group(1)) if w not in ("og", "and") and not w.isdigit()]
     if not words:
         return None
+    cut = match.start(1) > 0 and before[match.start(1) - 1] in ":/+"
     for name in sig.names:
         ours = [w for w in core_tokens(name) if w not in ("og", "and")]
         if ours and words[-len(ours):] == ours:
             return None
+        if cut and ours and len(words) < len(ours) and ours[-len(words):] == words:
+            return None  # "Norwegian Re:Textile AS": the capture stopped at the colon inside our own name
     return " ".join(words[-4:])
 
 
@@ -469,7 +473,8 @@ def identity_parts(soup: BeautifulSoup, text: str, site_domain: str | None = Non
         line = re.sub(r"^\s*\d{4}(?:\s*[-–]\s*\d{2,4})?\s*", "", line).strip(" .,-")
         if 2 <= len(line) <= 90:
             parts.append(("copyright", line))
-    return parts[:30]
+    # JSON-LD and meta values can carry entities verbatim ("O. Hansen &amp; Sønner AS")
+    return [(label, htmllib.unescape(part)) for label, part in parts[:30]]
 
 
 def entity_mentions(parts: list[tuple[str, str]]) -> list[str]:
@@ -1324,6 +1329,115 @@ def _longer_namesakes_only(sig: RegisterSignals, texts: list[str]) -> bool:
     return len(longer) >= 2
 
 
+BRREG_SEARCH = "https://data.brreg.no/enhetsregisteret/api/enheter"
+
+
+def _register_namesakes(fetcher: Fetcher | None, rec: CompanyRecord, sig: RegisterSignals) -> tuple[list[str] | None, Snapshot | None]:
+    """Other register entities whose name is ours, starts with ours or ends with ours ("SILENT SEA HOLDING AS",
+    "SELBU SPINNERI AS"), from one live search of the Entity Register by name; (None, None) when it fails."""
+    if fetcher is None or not sig.names:
+        return None, None
+    from urllib.parse import urlencode
+
+    url = f"{BRREG_SEARCH}?{urlencode({'navn': sig.names[0], 'size': 50})}"
+    try:
+        snap = fetcher.get(url, retries=1, timeout=(5.0, 12.0), headers={"Accept": "application/json"})
+        data = snap.json() if snap.ok else None
+    except Exception:
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    ours = [t for t in core_tokens(sig.names[0]) if t not in ("og", "and")]
+    own = {rec.organisation_number} | sig.group | {s.get("organisation_number") for s in rec.context.get("subunits") or []}
+    found = []
+    for item in (data.get("_embedded") or {}).get("enheter") or []:
+        if not isinstance(item, dict) or item.get("organisasjonsnummer") in own:
+            continue
+        core = [t for t in core_tokens(str(item.get("navn") or "")) if t not in ("og", "and")]
+        if core and (core == ours or core[: len(ours)] == ours or core[-len(ours):] == ours):
+            found.append(f"{item.get('navn')} ({item.get('organisasjonsnummer')})")
+    return found, snap
+
+
+def _name_domain_rule(fetcher: Fetcher | None, rec: CompanyRecord, sig: RegisterSignals, ev: _Evidence, origin: str, snap: Snapshot,
+                      text: str, site_domain: str, final_host: str, parts: list[tuple[str, str]], blocked: bool) -> tuple[str, str, Snapshot] | None:
+    """``name_and_domain_spells_name``: a ``.no`` domain we derived from the legal name, that spells the whole legal
+    name, whose homepage names the company in its own identity text, on a site that shows no organisation number
+    and names no other legal entity, for a company the Entity Register lists under no shared name.
+
+    A ``.no`` domain can only be held by an entity in the Norwegian register, so a foreign namesake cannot own
+    it (silentsea.no, not fokusholding.com); the one live register search rules out a Norwegian one
+    (SILENT SEA HOLDING AS, SELBU SPINNERI AS). Housing co-ops, holding and group companies, service providers'
+    sites, former names, umbrella brands and sections or redirects to another domain never pass.
+    """
+    if origin != "name_derived_domain" or blocked or ev.numbers or sig.housing or sig.holding or sig.in_group or not sig.names:
+        return None
+    if not site_domain.endswith(".no") or _foreign_cctld(final_host):
+        return None
+    requested = urlsplit(snap.requested_url or snap.final_url)
+    if registered_domain(requested.hostname or "") != site_domain or _section_path(urlsplit(snap.final_url).path):
+        return None
+    legal_name = sig.names[0]
+    if not _stem_matches_name(site_domain, [legal_name], min_len=5):
+        return None
+    name_hit = next(((label, part) for label, part in parts if label in ("title", "og:site_name", "h1", "copyright", "JSON-LD name", "JSON-LD legalName")
+                     and name_in_part(legal_name, part)), None)
+    if not name_hit:
+        return None
+    our_cores = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
+    mentions = entity_mentions(parts)
+    if mentions and not all(_mention_is_ours(m, our_cores) for m in mentions):
+        return None
+    if any(name_in_part(f, part) for f in sig.former for _, part in parts) or _umbrella_brand(sig, parts):
+        return None
+    if SERVICE_PROVIDER_WORDS.search(" ".join(part for _, part in parts)) and not SERVICE_PROVIDER_WORDS.search(legal_name):
+        return None
+    tokens = [t for t in core_tokens(legal_name) if t not in ("og", "and")]
+    folded = " ".join(_norm_part(t) for t in ev.texts).replace("|", " ")
+    if re.search(rf"(?:^| ){re.escape(' '.join(tokens))} (?:{FOREIGN_FORMS.lower()})(?= |$)", folded):
+        return None
+    if len(tokens) == 1:
+        # a one-word name ("Addvia") must stand with its own legal form somewhere on the pages ("Addvia AS")
+        form = re.escape(getattr(sig, "form", "") or "") or "as|asa"
+        if not re.search(rf"(?:^| ){re.escape(tokens[0])} (?:{form})(?= |$)", folded):
+            return None
+    namesakes, search = _register_namesakes(fetcher, rec, sig)
+    if namesakes is None or namesakes:
+        if namesakes:
+            rec.context["website_ambiguous"] = snap.final_url
+            rec.context["website_ambiguous_reason"] = f"{snap.final_url} spells the name, but the register lists other entities under it: {', '.join(namesakes[:3])}"
+        return None
+    rec.context["namesake_search"] = search
+    span = (f'{name_hit[0]} = "{name_hit[1][:100]}"; the domain {site_domain} spells the legal name {legal_name}; '
+            f"the Entity Register lists no other entity under this name")
+    return "name_and_domain_spells_name", span, snap
+
+
+def _edit1(a: str, b: str) -> bool:
+    """a and b differ by at most one inserted, deleted or replaced letter."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) <= 1
+    if len(a) > len(b):
+        a, b = b, a
+    return any(b[:i] + b[i + 1:] == a for i in range(len(b)))
+
+
+def _mention_is_ours(mention: str, our_cores: set[str]) -> bool:
+    """A legal entity named in the identity text that is ours: the same words, the words run together
+    ("TPelectronics AS"), or one long word misspelt by a letter ("Kåsen Fjellsprenging As")."""
+    for core in our_cores:
+        if mention == core or mention.replace(" ", "") == core.replace(" ", ""):
+            return True
+        a, b = mention.split(), core.split()
+        if len(a) == len(b) and len(a) >= 2:
+            diff = [(x, y) for x, y in zip(a, b) if x != y]
+            if len(diff) == 1 and len(diff[0][1]) >= 6 and _edit1(*diff[0]):
+                return True
+    return False
+
+
 def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domain: str, final_host: str, parts: list[tuple[str, str]],
                     blocked: bool) -> tuple[str, str, Snapshot] | None:
     """``register_contact_on_site`` or ``name_and_register_signal`` for a site without our number, else None."""
@@ -1331,7 +1445,7 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
         return None
     our_cores = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
     mentions = entity_mentions(parts)
-    if mentions and not set(mentions) & our_cores:
+    if mentions and not any(_mention_is_ours(m, our_cores) for m in mentions):
         return None  # the site's copyright or name line names a different legal entity
     name_hit = next(((label, part) for label, part in parts for n in sig.names if name_in_part(n, part)), None)
     stem_full = _stem_matches_name(site_domain, sig.names, min_len=3)
@@ -1369,9 +1483,14 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
             and (t in id_words or (len(t) >= 5 and any(t in w for w in id_words)))
             for t in legal_core
         )
+        # The contact block names us in full, legal form included, beside the registered phone or e-mail
+        # ("MBA Entreprenør AS Tlf: 75 12 80 80" on mba.no, whose title only says "MBA").
+        form = re.escape(getattr(sig, "form", "") or "") or "as|asa"
+        contact_named = bool(legal_core) and bool(re.search(rf"(?:^| ){re.escape(' '.join(legal_core))} (?:{form})(?= |$)",
+                                                            " ".join(_norm_part(contact_hit[0]).replace("|", " ").split())))
         # Accountants, auditors, lawyers and property managers lend clients their phone and mailbox.
         provider = SERVICE_PROVIDER_WORDS.search(" ".join(part for _, part in parts)) and not SERVICE_PROVIDER_WORDS.search(sig.names[0] if sig.names else "")
-        if (affinity or name_hit) and not (provider and not name_hit) and (not need_name or name_hit or stem_full):
+        if (affinity or name_hit or contact_named) and not (provider and not (name_hit or contact_named)) and (not need_name or name_hit or stem_full or contact_named):
             return "register_contact_on_site", contact_hit[0], contact_hit[1]
     # Rule 2: the whole legal name in the homepage's identity text, plus one register signal on the site.
     if name_hit and _longer_namesakes_only(sig, ev.texts[:1]):
@@ -1505,6 +1624,9 @@ def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig
             return None
         blocked = bool(foreign_primary or group_on_page or len(foreign_any) >= 3)
         rule = _register_rules(sig, ev, origin, site_domain, final_host, parts, blocked)
+        if rule:
+            return rule[0], rule[2], rule[1], foreign_any, group_on_page
+        rule = _name_domain_rule(fetcher, rec, sig, ev, origin, snap, text, site_domain, final_host, parts, bool(blocked or foreign_any))
         if rule:
             return rule[0], rule[2], rule[1], foreign_any, group_on_page
         return None
@@ -1810,6 +1932,10 @@ def _root_names_another_entity(rec: CompanyRecord, visit: SiteVisit, root: str) 
     return None, brand
 
 
+def sig_name(rec: CompanyRecord) -> str:
+    return str((rec.context.get("entity") or {}).get("navn") or "")
+
+
 def _publish_site(
     rec: CompanyRecord,
     visit: SiteVisit,
@@ -1858,6 +1984,10 @@ def _publish_site(
         evidence.append(rec.evidence_from_snapshot(identity_snap, source_class="company_owned_website", span=span, method=identity, url=identity_snap.final_url))
     if not span or identity_snap is not home:
         evidence.append(rec.evidence_from_snapshot(home, source_class="company_owned_website", span=f"homepage reached: {home.final_url}", method="registry_listed_site_fetch" if origin in DECLARED_ORIGINS else "candidate_site_fetch", url=home.final_url))
+    search = rec.context.pop("namesake_search", None)
+    if identity == "name_and_domain_spells_name" and search is not None:
+        evidence.append(rec.evidence_from_snapshot(search, source_class="official_registry", span=f"Entity Register name search: no other entity named {sig_name(rec)}",
+                                                   method="brreg_name_search", url=search.final_url))
     registry_claims = [c for c in rec.claims if c["field"] == "registry_website"] if origin in ("registry_listed",) else []
     for claim in registry_claims:
         evidence.extend(claim["evidence_ids"])
