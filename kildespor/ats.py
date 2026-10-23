@@ -288,13 +288,20 @@ def _parse_teamtailor(out: TenantList, body: Any) -> None:
     if not isinstance(body, dict) or "jsonfeed.org" not in str(body.get("version") or "") or not isinstance(body.get("items"), list):
         raise ValueError("not a Teamtailor JSON Feed")
     out.name = _clean(body.get("title")) or None
+    list_host = (urlsplit(out.list_url).hostname or "").lower()
     for item in body["items"]:
         posting = item.get("_jobposting") if isinstance(item.get("_jobposting"), dict) else {}
+        url = str(item.get("url") or posting.get("url") or "").strip()
+        parts = urlsplit(url)
+        if list_host and not list_host.endswith(".teamtailor.com") and (parts.hostname or "").endswith(".teamtailor.com") and parts.path.startswith("/jobs/"):
+            # A custom-domain career site's feed links its ads on the tenant's teamtailor.com host;
+            # the same ad is served on the company's own career host, which is its public address.
+            url = f"https://{list_host}{parts.path}"
         city, country = _tt_location(posting)
         valid = _iso_date(posting.get("validThrough"))
         out.ads.append(Ad(
             title=_clean(item.get("title") or posting.get("title")),
-            url=str(item.get("url") or posting.get("url") or "").strip(),
+            url=url,
             published=_stamp(item.get("date_published") or posting.get("datePosted")),
             expires=valid,
             employer=_org_name(posting.get("hiringOrganization")),

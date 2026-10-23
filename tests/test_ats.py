@@ -526,3 +526,31 @@ class OwnSiteListings(unittest.TestCase):
             "https://ogrey.no/ledig-stilling/energimontorer/": self.ad("Fem energimontører"),
             "https://ogrey.no/ledig-stilling/industrimekaniker/": self.ad("Industrimekaniker")})
         self.assertEqual(sorted(c["value"]["title"] for c in job_claims(rec)), ["Fem energimontører", "Industrimekaniker"])
+
+
+class PoolCases(unittest.TestCase):
+    def test_custom_domain_feed_links_ads_on_the_career_host(self) -> None:
+        # karriere.okoraad.no/jobs.json lists its ads at okorad.teamtailor.com; the ad is the same
+        body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "ØkoRåd", "items": [
+            {"title": "Vil du jobbe som regnskapsfører i et av Norges fineste regnskapsbyrå?", "url": "https://okorad.teamtailor.com/jobs/7401342-vil-du-jobbe-som-regnskapsforer",
+             "_jobposting": {"hiringOrganization": {"name": "ØkoRåd"}}}]})
+        tl = ats.parse_list("teamtailor", "https://karriere.okoraad.no/jobs.json", body)
+        self.assertEqual(tl.ads[0].url, "https://karriere.okoraad.no/jobs/7401342-vil-du-jobbe-som-regnskapsforer")
+        self.assertEqual(len(ats.select(record("ØKORÅD AS", "930688770"), tl, own_tenant=True)[0]), 1)
+        hosted = ats.parse_list("teamtailor", "https://okorad.teamtailor.com/jobs.json", body)
+        self.assertTrue(hosted.ads[0].url.startswith("https://okorad.teamtailor.com/"))
+
+    def test_jobbnorge_brand_dash_legal_name(self) -> None:
+        job = {"id": 309843, "title": "Postdoktor (3 år) ved NUBU", "employer": "NUBU AS - Nasjonalt utviklingssenter for barn og unge",
+               "link": "https://www.jobbnorge.no/ledige-stillinger/stilling/309843", "deadline": "15.11.2099", "publicationDate": "01.10.2026",
+               "locations": [{"municipality": "Oslo", "zipCode": "0484"}]}
+        board = jobs.JobbnorgeList(None)  # type: ignore[arg-type]
+        body = json.dumps({"jobs": [job]}, ensure_ascii=False)
+        board.snap = snap(jobs.JOBBNORGE, body)
+        for key in board.keys_of(board.employer_of(job)):
+            board.by_key.setdefault(key, []).append(job)
+        board.done.set()
+        rec = record("NASJONALT UTVIKLINGSSENTER FOR BARN OG UNGE AS", "985638187", forretningsadresse={"kommune": "OSLO", "postnummer": "0484"})
+        self.assertEqual(jobs.research_jobbnorge(rec, board)[0], 1)
+        self.assertEqual(rec.evidence[job_claims(rec)[0]["evidence_ids"][0]]["span_check"], "verbatim")
+        self.assertEqual(jobs.research_jobbnorge(record("NUBU HOLDING AS", forretningsadresse={"kommune": "OSLO"}), board)[0], 0)

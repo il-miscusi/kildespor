@@ -202,6 +202,14 @@ class JobbnorgeList:
         return self
 
     @staticmethod
+    def keys_of(employer: str) -> list[str]:
+        """Name keys of an employer string: the whole, and each part of a "brand - legal name" form
+        ("NUBU AS - Nasjonalt utviklingssenter for barn og unge"). Each must still equal one of
+        the entity's names exactly."""
+        parts = [employer] + re.split(r"\s+[-–—/]\s+|\s*,\s+", employer)
+        return list(dict.fromkeys(k for k in (name_key(p) for p in parts) if k and len(k.replace(" ", "")) >= 3))
+
+    @staticmethod
     def employer_of(job: dict[str, Any]) -> str:
         """The employer the ad names: its department when Jobbnorge marks the department as the
         employer (a hospital under a health trust), else the employer."""
@@ -225,8 +233,7 @@ class JobbnorgeList:
             for job in jobs:
                 if not isinstance(job, dict):
                     continue
-                key = name_key(self.employer_of(job))
-                if key:
+                for key in self.keys_of(self.employer_of(job)):
                     self.by_key.setdefault(key, []).append(job)
         except Exception as exc:  # the batch must finish even when Jobbnorge does not answer
             self.error = f"{type(exc).__name__}: {str(exc)[:120]}"
