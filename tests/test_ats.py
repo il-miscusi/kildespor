@@ -172,16 +172,28 @@ class EmployerRule(unittest.TestCase):
         self.assertEqual(kept, [])
         self.assertTrue(all("names no employer" in r for r in refused.values()))
 
-    def test_short_name_only_on_own_tenant(self) -> None:
+    def test_exact_names_only(self) -> None:
         body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "Leirvik", "items": [
             {"title": "Sveiser", "url": "https://leirvik.teamtailor.com/jobs/9-sveiser", "_jobposting": {"hiringOrganization": {"name": "Leirvik"}}}]})
         tl = ats.parse_list("teamtailor", "https://leirvik.teamtailor.com/jobs.json", body)
+        # "Leirvik" is LEIRVIK AS's name, not LEIRVIK SVEIS AS's: never accepted for the latter
+        self.assertEqual(ats.select(record("LEIRVIK SVEIS AS"), tl, own_tenant=True)[0], [])
+        self.assertEqual(len(ats.select(record("LEIRVIK AS"), tl, own_tenant=False)[0]), 1)
+        # ... unless the verified website uses it as its brand
         rec = record("LEIRVIK SVEIS AS")
+        rec.context["site_brand_names"] = ["Leirvik"]
         self.assertEqual(len(ats.select(rec, tl, own_tenant=True)[0]), 1)
-        self.assertEqual(ats.select(rec, tl, own_tenant=False)[0], [])
-        # a single generic word is never enough, even on the own tenant
-        body = body.replace('"Leirvik"', '"Nordic"').replace("Sveiser", "Montør")
-        self.assertEqual(ats.select(record("NORDIC DOOR AS"), ats.parse_list("teamtailor", "https://x.teamtailor.com/jobs.json", body), own_tenant=True)[0], [])
+
+    def test_name_shared_inside_a_group_is_refused(self) -> None:
+        body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "Kitron", "items": [
+            {"title": "Operatør", "url": "https://career.kitron.com/jobs/1-operator", "_jobposting": {"hiringOrganization": {"name": "Kitron"}}}]})
+        tl = ats.parse_list("teamtailor", "https://career.kitron.com/jobs.json", body)
+        rec = record("KITRON AS", "111111111")
+        self.assertEqual(len(ats.select(rec, tl, own_tenant=True)[0]), 1)
+        rec.context["group_tree"] = {"976605713": {"name": "KITRON ASA"}, "111111111": {"name": "KITRON AS"}}
+        kept, refused = ats.select(rec, tl, own_tenant=True)
+        self.assertEqual(kept, [])
+        self.assertIn("also the name of 976605713", next(iter(refused.values())))
 
 
 class HarvestIntegration(unittest.TestCase):

@@ -428,24 +428,28 @@ def _keys(rec: Any, extra: list[str] | None) -> set[str]:
     return {_employer_key(n) for n in _names_of(rec) + list(extra or []) + list(rec.context.get("site_brand_names") or []) if _employer_key(n)}
 
 
-def employer_is_ours(name: str, rec: Any, own_keys: set[str], *, own_tenant: bool) -> bool:
-    """The ad's employer is this entity: one of its names exactly (legal, subunit, verified brand)
-    once the legal form is dropped. On the company's own tenant the employer may also be the
-    leading words of its legal name ("Leirvik" for LEIRVIK SVEIS AS) when those words are
-    distinctive. A longer name ("Kitron Lithuania" beside KITRON ASA) is another unit."""
+def employer_is_ours(name: str, rec: Any, own_keys: set[str]) -> bool:
+    """The ad's employer is this entity: one of its names exactly (legal, subunit or verified
+    brand) once the legal form is dropped. A longer name ("Kitron Lithuania" beside KITRON ASA)
+    is another unit, and a shorter one ("Leirvik" beside LEIRVIK SVEIS AS) may be another company
+    (LEIRVIK AS): neither is accepted."""
     from .harvest import _employer_key
-    from .website import GENERIC_NAME_WORDS, _name_matches
+    from .website import _name_matches
 
     key = _employer_key(name)
-    if not key:
-        return False
-    if key in own_keys or _name_matches(name, rec):
-        return True
-    if own_tenant:
-        words = key.split()
-        distinctive = len(words) >= 2 or (len(key) >= 5 and key not in GENERIC_NAME_WORDS)
-        return distinctive and any(own.startswith(key + " ") for own in own_keys)
-    return False
+    return bool(key) and (key in own_keys or _name_matches(name, rec))
+
+
+def _group_keys(rec: Any) -> dict[str, str]:
+    """Name keys of the other members of this entity's registered group (orgnr by key)."""
+    from .harvest import _employer_key
+
+    out: dict[str, str] = {}
+    for org, node in (rec.context.get("group_tree") or {}).items():
+        if org != rec.organisation_number and node.get("name"):
+            out.setdefault(_employer_key(str(node["name"])), str(org))
+    out.pop("", None)
+    return out
 
 
 def select(rec: Any, listing: TenantList, *, own_tenant: bool, extra_names: list[str] | None = None) -> tuple[list[Ad], dict[str, str]]:
@@ -454,7 +458,8 @@ def select(rec: Any, listing: TenantList, *, own_tenant: bool, extra_names: list
     ``own_tenant``: the tenant itself is tied to this company (its verified, non-group site is the
     career site or links it with a tenant name resembling the company, or the index ties it by a
     hard signal). Only then may an ad that names no employer be published, and only when no ad on
-    the list names an employer at all."""
+    the list names an employer at all. An ad whose employer name is also the name of another member
+    of the entity's registered group is refused: the name cannot tell the two apart."""
     from .harvest import ad_url_ok, foreign_page
 
     own_keys = _keys(rec, extra_names)
@@ -463,7 +468,8 @@ def select(rec: Any, listing: TenantList, *, own_tenant: bool, extra_names: list
     from .harvest import _employer_key
 
     named = {_employer_key(a.employer) for a in open_ads if a.employer and _employer_key(a.employer)}
-    group = len(named) >= 2
+    several = len(named) >= 2
+    group = _group_keys(rec)
     own_text = " ".join(sorted(own_keys))
     kept: list[Ad] = []
     seen: set[str] = set()
@@ -475,10 +481,16 @@ def select(rec: Any, listing: TenantList, *, own_tenant: bool, extra_names: list
             refused[ad.url] = "not one ad's address (search, login, landing or a foreign sister's site)"
             continue
         if ad.employer:
-            if not employer_is_ours(ad.employer, rec, own_keys, own_tenant=own_tenant):
+            if not employer_is_ours(ad.employer, rec, own_keys):
                 refused[ad.url] = f"the ad names another employer: {ad.employer[:100]}"
                 continue
-        elif not own_tenant or group or named:
+            other = group.get(_employer_key(ad.employer)) if isinstance(group, dict) else None
+            if other:
+                # KITRON ASA and KITRON AS are both "Kitron": a name two members of one group
+                # share cannot say which of them the ad is for.
+                refused[ad.url] = f"the employer name {ad.employer[:80]} is also the name of {other} in the same group"
+                continue
+        elif not own_tenant or several or named:
             refused[ad.url] = "the ad names no employer and the list is not this company's own"
             continue
         key = ad.url.split("#")[0].rstrip("/").lower()
