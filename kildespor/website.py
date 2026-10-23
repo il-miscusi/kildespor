@@ -533,6 +533,7 @@ class RegisterSignals:
         self.names = [n for n in _names_of(rec) if n]
         self.former = [h.get("navn") for h in entity.get("historiskeNavn") or [] if h.get("navn") and name_tokens(h["navn"]) != name_tokens(entity.get("navn") or "")]
         form = ((entity.get("organisasjonsform") or {}).get("kode") or "").upper()
+        self.form = form.lower()
         words = set(core_tokens(entity.get("navn") or ""))
         self.housing = form in HOUSING_FORMS or bool(words & HOUSING_WORDS)
         self.holding = bool(words & HOLDING_WORDS)
@@ -1253,6 +1254,21 @@ def _sister_companies(rec: CompanyRecord, sig: RegisterSignals, texts: list[str]
     return None
 
 
+def _longer_namesakes_only(sig: RegisterSignals, texts: list[str]) -> bool:
+    """The homepage names two or more other legal entities that start with our whole name ("DOF Group ASA",
+    "DOF Subsea AS" for DOF AS) and never our own name with our own legal form: our name is their brand."""
+    ours = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
+    if not ours:
+        return False
+    norm = " | ".join(_norm_part(t) for t in texts)
+    head = " ".join(ours)
+    form = re.escape(getattr(sig, "form", "") or "") or f"{ENTITY_FORM}|da|sa"
+    if re.search(rf"(?:^| ){re.escape(head)} (?:{form})(?= |$)", norm):
+        return False
+    longer = {m.group(1) for m in re.finditer(rf"(?:^| )({re.escape(head)}(?: [a-z0-9]+){{1,3}}?) (?:{ENTITY_FORM})(?= |$)", norm)}
+    return len(longer) >= 2
+
+
 def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domain: str, final_host: str, parts: list[tuple[str, str]],
                     blocked: bool) -> tuple[str, str, Snapshot] | None:
     """``register_contact_on_site`` or ``name_and_register_signal`` for a site without our number, else None."""
@@ -1303,6 +1319,8 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
         if (affinity or name_hit) and not (provider and not name_hit) and (not need_name or name_hit or stem_full):
             return "register_contact_on_site", contact_hit[0], contact_hit[1]
     # Rule 2: the whole legal name in the homepage's identity text, plus one register signal on the site.
+    if name_hit and _longer_namesakes_only(sig, ev.texts[:1]):
+        return None  # "DOF Group ASA", "DOF Subsea AS" ... but never "DOF AS": the brand is the group's
     if name_hit:
         legal_core = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
         weak_name = len(legal_core) == 1 and (len(legal_core[0]) < 5 or legal_core[0] in GENERIC_NAME_WORDS)
@@ -1456,7 +1474,7 @@ def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig
         if meta and meta.get("content"):
             meta_text += " " + str(meta["content"])
     meta_words = set(re.findall(r"[a-z0-9]+", _fold(meta_text)))
-    distinctive = [t for t in legal_core if len(t) >= 2]
+    distinctive = [t for t in legal_core if len(t) >= 2 or t.isdigit()]  # "bragernes torg 8" needs its 8
     if distinctive and set(distinctive) <= meta_words:
         return f"{base}_name_in_metadata", snap, f"name words {', '.join(distinctive)} in the page title/metadata: {meta_text[:160]}", foreign_any, group_on_page
     if _stem_matches_name(site_domain, sig.names, min_len=3):
@@ -1576,8 +1594,8 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
             # that verifies too is the better answer; this one is published only if none does.
             held = (snap, identity_snap, identity, origin, span, foreign, group_on_page, group)
             continue
-        _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page, group)
-        return
+        if _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page, group):
+            return
 
     held_refused = None
     if held is not None and declared_unread and not _name_like_domain(urlsplit(held[0].final_url).hostname or "", sig):
@@ -1587,8 +1605,8 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         held = None
     if held is not None:
         snap, identity_snap, identity, origin, span, foreign, group_on_page, group = held
-        _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page, group)
-        return
+        if _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page, group):
+            return
     if only_nav:
         return
     if not (out_of_time or budget_hit or blocked_reason or declared_unread):
@@ -1726,7 +1744,8 @@ def _publish_site(
     foreign: set[str],
     group_on_page: set[str],
     group: tuple[str, str] | None = None,
-) -> None:
+) -> bool:
+    """Publish the verified site (True), or refuse a section of another entity's domain (False)."""
     parts = urlsplit(home.final_url)
     netloc = (parts.hostname or "").lower()
     if parts.port and not ((parts.scheme == "https" and parts.port == 443) or (parts.scheme == "http" and parts.port == 80)):
@@ -1742,6 +1761,21 @@ def _publish_site(
     if section:
         visit.section = site_url
         root_owner, root_brand = _root_names_another_entity(rec, visit, urlunsplit((parts.scheme, netloc, "/", "", "")))
+    off_domain = registered_domain(requested.hostname or "") != registered_domain(parts.hostname or "")
+    if section and off_domain and origin in DECLARED_ORIGINS and not root_owner and not _name_like_domain(parts.hostname or "", RegisterSignals(rec)):
+        # fonn.io -> theaccessgroup.com/en-gb/construction/products/fonn/: the listed domain now forwards into a
+        # section of a domain that is not named after us, even when that domain's root could not be read.
+        root_owner = registered_domain(parts.hostname or "")
+    if root_owner and (origin not in DECLARED_ORIGINS or off_domain) and not identity.endswith("organisation_number_on_site"):
+        # A page on a chain's, a platform's or an acquirer's domain (rorkjop.no/finn-rorlegger/..., a booking
+        # vendor's /web/<clinic>/, fonn.io -> theaccessgroup.com/.../fonn/) is that domain owner's site. Only a
+        # section the company itself lists in the register, on the listed domain, or a section that prints this
+        # organisation number as its own (grimen.com/kainka: "Org.nr: NO 921 211 139"), is published (labelled).
+        visit.section = None
+        how = f"the listed {registered_domain(requested.hostname or '')} redirects there" if origin in DECLARED_ORIGINS else f"found via {origin}"
+        rec.context["website_ambiguous"] = site_url
+        rec.context["website_ambiguous_reason"] = f"{site_url} is a page on a domain whose root belongs to {root_owner} ({how}); not this company's own site"
+        return False
     evidence = []
     if span:
         evidence.append(rec.evidence_from_snapshot(identity_snap, source_class="company_owned_website", span=span, method=identity, url=identity_snap.final_url))
@@ -1782,6 +1816,7 @@ def _publish_site(
     from .harvest import _extract_site_facts
 
     _extract_site_facts(rec, visit, home, True, relationship)
+    return True
 
 
 # -- declared cache social profiles ---------------------------------------------------------

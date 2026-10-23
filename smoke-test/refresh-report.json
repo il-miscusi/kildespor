@@ -5,8 +5,8 @@
     "run_id": "smoke-100-b",
     "agent": "kildespor",
     "agent_version": "1.0.0",
-    "started_at": "2026-10-23T09:07:23Z",
-    "completed_at": "2026-10-23T09:08:24Z",
+    "started_at": "2026-10-23T15:43:02Z",
+    "completed_at": "2026-10-23T15:44:17Z",
     "terminal_status": "completed",
     "time_budget_s": 960.0,
     "input_count": 100,
@@ -109,7 +109,7 @@
       }
     }
   },
-  "available_claims": 7039,
+  "available_claims": 7040,
   "claims_by_field": {
     "company_news": 29,
     "financial.annual_result": 283,
@@ -152,7 +152,7 @@
     "registry_update": 497,
     "registry_website": 11,
     "role": 410,
-    "self_description": 6,
+    "self_description": 7,
     "share_capital": 90,
     "social_profile": 19,
     "statutory_purpose": 93,
@@ -160,21 +160,21 @@
     "website_email": 16,
     "website_phone": 6
   },
-  "evidence_records": 7061,
+  "evidence_records": 7062,
   "changes_detected": 0,
   "operations": {
-    "requests": 1009,
-    "bytes": 71587769,
-    "p50_ms": 228,
-    "p95_ms": 1478,
+    "requests": 1011,
+    "bytes": 71415629,
+    "p50_ms": 812,
+    "p95_ms": 3475,
     "max_requests": 1900,
     "budget_refusals": 0,
     "rate_limited_responses": 1,
     "dns_timeouts": 0,
-    "wall_clock_s": 61.2,
+    "wall_clock_s": 74.4,
     "per_company_runtime_ms": {
-      "p50": 4460,
-      "p95": 36917
+      "p50": 10030,
+      "p95": 38021
     },
     "third_party_cost_usd": 0.0,
     "language_model_calls": 0
@@ -182,7 +182,7 @@
   "nav_feed": {
     "days": 45,
     "pages": 92,
-    "active_ads": 9289,
+    "active_ads": 9575,
     "error": null,
     "loaded": true
   }

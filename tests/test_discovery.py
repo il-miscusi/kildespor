@@ -97,7 +97,7 @@ def run(rec: CompanyRecord, pages: dict[str, str], cache=None, guesses=None) -> 
          patch.object(website, "resolve_public", side_effect=lambda host: any(host in u for u in pages)), \
          patch.object(website, "_prefetch_dns", lambda hosts: None), \
          patch.object(website.SiteVisit, "fetch_page", fetch), \
-         patch.object(website, "_publish_site", side_effect=lambda r, v, home, isnap, identity, *a, **k: published.append((identity, home.final_url))):
+         patch.object(website, "_publish_site", side_effect=lambda r, v, home, isnap, identity, *a, **k: published.append((identity, home.final_url)) or True):
         if guesses is not None:
             with patch.object(website, "guess_domains", return_value=guesses):
                 website.research_website(None, rec, time.monotonic() + 60)
@@ -694,3 +694,86 @@ class NumberUnderAnotherName(unittest.TestCase):
         rec = make_rec(name="AUZILIUM INVEST AS", phone=None)
         pages = {"https://oobgolf.no/": html("Out of Bounds Golf", f"post@oobgolf.no Drives av Auzilium Invest AS · org.nr. {ORG[:3]} {ORG[3:6]} {ORG[6:]} Fore!")}
         self.assertEqual([m for m, _ in run(rec, pages, guesses=["oobgolf.no"])], ["organisation_number_on_site"])
+
+
+class OrganiserGroupSites(unittest.TestCase):
+    """Organiser point 1 (pool rejections at 9d1b1fd): a group, chain, vendor or acquirer site is not the company's own."""
+
+    def publish(self, requested: str, final: str, body: str, root_body: str, origin: str, identity: str, name="WEIDER RØR AS"):
+        rec = make_rec(name=name, phone=None)
+        raw = body.encode()
+        home = Snapshot(requested, final, 200, "2026-10-17T00:00:00Z", hashlib.sha256(raw).hexdigest(), "text/html", raw)
+        root = urlunsplit_root(final)
+        fixtures = {root: page(root, root_body)} if root_body else {}
+        visit = website.SiteVisit(None, rec, time.monotonic() + 30)
+
+        def fetch(self_, url):
+            got = fixtures.get(url)
+            if got:
+                self_.pages.append(got)
+            return got
+
+        with patch.object(website.SiteVisit, "fetch_page", fetch), patch("kildespor.harvest._extract_site_facts", lambda *a, **k: None):
+            ok = website._publish_site(rec, visit, home, home, identity, origin, "span", set(), set())
+        return ok, rec
+
+    def test_chain_members_page_found_by_a_cache_is_refused(self) -> None:
+        ok, rec = self.publish("https://www.rorkjop.no/finn-rorlegger/trondelag/namsos/weider-ror-as",
+                               "https://www.rorkjop.no/finn-rorlegger/trondelag/namsos/weider-ror-as",
+                               html("WEIDER RØR AS | Rørkjøp - Ekte fagfolk", "Breidablikkvegen 4, 7805 NAMSOS"),
+                               html("Rørkjøp - Ekte fagfolk", f"Rørkjøp AS org.nr {OTHER}"), "cache_overture", "name_and_register_signal")
+        self.assertFalse(ok)
+        self.assertEqual(rec.claims_for("official_website"), [])
+        self.assertIn("root belongs to", rec.context["website_ambiguous_reason"])
+
+    def test_listed_domain_redirecting_into_another_domains_section_is_refused_unread_root(self) -> None:
+        ok, rec = self.publish("https://www.fonn.io/", "https://www.theaccessgroup.com/en-gb/construction/products/fonn/",
+                               html("Access Fonn", "Access Fonn"), None, "registry_listed", "registry_listed_name_in_metadata", name="FONN AS")
+        self.assertFalse(ok)
+
+    def test_section_that_prints_its_own_number_is_still_published_labelled(self) -> None:
+        ok, rec = self.publish("https://www.grimen.com/kainka", "https://www.grimen.com/kainka",
+                               html("Kainka", f"Kainka AS, 5419 FITJAR Org.nr: NO {ORG[:3]} {ORG[3:6]} {ORG[6:]}. © 2026 - Grimen Trading"),
+                               html("Grimen matpoteter", f"Grimen Trading AS org.nr {OTHER}"), "name_derived_domain", "organisation_number_on_site",
+                               name="KAINKA AS")
+        self.assertTrue(ok)
+        self.assertEqual(rec.claims_for("official_website")[0]["relationship"], "group_site")
+
+    def test_listed_domain_redirecting_into_an_acquirers_site_is_refused(self) -> None:
+        ok, rec = self.publish("https://www.fonn.io/", "https://www.theaccessgroup.com/en-gb/construction/products/fonn/",
+                               html("Access Fonn | Construction Site Management Software", "Access Fonn"),
+                               html("The Access Group", f"The Access Group US Org.nr {OTHER}"), "registry_listed", "registry_listed_name_in_metadata",
+                               name="FONN AS")
+        self.assertFalse(ok)
+        self.assertIn("redirects there", rec.context["website_ambiguous_reason"])
+
+    def test_section_the_company_lists_on_its_listed_domain_is_still_published_labelled(self) -> None:
+        ok, rec = self.publish("https://laringsverkstedet.no/barnehager/jar/", "https://laringsverkstedet.no/barnehager/jar/",
+                               html("Jar idrettsbarnehage", "Jar"), html("Læringsverkstedet", f"Læringsverkstedet AS org.nr {OTHER}"),
+                               "subunit_registry_listed", "registry_listed_name_on_site", name="LÆRINGSVERKSTEDET JAR IDRETTSBARNEHAGE AS")
+        self.assertTrue(ok)
+        self.assertEqual(rec.claims_for("official_website")[0]["relationship"], "group_site")
+
+    def test_a_number_in_the_name_must_stand_in_the_metadata(self) -> None:
+        rec = make_rec(name="BRAGERNES TORG 8 AS", phone=None, hjemmeside="www.ava.no")
+        pages = {"https://www.ava.no/": html("AVA Eiendom", "Vi er AVA Eiendom", '<meta name="description" content="Bragernes Torg 1 – Vi utvikler byens beste beliggenhet!">')}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
+
+    def test_group_brand_naming_longer_namesakes_only_is_refused(self) -> None:
+        rec = make_rec(name="DOF AS", phone=None, roles=[("LEDE", "Martin Lundberg")])
+        body = ("<a href='/contact'>Contact</a> DOF Group ASA is the parent company for: DOF Subsea AS, DOF Rederi AS, "
+                "DOF Management AS. Board: Martin Lundberg. DOF ASA (2005) annual report")
+        pages = {"https://dof.com/": html("DOF | Global Subsea & Offshore Solutions", body),
+                 # the contact page lists DOF AS among the group's offices; the homepage is the group's
+                 "https://dof.com/contact": html("Contact | DOF", "DOF AS Thormøhlens gate 53C 5006 Bergen DOF Denmark A/S")}
+        self.assertEqual(run(rec, pages, guesses=["dof.com"]), [])
+
+    def test_own_legal_name_beside_the_brand_still_verifies(self) -> None:
+        rec = make_rec(name="AIDO AS", phone=None, roles=[("DAGL", "Håvard Ringstad")])
+        pages = {"https://aido.no/": html("Aido", "Aido AS Ulsteinvik, Tromsø. Daglig leder Håvard Ringstad. Aido Holding AS, Aido Drift AS")}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=["aido.no"])], ["name_and_register_signal"])
+
+
+def urlunsplit_root(url: str) -> str:
+    parts = website.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}/"

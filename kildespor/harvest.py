@@ -38,7 +38,7 @@ import html as html_lib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -1495,6 +1495,13 @@ class AdPage:
     numbers: set[str]  # organisation numbers the page states in its own content
     expires: str | None
     published: str | None
+    # Where the job is, as far as the page says: JSON-LD jobLocation countries and towns, a
+    # "Arbeidssted:"/"Location:" field, and the page's own text (for Norway, foreign places and
+    # its language). A list naming no employer is taken as this company's only for a Norwegian
+    # workplace: pnoinnovation.com lists the PNO group's Lyon, German and EU vacancies.
+    ld_places: list[tuple[str, str]] = field(default_factory=list)  # (country, locality)
+    location: str | None = None
+    text: str = ""
 
 
 def _content_soup(soup: BeautifulSoup) -> BeautifulSoup:
@@ -1546,8 +1553,12 @@ def read_ad_page(snap: Snapshot, soup: BeautifulSoup, text: str, own_names: list
     expires: str | None = None
     published: str | None = None
 
+    ld_places: list[tuple[str, str]] = []
+    location: str | None = None
+    place_text = ""
+
     def result(refused: str | None) -> AdPage:
-        return AdPage(refused, title, list(dict.fromkeys(employers)), numbers, expires, published)
+        return AdPage(refused, title, list(dict.fromkeys(employers)), numbers, expires, published, ld_places, location, place_text)
 
     if not ad_url_ok(snap.final_url) or not ad_url_ok(snap.requested_url):
         return result(f"not an ad URL after redirects: {snap.final_url[:160]}")
@@ -1566,6 +1577,12 @@ def read_ad_page(snap: Snapshot, soup: BeautifulSoup, text: str, own_names: list
         expires = expires or valid or None
         posted = stamp(item.get("datePosted"))
         published = published or (posted[0] if posted else None)
+        for loc in item.get("jobLocation") if isinstance(item.get("jobLocation"), list) else [item.get("jobLocation")]:
+            address = loc.get("address") if isinstance(loc, dict) else None
+            if isinstance(address, dict):
+                country = address.get("addressCountry")
+                country = country.get("name") if isinstance(country, dict) else country
+                ld_places.append((str(country or "").strip(), str(address.get("addressLocality") or address.get("addressRegion") or "").strip()))
         employer = item.get("hiringOrganization")
         if isinstance(employer, str) and employer.strip():
             employers.append(employer.strip())
@@ -1575,6 +1592,16 @@ def read_ad_page(snap: Snapshot, soup: BeautifulSoup, text: str, own_names: list
             numbers |= set(_ld_numbers(employer))
     content = _content_soup(soup)
     content_text = re.sub(r"\s+", " ", content.get_text(" ", strip=True))
+    place_text = content_text
+    if len(content_text) < 200:
+        # A theme whose wrapper carries a menu class leaves almost nothing in the content view;
+        # the main text without header, footer and navigation still says where the job is.
+        copy = BeautifulSoup(str(soup.find("main") or soup.find("article") or soup.body or soup), "lxml")
+        for tag in copy(["script", "style", "noscript", "template", "svg", "footer", "nav", "header"]):
+            tag.decompose()
+        place_text = re.sub(r"\s+", " ", copy.get_text(" ", strip=True))
+    where = LOCATION.search(place_text)
+    location = where.group(1).strip() if where else None
     closed = AD_CLOSED.search(content_text)
     if closed:
         return result(f"filled or closed: \"{closed.group(0)}\"")
@@ -1637,6 +1664,99 @@ def ad_employer_is_ours(ad: AdPage, rec: CompanyRecord, extra_names: list[str] |
         return None
     own_keys = {_employer_key(n) for n in _names_of(rec) + list(extra_names or []) if _employer_key(n)}
     return all(_name_is_ours(name, own_keys, rec) for name in ad.employers)
+
+
+# Places abroad: a page or field naming one is not (only) about a Norwegian workplace.
+FOREIGN_PLACE = re.compile(
+    r"\b(?:sweden|sverige|stockholm|g[öo]teborg|malm[öo]|denmark|danmark|copenhagen|k[øo]benhavn|aarhus|finland|helsinki|germany|deutschland|"
+    r"berlin|munich|m[üu]nchen|hamburg|france|paris|lyon|united\s+kingdom|\buk\b|england|london|scotland|ireland|dublin|netherlands|"
+    r"amsterdam|rotterdam|belgium|brussels|poland|polska|warsaw|gda[nń]sk|lithuania|lietuva|vilnius|latvia|riga|estonia|tallinn|"
+    r"spain|madrid|barcelona|portugal|lisbon|italy|milan|rome|switzerland|zurich|austria|vienna|czech|prague|hungary|budapest|"
+    r"romania|bulgaria|croatia|serbia|ukraine|usa|united\s+states|canada|toronto|new\s+york|india|china|shanghai|malaysia|"
+    r"singapore|japan|korea|australia|brazil|mexico|dubai|uae)\b",
+    re.I,
+)
+
+
+# Larger Norwegian towns: a workplace naming one is in Norway even when the page never says "Norge".
+NORWEGIAN_TOWNS = {
+    "oslo", "bergen", "trondheim", "stavanger", "drammen", "fredrikstad", "kristiansand", "sandnes", "tromso", "sarpsborg", "skien",
+    "alesund", "sandefjord", "haugesund", "tonsberg", "moss", "porsgrunn", "bodo", "arendal", "hamar", "larvik", "halden", "lillehammer",
+    "molde", "harstad", "kongsberg", "gjovik", "horten", "mo i rana", "kristiansund", "jessheim", "lillestrom", "ski", "asker", "baerum",
+    "sandvika", "lysaker", "fornebu", "forde", "alta", "narvik", "steinkjer", "elverum", "kongsvinger", "honefoss", "leirvik", "stord",
+    "egersund", "bryne", "floro", "grimstad", "mandal", "notodden", "raufoss", "levanger", "stjordal", "namsos", "vadso", "hammerfest",
+    "kirkenes", "finnsnes", "sortland", "svolvaer", "mosjoen", "brønnøysund", "bronnoysund", "orkanger", "melhus", "askoy", "sotra",
+    "straume", "nesttun", "fyllingsdalen", "voss", "odda", "sogndal", "volda", "orsta", "ulsteinvik", "fosnavag", "surnadal", "oppdal",
+    "roros", "tynset", "fagernes", "otta", "lyngdal", "flekkefjord", "farsund", "kvinesdal", "tvedestrand", "risor", "kragero", "bo",
+    "rjukan", "kopervik", "sauda", "jorpeland", "klepp", "kleppe", "time", "nærbø", "naerbo", "eidsvoll", "kolbotn", "drobak",
+    "vestby", "mysen", "askim", "spydeberg", "rakkestad", "gol", "geilo", "nesbyen", "hokksund", "lier", "royken", "holmestrand",
+}
+# Town names that are also common words (English "time", "moss", "ski"; Norwegian "bo", "time",
+# "lier"; Spanish "alta", "gol"): they count in a location field or JSON-LD jobLocation, never in
+# free text, where "full-time" or "å bo" names no place.
+AMBIGUOUS_TOWNS = {"time", "moss", "ski", "bo", "lier", "alta", "gol"}
+_NORWAY_WORD = re.compile(r"\b(?:norge|norway|noreg|norwegen|norvège|norvege)\b", re.I)
+# Bokmål and nynorsk function words: an ad written in Norwegian (and naming no place abroad)
+# is for a workplace in Norway.
+_NORWEGIAN_WORDS = {"og", "vi", "du", "deg", "som", "med", "på", "til", "er", "har", "ikke", "det", "av", "å", "for", "en", "et", "ein", "eit", "oss", "vår", "våre", "dine", "kan", "skal", "vil", "hos", "eller", "jobb", "stillingen", "søker", "søknad", "erfaring", "arbeid", "arbeidsoppgaver", "kvalifikasjoner", "ikkje", "me", "dykk", "korleis"}
+_OTHER_WORDS = {"the", "and", "you", "your", "with", "our", "are", "will", "der", "die", "das", "und", "sie", "wir", "mit", "für", "och", "att", "är", "les", "des", "vous", "nous", "een", "het", "van", "wij"}
+
+
+def _place_key(text: str) -> str:
+    return " ".join(_fold_a(text).replace("ø", "o").split())
+
+
+def _registered_places(rec: CompanyRecord) -> set[str]:
+    entity = rec.context.get("entity") or {}
+    places = set()
+    for key in ("forretningsadresse", "postadresse", "beliggenhetsadresse"):
+        address = entity.get(key) or {}
+        for k in ("kommune", "poststed"):
+            if address.get(k):
+                places.add(_place_key(str(address[k])))
+    for sub in rec.context.get("subunits") or []:
+        if sub.get("municipality"):
+            places.add(_place_key(str(sub["municipality"])))
+        town = re.search(r"\b\d{4}\s+([A-ZÆØÅa-zæøå][\wæøåÆØÅ .\-]{1,30})$", str(sub.get("address") or ""))
+        if town:
+            places.add(_place_key(town.group(1)))
+    return {p for p in places if len(p) >= 2}
+
+
+def _names_norwegian_place(text: str, rec: CompanyRecord, *, field: bool = True) -> bool:
+    """``text`` names Norway, a larger Norwegian town or a place the entity is registered in. In free
+    text (``field=False``) a town name that is also a common word does not count."""
+    key = " " + " ".join(re.findall(r"[a-z0-9æøå]+", _place_key(text))) + " "
+    places = NORWEGIAN_TOWNS | _registered_places(rec)
+    if not field:
+        places = places - AMBIGUOUS_TOWNS
+    return bool(_NORWAY_WORD.search(text)) or any(f" {p} " in key for p in places)
+
+
+def norwegian_workplace(ad: AdPage, rec: CompanyRecord, listed_location: str | None = None) -> bool:
+    """The ad (which names no employer) is for a workplace in Norway: its JSON-LD jobLocation is in
+    Norway; or its location field names Norway, a Norwegian town or a place the entity is registered
+    in; or its text names one of those, or is written in Norwegian, and names no place abroad."""
+    if ad.ld_places:
+        if any(c.lower() in ("no", "nor", "norway", "norge") or (not c and _names_norwegian_place(loc, rec)) for c, loc in ad.ld_places):
+            return True
+        if any(c for c, _loc in ad.ld_places):
+            return False  # a JobPosting placed abroad
+    for field_text in (ad.location, listed_location):
+        if field_text:
+            if FOREIGN_PLACE.search(field_text) and not _NORWAY_WORD.search(field_text):
+                return False
+            if _names_norwegian_place(field_text, rec):
+                return True
+    text = ad.text or ""
+    if not text or FOREIGN_PLACE.search(text):
+        return False  # nothing said, or a list of offices abroad ("Belgium, France, ... Norway")
+    if _names_norwegian_place(text, rec, field=False):
+        return True
+    words = re.findall(r"[a-zæøåäöüé]+", text.lower())
+    nb = sum(w in _NORWEGIAN_WORDS for w in words)
+    other = sum(w in _OTHER_WORDS for w in words)
+    return len(words) >= 6 and nb >= 3 and nb > other
 
 
 @dataclass
@@ -1704,6 +1824,9 @@ def verify_roles(plan: Plan, rec: CompanyRecord, roles: list[tuple[Role, Snapsho
         if verdict is None and out.group_list:
             out.refused[role.url] = "the ad names no employer and sits on a group's list"
             continue
+        if verdict is None and not norwegian_workplace(ad, rec, role.location):
+            out.refused[role.url] = "the ad names no employer and no workplace in Norway"
+            continue
         role.title = role.title or (ad.title or "")[:200]
         role.expires = role.expires or ad.expires
         role.published = role.published or ad.published
@@ -1713,6 +1836,9 @@ def verify_roles(plan: Plan, rec: CompanyRecord, roles: list[tuple[Role, Snapsho
     for role, listing in structured:
         if not role.employer and out.group_list:
             out.refused[role.url] = "the posting names no employer and sits on a group's list"
+            continue
+        if not role.employer and role.method == "json_ld_jobposting" and not norwegian_workplace(AdPage(None, role.title, [], set(), None, None, [], role.location, ""), rec, role.location):
+            out.refused[role.url] = "the posting names no employer and no workplace in Norway"
             continue
         out.kept.append((role, listing, None))
     return out
