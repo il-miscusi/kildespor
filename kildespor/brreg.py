@@ -397,6 +397,7 @@ def fetch_group(fetcher: Fetcher, rec: CompanyRecord) -> None:
         related.append({"relationship": "subsidiary", "organisation_number": child["organisation_number"], "name": child["name"], "ownership": child.get("ownership"), "since": child.get("since")})
     rec.context["group_orgs"] = set(nodes)
     rec.context["group_root"] = root
+    rec.context["group_tree"] = nodes  # names and parents, so a site naming a sister company can be told apart
     for item in related:
         span = f'{item["relationship"]}: {item["organisation_number"]} {item["name"]}'
         ev = rec.evidence_from_snapshot(snap, source_class="official_group_structure", span=span, method="brreg_group_structure_api", access_policy=POLICY)

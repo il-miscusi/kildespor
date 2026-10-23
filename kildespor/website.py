@@ -24,6 +24,13 @@ directories, parked pages, foreign country domains and listings of many
 organisations, and they never apply to housing co-ops (whose contact details
 are their property manager's).
 
+A register-listed site that turns out to be a foreign group's (the listed domain
+redirects to a foreign country domain, or names us under a foreign legal form) is
+refused. A verified site can still be a group's: a store's section of a chain's
+domain, or a site naming our sister companies. It is published labelled
+``group_site``, and none of its profiles, news, job ads or brand are published as
+this company's.
+
 Facts read from a verified site: public brand name, self-description,
 phone numbers and e-mail addresses, company-owned social profiles,
 the careers page, JSON-LD job postings and dated news from the site's own
@@ -1171,6 +1178,81 @@ def _foreign_group_host(snap: Snapshot, soup: BeautifulSoup, text: str, parts: l
     return None
 
 
+def _site_brand(parts: list[tuple[str, str]]) -> str:
+    """The brand a site presents: og:site_name, else the first title segment that is not a landing word."""
+    for wanted in ("og:site_name", "title"):
+        for label, part in parts:
+            if label != wanted:
+                continue
+            for segment in re.split(r"\s[|\-–—:·•]\s|\s*\|\s*", part):
+                segment = segment.strip()
+                if segment and segment.lower() not in ROOT_EQUIVALENT_SEGMENTS and segment.lower() not in ("velkommen", "welcome"):
+                    return segment[:80]
+    return ""
+
+
+def _distinctive_words(name: str) -> list[str]:
+    """Words of a legal name that tell it apart: four letters or more, not generic ("bygg", "holding")."""
+    return [t for t in core_tokens(name) if len(t) >= 4 and t not in GENERIC_NAME_WORDS and t not in STRIP_GUESS_WORDS and t not in GEO_SUFFIXES]
+
+
+def _lineage(tree: dict[str, dict[str, Any]], org: str) -> set[str]:
+    """Our owners up to the group's root and every company below us: the group members our own site
+    may name without being the group's site (a parent in "en del av ...", subsidiaries it lists)."""
+    out: set[str] = set()
+    node = tree.get(org) or {}
+    while node.get("parent") and node["parent"] not in out:
+        out.add(node["parent"])
+        node = tree.get(node["parent"]) or {}
+    frontier = {org}
+    while frontier:
+        frontier = {n for n, item in tree.items() if item.get("parent") in frontier and n not in out}
+        out |= frontier
+    return out
+
+
+ENTITY_FORM = r"(?:as|asa|ans|nuf)"
+
+
+def _sister_companies(rec: CompanyRecord, sig: RegisterSignals, texts: list[str], parts: list[tuple[str, str]], site_domain: str) -> tuple[str, str] | None:
+    """(why, the group's brand) when a verified site is a group's site rather than this company's own.
+
+    A footer listing "Consto Bergen AS, Consto Anlegg Nord AS ..." makes the site the group's, whichever
+    of those companies it was found for. It holds when the pages name another member of our Brreg group
+    that is neither our owner nor below us (a sister company), or two or more other legal entities whose
+    name starts with our name's first word. It never holds when our number is printed as the site's
+    owner, when we are the group's parent, or when our name is the site's brand: Consto AS is the
+    namesake of consto.no and keeps it, with its profiles and news."""
+    org = rec.organisation_number
+    if rec.context.get("group_root") == org:
+        return None
+    if any((number_contexts(t).get(org) or ("",))[0] == "owner" for t in texts):
+        return None
+    ours = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
+    if not ours:
+        return None
+    brand = _site_brand(parts)
+    brand_core = [w for w in _norm_part(brand).replace("|", " ").split() if w not in LEGAL_FORM_WORDS and w not in ("og", "and")]
+    if brand_core == ours or site_domain.split(".")[0].replace("-", "") == "".join(ours):
+        return None
+    our_cores = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
+    norm = " | ".join(_norm_part(t) for t in texts)
+    tree = rec.context.get("group_tree") or {}
+    kin = _lineage(tree, org) | {org}
+    for number, node in tree.items():
+        core = " ".join(t for t in core_tokens(node.get("name") or "") if t not in ("og", "and"))
+        if number in kin or len(core.replace(" ", "")) < 4 or core in our_cores:
+            continue
+        if re.search(rf"(?:^| ){re.escape(core)} (?:{ENTITY_FORM}|da|sa)(?= |$)", norm):
+            return f"the site names {node.get('name')}, a sister company in the same corporate group", brand or core
+    head = ours[0]
+    if len(head) >= 4 and head not in GENERIC_NAME_WORDS and head not in STRIP_GUESS_WORDS:
+        others = {m.group(1) for m in re.finditer(rf"(?:^| )({re.escape(head)}(?: [a-z0-9]+){{0,4}}?) {ENTITY_FORM}(?= |$)", norm)} - our_cores
+        if len(others) >= 2:
+            return f"the site names {len(others)} other companies under the {head} name ({', '.join(sorted(others)[:3])})", brand or head
+    return None
+
+
 def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domain: str, final_host: str, parts: list[tuple[str, str]],
                     blocked: bool) -> tuple[str, str, Snapshot] | None:
     """``register_contact_on_site`` or ``name_and_register_signal`` for a site without our number, else None."""
@@ -1233,12 +1315,26 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
 
 
 def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: RegisterSignals, origin: str,
-            page: tuple[Snapshot, BeautifulSoup, str]) -> tuple[str, Snapshot, str | None, set[str], set[str]] | None:
-    """Decide whether a fetched candidate homepage is this entity's site.
+            page: tuple[Snapshot, BeautifulSoup, str]) -> tuple[str, Snapshot, str | None, set[str], set[str], tuple[str, str] | None] | None:
+    """Decide whether a fetched candidate homepage is this entity's site, and whether it is a group's.
 
-    Returns (identity_method, identity_snapshot, span, foreign_numbers, group_numbers) or None, and
-    records why an ambiguous candidate was refused.
+    Returns (identity_method, identity_snapshot, span, foreign_numbers, group_numbers, group) or None,
+    and records why an ambiguous candidate was refused. ``group`` is (why, the group's brand) when the
+    site is verified but is a group's site (see ``_sister_companies``): it is published, labelled.
     """
+    decision = _identity(fetcher, rec, visit, sig, origin, page)
+    if decision is None:
+        return None
+    snap, soup, text = page
+    site_domain = registered_domain(urlsplit(snap.final_url).hostname or "")
+    texts = [text] + [p[2] for p in visit.pages if p[0] is not snap and registered_domain(urlsplit(p[0].final_url).hostname or "") == site_domain]
+    return (*decision, _sister_companies(rec, sig, texts, identity_parts(soup, text, site_domain), site_domain))
+
+
+def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: RegisterSignals, origin: str,
+              page: tuple[Snapshot, BeautifulSoup, str]) -> tuple[str, Snapshot, str | None, set[str], set[str]] | None:
+    """The identity half of ``_assess``: (identity_method, identity_snapshot, span, foreign_numbers,
+    group_numbers) or None."""
     org = rec.organisation_number
     snap, soup, text = page
     group_orgs: set[str] = set(rec.context.get("group_orgs") or set())
@@ -1473,14 +1569,14 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         decision = _assess(fetcher, rec, visit, sig, origin, page)
         if decision is None:
             continue
-        identity, identity_snap, span, foreign, group_on_page = decision
+        identity, identity_snap, span, foreign, group_on_page, group = decision
         if origin in DEFERRED_ORIGINS and held is None and not _name_like_domain(urlsplit(snap.final_url).hostname or "", sig):
             # The crawl index finds the domain whose pages print our number, which can be a secondary
             # site the company also owns (kaeferenergy.no beside kaefer.no). A domain spelling the name
             # that verifies too is the better answer; this one is published only if none does.
-            held = (snap, identity_snap, identity, origin, span, foreign, group_on_page)
+            held = (snap, identity_snap, identity, origin, span, foreign, group_on_page, group)
             continue
-        _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
+        _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page, group)
         return
 
     held_refused = None
@@ -1490,8 +1586,8 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         held_refused = f"the register-listed site could not be read, and {held[0].final_url}, found only in the crawl index, does not carry the company's name; it is not published in its place"
         held = None
     if held is not None:
-        snap, identity_snap, identity, origin, span, foreign, group_on_page = held
-        _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
+        snap, identity_snap, identity, origin, span, foreign, group_on_page, group = held
+        _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page, group)
         return
     if only_nav:
         return
@@ -1580,8 +1676,9 @@ def _section_path(path: str) -> str | None:
     return "/" + "/".join(segments) + ("/" if (path or "").endswith("/") else "")
 
 
-def _root_names_another_entity(rec: CompanyRecord, visit: SiteVisit, root: str) -> str | None:
-    """Read the domain's root page once: the other legal entity or organisation number it names, if any."""
+def _root_names_another_entity(rec: CompanyRecord, visit: SiteVisit, root: str) -> tuple[str | None, str]:
+    """Read the domain's root page once: (the other legal entity, organisation number or chain brand
+    that owns the domain, if any; the brand the root presents)."""
     page = next((p for p in visit.pages if p[0].final_url.rstrip("/") == root.rstrip("/")), None)
     if page is None:
         section, visit.section = visit.section, None
@@ -1592,16 +1689,30 @@ def _root_names_another_entity(rec: CompanyRecord, visit: SiteVisit, root: str) 
         finally:
             visit.section = section
     if page is None:
-        return None
+        return None, ""
     snap, soup, text = page
+    parts = identity_parts(soup, text, registered_domain(urlsplit(root).hostname or ""))
+    brand = _site_brand(parts)
     own = {rec.organisation_number} | {s.get("organisation_number") for s in rec.context.get("subunits") or []}
-    owners = [n for n, (kind, _) in number_contexts(text).items() if kind == "owner" and n not in own]
+    numbers = number_contexts(text)
+    if (numbers.get(rec.organisation_number) or ("",))[0] == "owner":
+        return None, brand  # the root prints our number as its owner: the whole domain is ours
+    owners = [n for n, (kind, _) in numbers.items() if kind == "owner" and n not in own]
     if owners:
-        return owners[0]
+        return owners[0], brand
     sig = RegisterSignals(rec)
     ours = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
-    mentions = [m for m in entity_mentions(identity_parts(soup, text, registered_domain(urlsplit(root).hostname or ""))) if m not in ours]
-    return mentions[0] if mentions else None
+    mentions = [m for m in entity_mentions(parts) if m not in ours]
+    if mentions:
+        return mentions[0], brand
+    # A chain's root names no legal entity ("Hjem - Norsk Flid Husfliden"), but its brand lacks a word
+    # that tells our store apart ("holmestrand" for HUSFLIDEN HOLMESTRAND SA): the domain is the chain's.
+    words = set(_norm_part(" ".join(part for label, part in parts if label in ("title", "og:site_name"))).replace("|", " ").split())
+    distinctive = _distinctive_words(sig.names[0] if sig.names else "")
+    joined = "".join(t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and"))
+    if brand and distinctive and joined not in words and any(t not in words for t in distinctive):
+        return brand, brand
+    return None, brand
 
 
 def _publish_site(
@@ -1614,6 +1725,7 @@ def _publish_site(
     span: str | None,
     foreign: set[str],
     group_on_page: set[str],
+    group: tuple[str, str] | None = None,
 ) -> None:
     parts = urlsplit(home.final_url)
     netloc = (parts.hostname or "").lower()
@@ -1626,10 +1738,10 @@ def _publish_site(
     # A site verified on a section of a larger domain is published as that section, never as the
     # domain's root, which was not verified and is often a parent's or another company's homepage.
     site_url = urlunsplit((parts.scheme, netloc, section or "/", parts.query if section else "", ""))
-    root_owner = None
+    root_owner, root_brand = None, ""
     if section:
         visit.section = site_url
-        root_owner = _root_names_another_entity(rec, visit, urlunsplit((parts.scheme, netloc, "/", "", "")))
+        root_owner, root_brand = _root_names_another_entity(rec, visit, urlunsplit((parts.scheme, netloc, "/", "", "")))
     evidence = []
     if span:
         evidence.append(rec.evidence_from_snapshot(identity_snap, source_class="company_owned_website", span=span, method=identity, url=identity_snap.final_url))
@@ -1639,13 +1751,15 @@ def _publish_site(
     for claim in registry_claims:
         evidence.extend(claim["evidence_ids"])
     exact = identity.endswith("organisation_number_on_site")
-    relationship = None
-    if identity.endswith("_group_site"):
-        relationship = "group_site"
-    elif identity.endswith("_other_entity_on_site"):
-        relationship = "registry_listed_site_names_another_entity" if identity.startswith("registry") else "listed_site_names_another_entity"
-    elif root_owner:
-        relationship = "group_site"
+    # A group, chain or umbrella site: a store's section of a chain's domain, or a site that names our
+    # sister companies. The site is published, labelled; harvest then publishes none of its profiles,
+    # news, job ads or brand as this company's (only the section's own contacts and own profiles).
+    group_reason, group_brand = None, None
+    if root_owner:
+        group_reason, group_brand = f"the domain's root page belongs to {root_owner}", root_brand or root_owner
+    elif group:
+        group_reason, group_brand = group
+    relationship = "group_site" if group_reason else None
     confidence = 0.99 if exact else 0.96 if "organisation_number" in identity else 0.93 if "register_contact_on_site" in identity else 0.92 if "name_and_register_signal" in identity else 0.9 if identity.endswith("name_on_site") else 0.88 if identity.endswith(("name_in_metadata", "domain_spells_name")) else 0.8
     rec.add_claim(
         family="official_website",
@@ -1658,14 +1772,10 @@ def _publish_site(
         relationship=relationship,
         label="Official website",
     )
-    rec.context["website"] = {"url": site_url, "identity": identity, "exact": exact, "relationship": relationship, "section": bool(section), "root_owner": root_owner}
-    rec.set_state("official_website", "available", f"website verified ({identity})")
+    rec.context["website"] = {"url": site_url, "identity": identity, "exact": exact, "relationship": relationship, "section": bool(section), "root_owner": root_owner,
+                              "group_reason": group_reason, "group_brand": group_brand}
+    rec.set_state("official_website", "available", f"website verified ({identity})" + (f"; a group site: {group_reason}" if group_reason else ""))
     rec.checked_fields.add("official_website")
-    if relationship in ("registry_listed_site_names_another_entity", "listed_site_names_another_entity"):
-        rec.set_state("company_profiles", "ambiguous", "the register-listed site names a different organisation number; its profiles are not attributed to this entity")
-        rec.set_state("public_brand", "ambiguous", "the register-listed site names a different organisation number; its brand is not attributed to this entity")
-        rec.set_state("contact_channels", "available" if rec.claims_for("contact_channels") else "ambiguous", "site contact details not attributed: the site names another entity")
-        return
     if visit.fetcher is not None:
         # A verified site is worth more of the run's request pool than a company with none.
         visit.fetcher.raise_company_cap(HARVEST_REQUESTS)
