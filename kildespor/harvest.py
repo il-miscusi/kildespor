@@ -712,12 +712,88 @@ def _in_site_chrome(node: Any) -> bool:
     return False
 
 
+# Phrases beside a block of social icons that say whose icons they are when it is not the company:
+# the group the site says it belongs to ("Del av Consto-gruppen", "part of Hexagon"). Bare "group",
+# "gruppen", "konsern" and "partner" are not read at this reach: a footer heading such as "Kitron
+# Group" or "Consto konsern" over the company's own icons names the company itself.
+BLOCK_RELATION = re.compile(
+    r"\bdel av\b|\bpart of\b|\bmember of\b|\bmedlem av\b|\beid av\b|\bowned by\b|soster(?:selskap|bedrift|firma)|morselskap|"
+    r"datterselskap|sister[- ]?compan|parent[- ]?compan|subsidiar",
+    re.I,
+)
+THEME_CREDIT = re.compile(r"theme by|tema av|template by|wordpress theme", re.I)
+
+
 def _social_href(href: str) -> bool:
     try:
         host = (urlsplit(href.strip()).hostname or "").lower().rstrip(".")
     except ValueError:
         return False
     return any(host == d or host.endswith("." + d) for d in SOCIAL_HOSTS)
+
+
+def _carries_profile_link(node: Any) -> bool:
+    if getattr(node, "name", None) == "a" and _social_href(str(node.get("href") or "")):
+        return True
+    return hasattr(node, "find_all") and any(_social_href(str(a.get("href") or "")) for a in node.find_all("a", href=True))
+
+
+def _block_text(parent: Any, came_from: Any) -> str:
+    """The parent's own words beside the child we came from: its direct text and the text of the
+    children that link to no social platform (a heading, a credit line linking the agency's site).
+    A child carrying its own profile link (another icon, an agency's icon with its credit) speaks
+    for that link only."""
+    parts: list[str] = []
+    for child in parent.children:
+        if child is came_from:
+            continue
+        if getattr(child, "name", None) is None:
+            if type(child).__name__ == "NavigableString":
+                parts.append(str(child).strip())
+            continue
+        if child.name in ("script", "style", "noscript", "template") or _carries_profile_link(child):
+            continue
+        parts.append(child.get_text(" ", strip=True))
+    return " ".join(p for p in parts if p)
+
+
+def _icon_block(node: Any) -> tuple[str, str]:
+    """What the block of icons a profile link sits in, and a short heading just before that block,
+    say about whose icons they are: ("credit", "") for a web agency or theme credit, ("related",
+    <name>) for a group the site says it is part of, else ("", "").
+
+    Unlike _credit_link and _related_link this climbs past the footer element and past 3 links, as
+    long as the block is still an icon row: at most 200 characters of text and at most one link that
+    is not to a social platform (the agency's or the parent's own site). Text that belongs to another
+    profile link (an agency's icon in its own credit line) is not read for this one."""
+    texts: list[str] = []
+    current = node
+    for _ in range(6):
+        parent = current.parent
+        if parent is None or getattr(parent, "name", None) in (None, "[document]", "html", "body", "main"):
+            break
+        others = {
+            str(a.get("href") or "").strip() for a in parent.find_all("a", href=True)
+            if not _social_href(str(a.get("href") or "")) and not str(a.get("href") or "").strip().lower().startswith(("#", "mailto:", "tel:", "javascript:"))
+        }
+        if len(others) > 1 or len(parent.get_text(" ", strip=True)) > 200:
+            heading = current.find_previous_sibling()
+            if heading is not None and not _carries_profile_link(heading) and len(heading.find_all("a", href=True)) <= 1:
+                heading_text = heading.get_text(" ", strip=True)
+                if len(heading_text) <= 80:
+                    texts.append(heading_text)
+            break
+        texts.append(_block_text(parent, current))
+        current = parent
+    raw = " ".join(t for t in texts if t)
+    if CREDIT_WORDS.search(raw) or THEME_CREDIT.search(raw):
+        return "credit", ""
+    folded = " " + _fold_a(raw) + " "
+    match = BLOCK_RELATION.search(folded)
+    if match:
+        rest = re.split(r"[.,;:|•·()\[\]!?]", folded[match.end():].lstrip(" :-–—"))[0]
+        return "related", " ".join(rest.split()[:5])
+    return "", ""
 
 
 def _names_company(node: Any, contains: set[str]) -> bool:
@@ -731,6 +807,32 @@ def _names_company(node: Any, contains: set[str]) -> bool:
 def _admin_link(url: str) -> bool:
     """A LinkedIn page's admin URL (/company/<id>/admin/...): whoever edits the site manages the page."""
     return bool(re.search(r"linkedin\.[a-z.]+/company/[^/?#]+/admin(?:/|$|\?)", url, re.I))
+
+
+def _parent_names(rec: CompanyRecord) -> list[str]:
+    """The Brreg parent and ultimate parent names recorded for this company."""
+    return [
+        str(c["value"]["name"]) for c in rec.claims
+        if c.get("field") == "group_relationship" and isinstance(c.get("value"), dict)
+        and c["value"].get("relationship") in ("parent", "ultimate_parent") and c["value"].get("name")
+    ]
+
+
+def parent_account(account: str, contains: set[str], others: list[str]) -> bool:
+    """The account is a related company's (the Brreg parent, or the group a footer says the site is
+    part of), not this one's: it resembles that name, and this company's names carry a token the
+    other name lacks (its own legal word, verified brand or domain label) that the account does not.
+    A company named like its parent and nothing more (Consto AS under Consto Holding AS) has no such
+    token, so its group-named accounts (Constokonsern) stay; Consto Anlegg Nord AS's site does not
+    publish linkedin.com/company/consto-as."""
+    for other in others:
+        theirs, _ = identity_tokens([other], "", place_tokens=False)
+        if not theirs or not resembles(account, theirs, set()):
+            continue
+        marks = {t for t in contains if len(t) >= 4 and not any(t in o for o in theirs)}
+        if marks and not any(m in account for m in marks):
+            return True
+    return False
 
 
 @dataclass
@@ -753,23 +855,30 @@ def profiles_on_page(
     own_text: str = "",
     own_names: list[str] | None = None,
     own_words: set[str] | None = None,
+    parent_names: list[str] | None = None,
 ) -> list[Found]:
     """Company profiles a page of the company's own site links, in page order.
 
-    A named account must resemble the company and carry no other company's name. An account known only by an id is compared with nothing, so it needs other evidence: a
+    A named account must resemble the company, carry no other company's name, and not be the
+    parent group's (``parent_names``: Brreg's parent and ultimate parent, read from ``rec`` when not
+    given). An account known only by an id is compared with nothing, so it needs other evidence: a
     label naming the company, a LinkedIn admin URL, the sameAs of the site's own Organization, or,
     for a link in the site's header/footer/social block, a named profile that passed on the same
     page. Sitting in the footer or the menu is not evidence by itself. A link labelled as a sister,
-    parent, partner or customer company's is never the company's."""
+    parent, partner or customer company's is never the company's, and an icon block credited to a
+    web agency or theme, or headed by a group the site is part of, publishes no id-only account and
+    no account that names only that group."""
     base = snap.final_url
     own_names = own_names or []
     own_words = own_words or set()
+    if parent_names is None:
+        parent_names = _parent_names(rec) if rec is not None else []
     taken: list[tuple[Found, bool]] = []  # (profile, kept only if a named profile passed on this page)
 
-    def take(raw: str, via: str, *, ids: str = "none", span: str | None = None) -> None:
+    def take(raw: str, via: str, *, ids: str = "none", span: str | None = None, related: str = "") -> None:
         """``ids`` says how an id-only account may pass from here: "ok" (the label names the company,
         or the site's own Organization sameAs), "sibling" (site chrome: if a named profile passes on
-        this page) or "none" (only with a LinkedIn admin URL)."""
+        this page), "none" (only with a LinkedIn admin URL) or "never" (a credited or group block)."""
         if not raw or raw.startswith(("#", "mailto:", "tel:", "javascript:")):
             return
         try:
@@ -783,7 +892,7 @@ def profiles_on_page(
         item = Found(platform, canonical, handle, snap, span or raw.strip()[:300], via)
         account = account_name(handle)
         if id_like(handle) or not account:
-            if ids == "ok" or _admin_link(url):
+            if ids == "ok" or (ids != "never" and _admin_link(url)):
                 taken.append((item, False))
             elif ids == "sibling":
                 taken.append((item, True))
@@ -792,21 +901,28 @@ def profiles_on_page(
             return
         if names_other_company(account, contains, prefixes, own_words):
             return
+        if parent_account(account, contains, parent_names + ([related] if related else [])):
+            return
         taken.append((item, False))
 
-    def route(node: Any) -> str:
+    def route(node: Any) -> tuple[str, str]:
+        kind, related = _icon_block(node)
+        if kind:
+            return "never", related
         if _names_company(node, contains):
-            return "ok"
-        return "sibling" if _in_site_chrome(node) else "none"
+            return "ok", ""
+        return ("sibling" if _in_site_chrome(node) else "none"), ""
 
     for anchor in soup.find_all("a", href=True):
         if not _social_href(str(anchor["href"])) or _credit_link(anchor) or _related_link(anchor, own_names):
             continue
-        take(anchor["href"], "anchor", ids=route(anchor))
+        ids, related = route(anchor)
+        take(anchor["href"], "anchor", ids=ids, related=related)
     for node in soup.find_all(attrs={"data-href": True}):
         if not _social_href(str(node.get("data-href") or "")) or _related_link(node, own_names):
             continue
-        take(str(node.get("data-href") or ""), "data_href", ids=route(node))
+        ids, related = route(node)
+        take(str(node.get("data-href") or ""), "data_href", ids=ids, related=related)
     for frame in soup.find_all("iframe", src=True):
         if _related_link(frame, own_names):
             continue
@@ -815,10 +931,10 @@ def profiles_on_page(
             params = parse_qs(urlsplit(urljoin(base, src)).query)
         except ValueError:
             continue
-        ids = route(frame) if any(params.get(k) for k in ("href", "u", "url")) else "none"
+        ids, related = route(frame) if any(params.get(k) for k in ("href", "u", "url")) else ("none", "")
         for key in ("href", "u", "url"):
             for value in params.get(key, [])[:1]:
-                take(value, "embed_iframe", span=src[:300], ids=ids)
+                take(value, "embed_iframe", span=src[:300], ids=ids, related=related)
     for item in json_ld_items(soup):
         if _types(item) & {"Person", "Product", "Event", "Offer", "JobPosting", "Review"}:
             continue
@@ -1897,8 +2013,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     profiles: dict[str, Found] = {}
     per_platform: dict[str, int] = {}
     p_contains, p_prefixes, p_text, p_names, p_words = _profile_identity(rec, brand_names, home.final_url)
+    parents = [] if company_label == "group_site" else _parent_names(rec)
     for snap, soup, _ in own_pages():
-        for found in profiles_on_page(snap, soup, snap.text(), p_contains, p_prefixes, rec, p_text, p_names, p_words):
+        for found in profiles_on_page(snap, soup, snap.text(), p_contains, p_prefixes, rec, p_text, p_names, p_words, parents):
             key = found.url.lower()
             if key in profiles or per_platform.get(found.platform, 0) >= MAX_PROFILES_PER_PLATFORM:
                 continue
