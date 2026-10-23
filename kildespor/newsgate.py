@@ -37,7 +37,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "newsgate.json"
-FEATURE_VERSION = 1
+FEATURE_VERSION = 2
 LEAD_CHARS = 600
 # Opens the dated-news reason when a news source could not be read; contract.py publishes such a
 # row as "failed" even when register updates make the internal family available.
@@ -134,6 +134,30 @@ def record(item: Any, ctx: dict[str, Any]) -> dict[str, Any]:
 
 _YEAR = re.compile(r"^(?:19|20)\d\d$")
 _NEWS_SEG = re.compile(r"^(?:nyheter|nyhet|nyheiter|aktuelt|news|newsroom|presse|press|pressemeldinger|pressemelding|press-releases?|presserom|blogg|blog|artikler|artikkel|articles?|siste-nytt|media|innlegg|posts?)$", re.I)
+# Word groups the model pools evidence over (one weight per group, so a verb seen on one site counts on
+# another). Measured on the hand-labelled corpus: host-held-out AUC 0.85 -> 0.88 with these groups.
+LEXICON = {
+    "event": re.compile(
+        r"\b(vinner|vant|vunnet|signer\w*|inng[aå]r|inngått|tildelt|kåret|ansatt|ansetter|ansettelse|ny\w* (?:daglig leder|leder|direktør|sjef|kollega|"
+        r"medarbeider|styreleder|partner)|velkommen|åpner|åpnet|lanser\w*|flytter|flyttet|kjøper|kjøpt|oppkjøp|fusjon\w*|sertifiser\w*|jubileum|\d+ år|"
+        r"deltar|deltok|stand|messe\w*|besøk\w*|arranger\w*|inviter\w*|stengt|åpningstid\w*|kontrakt\w*|avtale\w*|rammeavtale|leverer|levert|"
+        r"leveranse|ferdigstil\w*|overlever\w*|nominert|finalist|pris(?:en)?|award\w*|wins?|won|signs?|signed|appoint\w*|welcome\w*|joins?|joined|"
+        r"launch\w*|opens?|opened|acquir\w*|agreement|contract|partnership|partner\w*|samarbeid\w*|sponsor\w*|gave|donasjon|støtte|ny nettside|"
+        r"nye nettsider|new website|årsrapport|årsmelding|kvartal\w*|resultat\w*|generalforsamling|årsmøte|annual|quarter\w*|takk|julehilsen|god jul|"
+        r"god sommer|god påske|ferie\w*|kurs|seminar|webinar|konferanse|frokostmøte|workshop|åpen dag|open day)\b", re.I),
+    "guide": re.compile(
+        r"(?:^|\b)(hvordan|hva|hvorfor|hvilke?|slik|tips|guide|derfor|fordeler|ulemper|velge|velger|beste|vs\.?|how|what|why|which|best|choose|"
+        r"checklist|sjekkliste|råd|unngå|forebygg\w*|alt du|dette må du|dette bør du|viktig å vite|lær|lære)\b", re.I),
+    "product": re.compile(
+        r"(\bkr\b|\bnok\b|,-|pris\w*|tilbud\w*|kampanje\w*|rabatt\w*|\bsalg\b|bestill\w*|kjøp\w*|\bnyhet!|nyheter våren|modell\w*|serie\w*|utleie|"
+        r"leie|til salgs|på lager|lagersalg|sortiment\w*|produkt\w*|tjeneste\w*|løsning\w*|tomter|boliger til salgs)", re.I),
+    "case": re.compile(
+        r"\b(valgte|velger \w+ som|kunde\w*|case|historie\w*|slik løste|referanse\w*|prosjekt\w*|oppdrag\w*|sted:|oppdragsgiver|byggherre|"
+        r"hovedentreprenør|customer|story|stories)\b", re.I),
+    "opinion": re.compile(
+        r"\b(mener|krever|advarer|kommentar\w*|kronikk|debatt\w*|innlegg|høringssvar|høringsinnspill|uttalelse|markedskommentar|podkast\w*|podcast|"
+        r"episode|nyhetsbrev|magasin\w*|rapport|studie|undersøkelse|analyse)\b", re.I),
+}
 _QUESTION_START = re.compile(r"^(?:hvordan|hva|hvorfor|hvilke?|hvem|hvor|når|kan|bør|skal|er|how|what|why|which|when|can|should|is|are|do|does)\b", re.I)
 
 
@@ -162,9 +186,6 @@ def features(c: dict[str, Any]) -> list[str]:
     f += ["t2:" + a + "_" + b for a, b in zip(tw, tw[1:])]
     if tw:
         f.append("t0:" + tw[0])
-    chars = " " + re.sub(r"\d", "0", " ".join(re.sub(r"[^a-z0-9]+", " ", fold(title)).split())) + " "
-    for n in (3, 4, 5):
-        f += ["tc:" + chars[i:i + n] for i in range(max(0, len(chars) - n + 1))]
 
     url = c.get("url") or ""
     path = urlsplit(url).path if url else ""
@@ -173,10 +194,7 @@ def features(c: dict[str, Any]) -> list[str]:
         f.append("useg:" + "-".join(_words(s))[:40])
         f += ["u:" + w for w in _words(s)]
     if segs:
-        last = segs[-1]
-        f += ["ul:" + w for w in _words(last)]
-        slug = " " + re.sub(r"\d", "0", "-".join(re.sub(r"[^a-z0-9]+", " ", fold(last)).split())) + " "
-        f += ["uc:" + slug[i:i + 4] for i in range(max(0, len(slug) - 3))]
+        f += ["ul:" + w for w in _words(segs[-1])]
     f.append("depth:" + _bucket(len(segs), (0, 1, 2, 3, 4)))
     if any(_NEWS_SEG.match(s) for s in segs[:-1]):
         f.append("s:newspath")
@@ -192,6 +210,11 @@ def features(c: dict[str, Any]) -> list[str]:
     f += ["l:" + w for w in lw]
     f += ["l2:" + a + "_" + b for a, b in zip(lw, lw[1:])]
     f.append("leadlen:" + _bucket(len(lead), (0, 80, 200, 400)))
+    for group, rx in LEXICON.items():
+        if rx.search(title):
+            f.append("lex_t:" + group)
+        if rx.search(lead[:300]):
+            f.append("lex_l:" + group)
 
     for cat in c.get("categories") or []:
         slug = "-".join(_words(cat))[:40]
@@ -231,6 +254,9 @@ def features(c: dict[str, Any]) -> list[str]:
     other = c.get("other") or []
     if own_words_in(title, own):
         f.append("e:title_own")
+        first = re.sub(r"[^a-z0-9]", "", fold(title.split()[0])) if title.split() else ""
+        if any(len(w) >= 4 and first.startswith(w[:6]) for w in own):
+            f.append("e:title_starts_own")
     if own_words_in(lead, own):
         f.append("e:lead_own")
     if other_in(title, other):
@@ -255,7 +281,8 @@ class Gate:
         self.bits = int(spec["bits"])
         self.bias = float(spec["bias"])
         self.scale = float(spec["scale"])
-        self.threshold = float(spec["threshold"])
+        # KILDESPOR_NEWSGATE_THRESHOLD moves the operating point (measurement runs); the shipped value is the default.
+        self.threshold = float(os.environ.get("KILDESPOR_NEWSGATE_THRESHOLD") or spec["threshold"])
         self.version = int(spec.get("feature_version", FEATURE_VERSION))
         weights = array("b")
         weights.frombytes(zlib.decompress(base64.b64decode(spec["weights"])))

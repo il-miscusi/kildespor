@@ -74,6 +74,25 @@ def qscore(X: sparse.csr_matrix, q: list[int], scale: float, bias: float) -> np.
     return 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
 
 
+def logit(p: np.ndarray) -> np.ndarray:
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+
+def site_features(z: np.ndarray, hosts: list[str], mask: np.ndarray) -> np.ndarray:
+    """[z, mean z of the host's other judged items, has peers] for every item."""
+    tot, cnt = defaultdict(float), defaultdict(int)
+    for zi, h, m in zip(z, hosts, mask):
+        if m:
+            tot[h] += zi
+            cnt[h] += 1
+    out = np.zeros((len(z), 3))
+    for i, (zi, h, m) in enumerate(zip(z, hosts, mask)):
+        others = cnt[h] - (1 if m else 0)
+        out[i] = [zi, (tot[h] - (zi if m else 0)) / others if others else 0.0, 1.0 if others else 0.0]
+    return out
+
+
 def fit(X, y, C: float) -> LogisticRegression:
     model = LogisticRegression(C=C, solver="liblinear", max_iter=2000, random_state=0)
     model.fit(X, y)
@@ -114,9 +133,12 @@ def main() -> int:
     ap.add_argument("--holdout-orgs", default="")
     ap.add_argument("--bits", type=int, default=16)
     ap.add_argument("--target", type=float, default=0.96)
-    ap.add_argument("--C", default="0.1,0.3,1,3")
+    ap.add_argument("--C", default="0.03,0.1,0.3")
+    ap.add_argument("--threshold", type=float, default=None, help="ship this threshold instead of the one --target picks (the choice is reported either way)")
     ap.add_argument("--out", default=str(ROOT / "kildespor" / "models" / "newsgate.json"))
     ap.add_argument("--oof-out", default="")
+    ap.add_argument("--test-out", default="")
+    ap.add_argument("--site-prior", action="store_true", help="experiment: a second stage over the item score and the mean score of the host's other items")
     args = ap.parse_args()
 
     items = {r["id"]: r for r in read_jsonl(args.items)}
@@ -131,7 +153,8 @@ def main() -> int:
     rows = [dict(items[k], y_label=labels[k], y_source=source[k]) for k in labels if k in items and labels[k] in "ABCDEFG"]
     held = read_orgs(args.holdout_orgs)
     held_hosts = {r.get("host") for r in rows if r.get("org") in held}
-    train = [r for r in rows if r.get("host") not in held_hosts]
+    # The gate only ever judges items the rules let through, so that is the population it learns from.
+    train = [r for r in rows if r.get("host") not in held_hosts and not r.get("rule")]
     test = [r for r in rows if r.get("host") in held_hosts]
     print(f"labelled {len(rows)} (audit {sum(1 for r in rows if r['y_source'] == 'audit')}), train {len(train)} items / {len({r.get('host') for r in train})} hosts, "
           f"test {len(test)} / {len(held_hosts)} hosts; labels {dict(Counter(r['y_label'] for r in rows))}")
@@ -158,6 +181,9 @@ def main() -> int:
         if best is None or key > best[0]:
             best = (key, C, thr, oof)
     _key, C, thr, oof = best
+    if args.threshold is not None:
+        print(f"threshold {thr:.2f} picked for target {args.target}; shipping {args.threshold:.2f} as asked")
+        thr = args.threshold
     orgs_tr = [r.get("org") or "" for r in train]
     j = judged
     good, bad, pos = company_cover(oof[j], ytr[j], [o for o, k in zip(orgs_tr, j) if k], thr)
@@ -171,24 +197,56 @@ def main() -> int:
             by_label[r["y_label"]][1] += int(pi >= thr)
     print("OOF kept by label: " + ", ".join(f"{k} {v[1]}/{v[0]}" for k, v in sorted(by_label.items())))
 
+    combiner = None
+    if args.site_prior:
+        hosts_tr = [r.get("host") or "" for r in train]
+        F = site_features(logit(oof), hosts_tr, judged)
+        combiner = LogisticRegression(C=1.0, solver="liblinear", random_state=0).fit(F[judged], ytr[judged])
+        pc = combiner.predict_proba(F)[:, 1]
+        thr_c = choose_threshold(pc[judged], ytr[judged], args.target)
+        prec, rec, n = pr_at(pc[judged], ytr[judged], thr_c)
+        print(f"site prior: weights {np.round(combiner.coef_[0], 3).tolist()} bias {combiner.intercept_[0]:.3f}; OOF threshold {thr_c:.2f} precision {prec:.3f} recall {rec:.3f} kept {n}")
+
     model = fit(Xtr, ytr, C)
     q, scale = quantise(model.coef_[0])
     bias = float(model.intercept_[0])
     if test:
         Xte = matrix(test, args.bits)
-        yte = np.array([1 if r["y_label"] == "A" else 0 for r in test])
-        jt = np.array([not r.get("rule") for r in test])
         pte = qscore(Xte, q, scale, bias)
-        prec, rec, n = pr_at(pte[jt], yte[jt], thr)
-        g, b, ps = company_cover(pte[jt], yte[jt], [r.get("org") or "" for r, k in zip(test, jt) if k], thr)
-        base = pr_at(np.ones(int(jt.sum())), yte[jt], 0.5)
-        print(f"held-out hosts: precision {prec:.3f} recall {rec:.3f} kept {n} of {int(jt.sum())} rule-passed (rules alone {base[0]:.3f}); companies {g}/{ps} kept a correct item, {b} kept a wrong one")
+        if combiner is not None:
+            jt_all = np.array([not r.get("rule") for r in test])
+            pte = combiner.predict_proba(site_features(logit(pte), [r.get("host") or "" for r in test], jt_all))[:, 1]
+            thr = thr_c
+        groups_te = {}
+        for path in [x for x in (args.holdout_orgs or "").split(",") if x]:
+            for org in read_orgs(path):
+                groups_te.setdefault(org, Path(path).stem)
+        host_group = {}
+        for r in test:
+            host_group.setdefault(r.get("host"), groups_te.get(r.get("org"), "?"))
+        for group in sorted(set(host_group.values())) + ["all"]:
+            for human in (True, False):
+                sel = [i for i, r in enumerate(test) if not r.get("rule") and (group == "all" or host_group.get(r.get("host")) == group) and (r["y_source"] == "audit") == human]
+                if not sel:
+                    continue
+                y = np.array([1 if test[i]["y_label"] == "A" else 0 for i in sel])
+                pp = pte[sel]
+                prec, rec, n = pr_at(pp, y, thr)
+                g, b, ps = company_cover(pp, y, [test[i].get("org") or "" for i in sel], thr)
+                base = pr_at(np.ones(len(sel)), y, 0.5)
+                print(f"held-out {group:8s} {'hand' if human else 'teacher'} labels: precision {prec:.3f} recall {rec:.3f} kept {n} of {len(sel)} rule-passed "
+                      f"(rules alone {base[0]:.3f}); companies {g}/{ps} kept a correct item, {b} kept a wrong one")
+        if args.test_out:
+            with open(args.test_out, "w", encoding="utf-8") as fh:
+                for r, pi in zip(test, pte):
+                    fh.write(json.dumps({"id": r["id"], "org": r.get("org"), "host": r.get("host"), "group": host_group.get(r.get("host")), "y": r["y_label"], "src": r["y_source"],
+                                         "p": round(float(pi), 4), "rule": r.get("rule") or "", "title": r.get("title"), "url": r.get("url")}, ensure_ascii=False) + "\n")
     spec = {
         "feature_version": newsgate.FEATURE_VERSION, "bits": args.bits, "bias": round(bias, 6), "scale": scale, "threshold": thr,
         "weights": newsgate.encode_weights(q),
         "trained": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "C": C, "items": len(train), "hosts": len(set(groups)),
         "positives": int(ytr.sum()), "target_precision": args.target,
-        "labels": "teacher LLM (campaign/news) with hand-audit overrides; target = company_event",
+        "labels": "hand labels (campaign/news/audit_labels.tsv) over Qwen3-14B teacher labels; target = company_event",
     }
     spec["sha256"] = newsgate.spec_sha256(spec)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)

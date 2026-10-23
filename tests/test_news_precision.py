@@ -233,6 +233,17 @@ class FakeFetcher:
 
 
 class PublishTests(unittest.TestCase):
+    """The rules on their own: the learned gate (tests/test_newsgate.py) is switched off here."""
+
+    def setUp(self) -> None:
+        from kildespor import newsgate
+        self.saved_gate = (newsgate._GATE, newsgate._GATE_LOADED)
+        newsgate._GATE, newsgate._GATE_LOADED = None, True
+
+    def tearDown(self) -> None:
+        from kildespor import newsgate
+        newsgate._GATE, newsgate._GATE_LOADED = self.saved_gate
+
     HOME = """<html><head><title>Fjordbygg</title><link rel="https://api.w.org/" href="https://www.fjordbygg.no/wp-json/">
     <meta name="generator" content="WordPress 6.6"></head><body><p>Fjordbygg AS, org.nr 923 609 016</p></body></html>"""
     API = "https://www.fjordbygg.no/wp-json/wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list,excerpt"
