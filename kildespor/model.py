@@ -32,15 +32,17 @@ PERSONAL_KEYS = {"fodselsdato"}
 # name y", "homepage reached: <url>"), so there is nothing to find in the body.
 COMPOSED_SPAN_METHODS = {
     "registry_listed_name_on_site", "registry_listed_name_in_metadata", "candidate_site_fetch",
-    "registry_listed_site_fetch", "wikidata_p2333_live_item",
+    "registry_listed_site_fetch", "wikidata_p2333_live_item", "registry_listed_domain_spells_name",
 }
 _SPAN_PREFIX = re.compile(r"^(?:mailto link|tel link|e-mail on page|homepage reached|feedentry [\w-]+|byline):\s*", re.I)
 _QUOTED = re.compile(r'"([^"]{3,})"')
 _LOCATOR = re.compile(r'^[\w.<>/\[\] -]{1,60}? = "?(.+?)"?$', re.S)
 
 
-def _fold(text: str) -> str:
-    return " ".join(html.unescape(text).replace("\\/", "/").replace("\u00a0", " ").replace("\xa0", " ").split()).casefold()
+def _words(text: str) -> str:
+    """Text as a space-joined sequence of casefolded words: punctuation, entities and spacing differ
+    between a page's markup and the text an extractor quoted from it; the words do not."""
+    return " " + " ".join(re.findall(r"\w+", html.unescape(text).replace("\\/", "/").casefold())) + " "
 
 
 def _needles(span: str) -> list[str]:
@@ -57,18 +59,48 @@ def _needles(span: str) -> list[str]:
     out = []
     for part in parts:
         part = part.strip().removesuffix("...").strip().strip('"')
-        if len(part) >= 3:
-            out.append(_fold(part))
+        words = _words(part)
+        if len(words.strip()) >= 3:
+            out.append(words)
     return out
 
 
+def _visible_text(raw: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(raw, "lxml")
+        for node in soup(["script", "style", "noscript", "template"]):
+            node.decompose()
+        return soup.get_text(" ")
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", raw)
+
+
 def span_found(span: str | None, snap: Snapshot) -> bool | None:
-    """Whether the span's quoted text is in the fetched body (None when there is nothing to check)."""
+    """Whether the span's quoted words are in the fetched body (None when there is nothing to check).
+
+    Truncated spans lose their last, possibly cut word before the comparison."""
     needles = _needles(span or "")
     if not needles or not snap.body:
         return None
+    hay = _HAYSTACKS.get(snap.sha256)
+    if hay is None:
+        hay = _haystacks(snap)
+        if len(_HAYSTACKS) >= 512:
+            _HAYSTACKS.clear()
+        _HAYSTACKS[snap.sha256] = hay
+    trimmed = [n if n.count(" ") <= 3 else n[: n.rstrip().rfind(" ") + 1] for n in needles]
+    return all(any(n in h for h in hay) for n in trimmed)
+
+
+# One page backs many spans (a homepage: profiles, contacts, identity); parse it once.
+_HAYSTACKS: dict[str, list[str]] = {}
+
+
+def _haystacks(snap: Snapshot) -> list[str]:
     raw = snap.text()
-    hay = [_fold(raw), _fold(re.sub(r"<[^>]+>", " ", raw))]
+    hay = [_words(raw)]
     if "json" in (snap.content_type or "").lower() or raw.lstrip()[:1] in "[{":
         try:
             values: list[str] = []
@@ -82,10 +114,12 @@ def span_found(span: str | None, snap: Snapshot) -> bool | None:
                 elif item is not None:
                     values.append(str(item))
             joined = "\n".join(values)
-            hay += [_fold(joined), _fold(re.sub(r"<[^>]+>", " ", joined))]
+            hay += [_words(joined), _words(_visible_text(joined))]
         except ValueError:
             pass
-    return all(any(n in h for h in hay) for n in needles)
+    elif "<" in raw:
+        hay.append(_words(_visible_text(raw)))
+    return hay
 
 
 def _redact(value: Any) -> Any:
@@ -193,7 +227,8 @@ class CompanyRecord:
         if access_policy:
             record["access_policy"] = access_policy
         if snapshot is not None:
-            if source_class != "official_registry" and extraction_method not in COMPOSED_SPAN_METHODS:
+            # Register evidence names the API field it read; it is a locator, not a quotation.
+            if not extraction_method.startswith("brreg_") and extraction_method not in COMPOSED_SPAN_METHODS:
                 found = span_found(span, snapshot)
                 if found is not None:
                     record["span_check"] = "verbatim" if found else "not_found"

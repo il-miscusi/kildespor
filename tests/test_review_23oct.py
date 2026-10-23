@@ -51,6 +51,21 @@ class SpanSupport(unittest.TestCase):
         self.assertEqual(len(rec.claims), 1)
 
 
+    def test_register_locators_are_not_checked_as_quotes(self) -> None:
+        body = b'{"rollegrupper": [{"roller": [{"type": {"kode": "DAGL"}, "person": {"navn": {"fornavn": "Kari", "etternavn": "Nordmann"}}}]}]}'
+        snap = Snapshot("https://data.brreg.no/enhetsregisteret/api/enheter/938702675/roller", "https://data.brreg.no/enhetsregisteret/api/enheter/938702675/roller", 200, "2026-10-23T00:00:00Z", hashlib.sha256(body).hexdigest(), "application/json", body)
+        rec = record()
+        ev = rec.evidence_from_snapshot(snap, source_class="official_roles", span="DAGL/DAGL: Kari Nordmann", method="brreg_roles_api")
+        self.assertNotIn("span_check", rec.evidence[ev])
+
+    def test_snippet_across_page_elements_is_found(self) -> None:
+        raw = "<html><head><title>Nydals AS</title><style>.a{x:1}</style></head><body><div>Org.nr: 853&nbsp;097 012</div><nav>Meny Hjem</nav></body></html>".encode()
+        snap = Snapshot("https://nydals.no/", "https://nydals.no/", 200, "2026-10-23T00:00:00Z", hashlib.sha256(raw).hexdigest(), "text/html", raw)
+        rec = record()
+        ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span="Nydals AS Org. nr: 853 097 012 Meny Hjem", method="organisation_number_on_site")
+        self.assertEqual(rec.evidence[ev]["span_check"], "verbatim")
+
+
 class NavFeedCompleteness(unittest.TestCase):
     def test_partial_feed_reports_failed_not_absent(self) -> None:
         rec = record()
