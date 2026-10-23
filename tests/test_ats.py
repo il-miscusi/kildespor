@@ -276,6 +276,19 @@ class HarvestIntegration(unittest.TestCase):
         self.assertEqual((ev["span_check"], ev["source_url"]), ("verbatim", "https://jobs.zaptec.com/"))
         self.assertEqual([u for u in fetcher.requested if "zaptec" in u and "sitemap" not in u], ["https://jobs.zaptec.com/"])
 
+    def test_group_career_site_read_in_full_but_nothing_ours(self) -> None:
+        home = '<html><head><title>Kitron</title></head><body><a href="https://career.kitron.com/">Careers</a><footer>Kitron ASA</footer></body></html>'
+        career = ('<html><head><title>Career - Kitron</title><link rel="alternate" type="application/rss+xml" title="Jobs" href="https://career.kitron.com/jobs.rss" />'
+                  '<link rel="stylesheet" href="https://assets-aws.teamtailor-cdn.com/x.css"></head><body><h1>Join Kitron</h1></body></html>')
+        rec = record("KITRON ASA", "976605713")
+        harvest_site(rec, "https://www.kitron.com/", home, {
+            "https://career.kitron.com/": career, "https://career.kitron.com/jobs.json": (fixture("teamtailor-kitron-group.json"), "application/feed+json")})
+        self.assertEqual(job_claims(rec), [])
+        jobs.record_nav_hiring(rec, "not_available", "no active ad in NAV's vacancy feed names this organisation number")
+        state = rec.family_state["hiring"]
+        self.assertEqual(state["state"], "not_available")
+        self.assertIn("9 listed link(s) were not single open ads by this company", state["reason"])
+
     def test_unreadable_list_falls_back_to_the_html_path(self) -> None:
         careers = ('<html><head><title>Karriere</title></head><body><h1>Jobb hos oss</h1>'
                    '<a href="https://opplandelektro.teamtailor.com/">Se alle stillinger</a></body></html>')

@@ -80,8 +80,10 @@ except Exception:  # pragma: no cover - no tz database
 
 HARVEST_REQUESTS = int(os.environ.get("KILDESPOR_HARVEST_REQUESTS", "12"))
 # Ad pages read to confirm role links (on top of HARVEST_REQUESTS, after news and profiles): a
-# link that is not read is not published.
-MAX_AD_FETCHES = int(os.environ.get("KILDESPOR_AD_FETCHES", "10"))
+# link that is not read is not published. 20 lets a group's list (afgruppen.no lists ~25 roles,
+# most of them its units') reach the few ads that name the parent itself; companies with fewer
+# role links spend only what they list.
+MAX_AD_FETCHES = int(os.environ.get("KILDESPOR_AD_FETCHES", "20"))
 NEWS_MAX_AGE_DAYS = 730
 MAX_NEWS = 30
 MAX_JOBS = 25
@@ -2740,6 +2742,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         verified = Verified([], refused={r.url: "an ad on a group site is not attributed to a subsidiary" for r, _ in roles}, group_list=True)
     else:
         verified = verify_roles(plan, rec, roles, names, group_site=company_label == "group_site")
+    # Entries an ATS list carried that were not this entity's open ads count as refused too, so the
+    # verdict says the list was read and why nothing in it was published.
+    verified.refused = {**(rec.context.get("ats_refused") or {}), **(verified.refused or {})}
     if verified.unread and jobs_complete:
         jobs_complete = False  # a listed ad that was not read can be neither published nor closed
     _publish_hiring(rec, careers, verified.kept, company_label, site_host, complete=jobs_complete, notes=hiring_notes, verified=verified, parents_site=parents_site)

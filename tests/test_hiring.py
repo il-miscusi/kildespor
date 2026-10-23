@@ -195,10 +195,11 @@ class AvailabilityStates(unittest.TestCase):
 
     def test_unread_ads_past_the_budget_are_not_published(self) -> None:
         home = '<html><body><nav><a href="/karriere/">Karriere</a></nav></body></html>'
-        links = "".join(f'<a href="/karriere/stilling/{100000 + i}-rolle">Rolle nummer {i}</a>' for i in range(14))
+        listed = harvest.MAX_AD_FETCHES + 4
+        links = "".join(f'<a href="/karriere/stilling/{100000 + i}-rolle">Rolle nummer {i}</a>' for i in range(listed))
         careers = f"<html><head><title>Karriere</title></head><body><h1>Ledige stillinger</h1>{links}</body></html>"
         pages = {"https://www.fjordbygg.no/karriere/": careers}
-        for i in range(14):
+        for i in range(listed):
             pages[f"https://www.fjordbygg.no/karriere/stilling/{100000 + i}-rolle"] = ad_html(f"Rolle nummer {i}", "Fjordbygg")
         rec = record()
         fetcher = harvest_site(rec, "https://www.fjordbygg.no/", home, pages)
