@@ -21,6 +21,8 @@ from typing import Any
 import re
 from urllib.parse import urlsplit
 
+from .newsgate import NEWS_UNREAD
+
 NEWS_PATH = re.compile(r"/(?:news|press|aktuelt|nyheter|artikler|blog)(?:/|$)", re.I)
 
 # internal field -> published field
@@ -151,6 +153,8 @@ def publish(envelope: dict[str, Any]) -> dict[str, Any]:
             continue
         state = family_states.get(family) or {}
         availability = state.get("state") if state.get("state") not in (None, "available") else "not_available"
+        if pfield == "dated_news" and str(state.get("reason") or "").startswith(NEWS_UNREAD):
+            availability = "failed"  # a news source could not be read: absence is not established
         claims.append({
             "id": f"na-{envelope.get('organisation_number')}-{pfield}",
             "key": f"{pfield}:availability",

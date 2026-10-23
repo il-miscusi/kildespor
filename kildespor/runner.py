@@ -528,7 +528,7 @@ def run_batch(args: Any) -> int:
         if pending2:
             log(f"enrichment: {len(pending2)} tasks unfinished at the deadline; their open families are reported as failed")
         for org in queued:
-            if not recs[org].claims_for("public_activity"):
+            if not recs[org].claims_for("public_activity") and (recs[org].family_state.get("public_activity") or {}).get("state") != "failed":
                 recs[org].set_state("public_activity", "not_available", "no dated activity found in the register feeds or on the company's own channels")
     pool.shutdown(wait=False, cancel_futures=True)
 

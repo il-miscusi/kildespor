@@ -39,6 +39,9 @@ from urllib.parse import unquote, urlsplit
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "newsgate.json"
 FEATURE_VERSION = 1
 LEAD_CHARS = 600
+# Opens the dated-news reason when a news source could not be read; contract.py publishes such a
+# row as "failed" even when register updates make the internal family available.
+NEWS_UNREAD = "no dated news established"
 
 # ----------------------------------------------------------------------------------------------
 # Page signals (computed once per page by the harvest, stored on the item)
