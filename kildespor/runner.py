@@ -475,38 +475,59 @@ def run_batch(args: Any) -> int:
     checkpoint(final=False)
     log(f"official phase done in {time.monotonic() - started:.0f}s; checkpoint written ({len(orgs)} envelopes)")
 
-    # Phase 2: website, profiles and news for every company; job ads are queued only once NAV's
-    # vacancy feed has loaded, so website workers never sit waiting for it.
+    # Phase 2: website, profiles and news for every company. A company whose register record arrives
+    # after the official phase deadline is admitted as soon as it does. Its NAV lookup starts once
+    # both NAV's vacancy feed has loaded and its own website step is done, so the brand names the
+    # site gives are searched too and the NAV employer-homepage check never races the site step.
     if not args.official_only:
         enrich_deadline = deadline - max(30.0, budget * 0.12)
         per_company = float(args.per_company_seconds)
-        queue = [org for org in orgs if recs[org].context.get("entity")]
-        site_futures = {pool.submit(website_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap): org for org in queue}
-        pending2 = set(site_futures)
+        order = {org: i for i, org in enumerate(orgs)}
+        queued: set[str] = set()
+        site_of: dict[Future[None], str] = {}
+        sites_done: set[str] = set()
+        jobs_submitted: set[str] = set()
+        pending2: set[Future[None]] = set()
         jobs_queued = feed is None
-        jobs_total = 0
         last_checkpoint = time.monotonic()
-        while (pending2 or not jobs_queued) and time.monotonic() < enrich_deadline:
+
+        def admit() -> None:
+            for org in orgs:
+                if org not in queued and recs[org].context.get("entity"):
+                    queued.add(org)
+                    fut = pool.submit(website_phase, fetcher, recs[org], enrich_deadline, per_company, args.company_request_cap)
+                    site_of[fut] = org
+                    pending2.add(fut)
+
+        def jobs_waiting() -> list[str]:
+            return sorted(sites_done - jobs_submitted, key=order.__getitem__) if jobs_queued and feed is not None else []
+
+        admit()
+        while (pending2 or pending or not jobs_queued or jobs_waiting()) and time.monotonic() < enrich_deadline:
+            admit()
             if not jobs_queued and feed is not None and feed.done.is_set():
-                job_futures = {pool.submit(jobs_phase, fetcher, recs[org], enrich_deadline, args.company_request_cap, feed): org for org in queue}
-                pending2 |= set(job_futures)
-                jobs_total = len(job_futures)
                 jobs_queued = True
-                log(f"NAV feed loaded ({feed.pages} pages, {len(feed.active)} active ads{', error: ' + feed.error if feed.error else ''}); job research queued")
+                log(f"NAV feed loaded ({feed.pages} pages, {len(feed.active)} active ads{', error: ' + feed.error if feed.error else ''}); job research queued as website steps finish")
+            for org in jobs_waiting():
+                jobs_submitted.add(org)
+                pending2.add(pool.submit(jobs_phase, fetcher, recs[org], enrich_deadline, args.company_request_cap, feed))
             if pending2:
                 done, pending2 = wait(pending2, timeout=min(5.0, max(0.1, enrich_deadline - time.monotonic())), return_when=FIRST_COMPLETED)
+                sites_done.update(site_of[f] for f in done if f in site_of)
             else:
                 time.sleep(min(2.0, max(0.1, enrich_deadline - time.monotonic())))
+            pending = {f for f in pending if not f.done()}
             if time.monotonic() - last_checkpoint > args.checkpoint_seconds:
                 checkpoint(final=False)
                 last_checkpoint = time.monotonic()
-                log(f"enrichment: {len(site_futures) + jobs_total - len(pending2)}/{len(site_futures) + jobs_total} tasks done")
-        if not jobs_queued:
-            for org in queue:
-                jobs.record_nav_hiring(recs[org], "failed", "NAV's vacancy feed had not loaded before the time budget ran out")
+                log(f"enrichment: {len(sites_done)}/{len(queued)} website steps and {len(jobs_submitted)} job lookups started; {len(pending2)} tasks open")
+        if feed is not None:
+            why = "NAV's vacancy feed had not loaded before the time budget ran out" if not jobs_queued else "the NAV lookup was not reached within the time budget"
+            for org in sorted(queued - jobs_submitted, key=order.__getitem__):
+                jobs.record_nav_hiring(recs[org], "failed", why)
         if pending2:
             log(f"enrichment: {len(pending2)} tasks unfinished at the deadline; their open families are reported as failed")
-        for org in queue:
+        for org in queued:
             if not recs[org].claims_for("public_activity"):
                 recs[org].set_state("public_activity", "not_available", "no dated activity found in the register feeds or on the company's own channels")
     pool.shutdown(wait=False, cancel_futures=True)
