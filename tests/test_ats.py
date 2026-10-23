@@ -407,3 +407,59 @@ class Jobbnorge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NavIndex(unittest.TestCase):
+    """Ads active when the declared NAV index was built are fetched by uuid; the live entry decides."""
+
+    def entry(self, uuid: str, orgnr: str, name: str, status: str = "ACTIVE") -> str:
+        return json.dumps({"uuid": uuid, "status": status, "ad_content": {
+            "title": f"Sykepleier {uuid[:4]}", "employer": {"name": name, "orgnr": orgnr}, "published": "2026-06-18T09:00:00+02:00",
+            "expires": "2026-12-31T00:00:00+01:00", "link": f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"}})
+
+    def test_indexed_sub_unit_ads_are_fetched_and_checked(self) -> None:
+        u = ["1e98d75d-dd59-46df-8517-811a03b422f9", "6cb0f611-06f1-4700-ac75-c0559d21d355", "8e68a283-a5bb-4efe-9d2d-b72b6b062e68",
+             "0000aaaa-0000-0000-0000-000000000001", "0000bbbb-0000-0000-0000-000000000002", "0000cccc-0000-0000-0000-000000000003"]
+        rows = {"983975240": [
+            {"uuid": u[0], "changed": "2026-10-12", "expires": "2026-12-31"},  # sub-unit ad, active
+            {"uuid": u[1], "changed": "2026-10-08", "expires": "2026-12-31"},  # the window saw it close
+            {"uuid": u[2], "changed": "2026-10-07", "expires": "2026-12-31"},  # live entry: another employer
+            {"uuid": u[3], "changed": "2026-06-01", "expires": "2026-01-01"},  # expired: not fetched
+            {"uuid": u[4], "changed": "2026-06-01", "expires": ""},            # anonymous employer
+            {"uuid": u[5], "changed": "2026-06-01", "expires": ""},            # INACTIVE now
+        ]}
+        base = "https://pam-stilling-feed.nav.no/api/v1/feedentry/"
+        fetcher = Fetcher({
+            base + u[0]: (self.entry(u[0], "974733013", "ABUP, Sørlandet sykehus HF"), "application/json"),
+            base + u[2]: (self.entry(u[2], "999999999", "Annen arbeidsgiver"), "application/json"),
+            base + u[4]: (self.entry(u[4], "974595214", "Anonym arbeidsgiver"), "application/json"),
+            base + u[5]: (self.entry(u[5], "974595214", "Sørlandet sykehus HF", status="INACTIVE"), "application/json"),
+        })
+        feed = jobs.NavFeed(fetcher)  # type: ignore[arg-type]
+        feed.token, feed.pages = "t", 1
+        feed.inactive = {u[1]}
+        feed.done.set()
+        rec = record("SØRLANDET SYKEHUS HF", "983975240")
+        rec.context["subunits"] = [{"organisation_number": n, "name": "SØRLANDET SYKEHUS HF AVD"} for n in ("974733013", "974595214")]
+        saved = ats._NAV_ACTIVE
+        ats._NAV_ACTIVE = rows
+        try:
+            jobs.research_jobs(fetcher, rec, time.monotonic() + 30, feed)  # type: ignore[arg-type]
+        finally:
+            ats._NAV_ACTIVE = saved
+        self.assertEqual([c["value"]["url"].rsplit("/", 1)[-1] for c in job_claims(rec)], [u[0]])
+        fetched = [x.rsplit("/", 1)[-1] for x in fetcher.requested]
+        self.assertNotIn(u[1], fetched)
+        self.assertNotIn(u[3], fetched)
+        self.assertEqual(rec.family_state["hiring"]["state"], "available")
+
+    def test_loader_and_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ats-nav-active.tsv.gz"
+            with gzip.open(path, "wt", encoding="utf-8") as fh:
+                fh.write("\t".join(ats.NAV_ACTIVE_COLUMNS) + "\n")
+                fh.write("983975240\t1e98d75d-dd59-46df-8517-811a03b422f9\t974733013\tABUP\t2026-10-09\t2026-11-30\t2026-10-12T10:00:00\t2026-10-23\n")
+                fh.write("983975240\tnot-a-uuid\t974733013\tABUP\t\t\t\t2026-10-23\n")
+            rows = ats.nav_active("983975240", path)
+            self.assertEqual([r["uuid"] for r in rows], ["1e98d75d-dd59-46df-8517-811a03b422f9"])
+            self.assertEqual(ats.nav_active("000000000", path), [])

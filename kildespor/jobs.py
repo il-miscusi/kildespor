@@ -28,6 +28,8 @@ FEED_DAYS = int(os.environ.get("KILDESPOR_NAV_FEED_DAYS", "45"))
 MAX_PAGES = 250
 MAX_CANDIDATES = 8
 MAX_PUBLISHED = 25
+NAV_INDEX_MAX_DAYS = 120  # the widest feed window an old NAV index may ask for
+MAX_INDEXED = 30  # indexed NAV entries fetched per company
 POLICY = "NAV public vacancy feed (pam-stilling-feed.nav.no), public token"
 
 
@@ -64,6 +66,7 @@ class NavFeed:
         self.days = days
         self.max_seconds = max_seconds
         self.active: dict[str, dict[str, str]] = {}
+        self.inactive: set[str] = set()  # ads the window saw close: an indexed uuid among them is not fetched
         self.by_key: dict[str, set[str]] = {}
         self.token: str | None = None
         self.pages = 0
@@ -95,6 +98,15 @@ class NavFeed:
                 self.error = f"public token unavailable (HTTP {token.status})"
                 return
             self.token = words[-1]
+            built = ats.nav_index_built()
+            if built:
+                # The declared NAV index holds the ads active when it was built; the feed then
+                # only has to supply what changed since. An index older than the window widens it.
+                try:
+                    age = (datetime.now(timezone.utc).date() - datetime.fromisoformat(built).date()).days + 2
+                    self.days = max(self.days, min(age, NAV_INDEX_MAX_DAYS))
+                except ValueError:
+                    pass
             since = format_datetime(datetime.now(timezone.utc) - timedelta(days=self.days), usegmt=True)
             url: str | None = FEED + "/api/v1/feed"
             headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json", "If-Modified-Since": since}
@@ -116,8 +128,10 @@ class NavFeed:
                         continue
                     if entry.get("status") == "ACTIVE":
                         self.active[uuid] = {"title": str(entry.get("title") or ""), "business": str(entry.get("businessName") or "")}
+                        self.inactive.discard(uuid)
                     else:
                         self.active.pop(uuid, None)
+                        self.inactive.add(uuid)
                 next_url = body.get("next_url")
                 url = FEED + next_url if next_url else None
             if url and self.error is None:
@@ -339,13 +353,26 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
     subunits = rec.context.get("subunits") or []
     names = search_names(rec)
     own_numbers = {rec.organisation_number} | {s.get("organisation_number") for s in subunits if s.get("organisation_number")}
-    candidates = feed.candidates(names)
     today = datetime.now(timezone.utc).date().isoformat()
+    # Ads the declared NAV index holds for this entity (by employer.orgnr, sub-units included),
+    # unless the feed window has seen them close or their expiry has passed; then the ads the
+    # window lists under one of the entity's names. Every entry is fetched and checked live.
+    indexed = [
+        r["uuid"] for r in ats.nav_active(rec.organisation_number)
+        if r["uuid"] not in feed.inactive and not (r.get("expires") and r["expires"][:10] < today)
+    ][:MAX_INDEXED]
+    named = feed.candidates(names)
+    candidates = list(dict.fromkeys(indexed + named))
+    limit = len(indexed) + MAX_CANDIDATES * 3
+    if indexed and hasattr(fetcher, "raise_company_cap"):
+        fetcher.raise_company_cap(min(len(candidates), limit) + 2)
     listed = {str((c["value"] or {}).get("url") or "").rstrip("/") for c in rec.claims if c["field"] == "job_posting" and isinstance(c["value"], dict)}
     published = 0
     complete = True
     checked = [f"{FEED}/api/v1/feed (last {feed.days} days, {feed.pages} pages, {len(feed.active)} active ads)"]
-    for uuid in candidates[: MAX_CANDIDATES * 3]:
+    if indexed:
+        checked.append(f"declared NAV index ({len(indexed)} ad(s) active at build naming this organisation number or a sub-unit)")
+    for uuid in candidates[:limit]:
         if published >= MAX_PUBLISHED or time.monotonic() > deadline - 2:
             complete = False
             break
@@ -374,6 +401,8 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
         title = " ".join(str(ad.get("title") or "").split())
         if not title:
             continue
+        if re.fullmatch(r"\s*anonym(?:\s+arbeidsgiver)?\s*", str(employer.get("name") or ""), re.I):
+            continue  # the employer chose not to be named on the ad; its orgnr does not overrule that
         expires = str(ad.get("expires") or "")[:10]
         if expires and expires < today:
             continue
@@ -422,7 +451,7 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
                 "homepage", (homepage, snap, f'feedentry {uuid}: employer.homepage = "{homepage}" (employer orgnr {number})')
             )
         published += 1
-    if complete and len(candidates) <= MAX_CANDIDATES * 3 and not feed.error:
+    if complete and len(candidates) <= limit and not feed.error:
         rec.checked_fields.add("job_posting")
     if published:
         record_nav_hiring(rec, "available", f"{published} active job ad(s) in NAV's vacancy feed verified to this organisation number", checked)

@@ -249,6 +249,7 @@ def http_get(url: str, headers: dict[str, str] | None = None, timeout: float = 3
         return 0, b"", ""
 
 
+NAV_ACTIVE_ROWS: list[tuple[str, ...]] = []  # (universe orgnr, uuid, employer orgnr, businessName, published, expires, changed)
 NAV_PAIRS: Counter = Counter()  # (universe orgnr, businessName) -> active ads naming that orgnr or a subunit
 NAV_NAME_ADS: Counter = Counter()  # businessName key -> active ads listed under it
 
@@ -362,6 +363,9 @@ def read_nav(companies: dict[str, Company], sub_parent: dict[str, str], stats: d
             return
         with lock:
             NAV_PAIRS[(parent, active.get(uuid, ""))] += 1
+            if entry.get("status") == "ACTIVE":
+                NAV_ACTIVE_ROWS.append((parent, uuid, number, " ".join(active.get(uuid, "").split()), str(ad.get("published") or "")[:10],
+                                        str(ad.get("expires") or "")[:10], str(entry.get("sistEndret") or ad.get("updated") or "")[:19]))
         for link in links:
             tenant = tenant_of(link) if link.startswith("http") else None
             if tenant is not None:
@@ -433,6 +437,13 @@ def main() -> None:
         rows = nav_name_rows(companies, built, stats)
         out = Path(args.out)
         stats["nav_name_rows"] = write_tsv_gz(out / "ats-nav-names.tsv.gz", ats.NAV_NAMES_COLUMNS, rows)
+        active_rows = [r + (built,) for r in NAV_ACTIVE_ROWS]
+        stats["nav_active_rows"] = write_tsv_gz(out / "ats-nav-active.tsv.gz", ats.NAV_ACTIVE_COLUMNS, active_rows)
+        stats["nav_active_companies"] = len({r[0] for r in active_rows})
+        stats["nav_active_size_bytes"] = (out / "ats-nav-active.tsv.gz").stat().st_size
+        by_active = defaultdict(list)
+        for r in active_rows:
+            by_active[r[0]].append(r[1])
         stats["nav_name_companies"] = len({r[0] for r in rows})
         stats["nav_names_size_bytes"] = (out / "ats-nav-names.tsv.gz").stat().st_size
         by_org = defaultdict(list)
@@ -443,7 +454,9 @@ def main() -> None:
             name, path = spec.split("=", 1)
             orgs = [json.loads(line)["organisation_number"] for line in Path(path).read_text().splitlines() if line.strip()]
             hits = {o: by_org[o] for o in orgs if o in by_org}
-            batch_stats[name] = {"orgs": len(orgs), "with_extra_nav_name": len(hits), "examples": dict(list(hits.items())[:15])}
+            ads = {o: len(by_active[o]) for o in orgs if o in by_active}
+            batch_stats[name] = {"orgs": len(orgs), "with_extra_nav_name": len(hits), "examples": dict(list(hits.items())[:15]),
+                                 "with_active_nav_ad": len(ads), "active_nav_ads": sum(ads.values()), "active_by_org": dict(sorted(ads.items())[:60])}
         stats["batches"] = batch_stats
         stats["seconds"] = round(time.time() - t0)
         print(json.dumps({k: v for k, v in stats.items() if k not in ("nav_application_hosts", "nav_ats_examples", "nav_custom_tenant_hosts")}, indent=1, ensure_ascii=False)[:8000], flush=True)

@@ -645,6 +645,49 @@ _NAV_NAMES: dict[str, list[str]] | None = None
 _LEGAL_SUFFIXES = {"as", "asa", "ans", "da", "sa", "ba", "nuf", "enk", "ks", "hf", "iks", "sf", "bbl", "fli", "stiftelse", "stiftelsen", "aksjeselskap"}
 
 
+NAV_ACTIVE_PATH = Path(__file__).resolve().parent / "data" / "ats-nav-active.tsv.gz"
+NAV_ACTIVE_COLUMNS = ("orgnr", "uuid", "employer_orgnr", "business_name", "published", "expires", "changed", "built_at")
+_NAV_ACTIVE: dict[str, list[dict[str, str]]] | None = None
+
+
+def nav_active(orgnr: str, path: Path | str | None = None) -> list[dict[str, str]]:
+    """Active NAV ads naming this organisation number or one of its sub-units by employer.orgnr
+    when the index was built (``ats-nav-active.tsv.gz``), newest change first. NAV's feed lists
+    only what changed in the window the agent reads, so an ad published in June and unchanged
+    since is otherwise never seen. Each entry is still fetched live and published only when it
+    is ACTIVE and names this entity or a sub-unit."""
+    global _NAV_ACTIVE
+    if _NAV_ACTIVE is None or path is not None:
+        rows: dict[str, list[dict[str, str]]] = {}
+        try:
+            with gzip.open(Path(path or os.environ.get("KILDESPOR_NAV_ACTIVE") or NAV_ACTIVE_PATH), "rt", encoding="utf-8") as fh:
+                header = fh.readline().rstrip("\n").split("\t")
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) == len(header):
+                        row = dict(zip(header, parts))
+                        if row.get("orgnr") and re.fullmatch(r"[0-9a-f-]{36}", row.get("uuid") or ""):
+                            rows.setdefault(row["orgnr"], []).append(row)
+        except (OSError, EOFError, UnicodeDecodeError):
+            rows = {}
+        for found in rows.values():
+            found.sort(key=lambda r: (r.get("changed") or "", r["uuid"]), reverse=True)
+        if path is not None:
+            return rows.get(orgnr, [])
+        with _INDEX_LOCK:
+            _NAV_ACTIVE = rows
+    return list(_NAV_ACTIVE.get(orgnr, []))
+
+
+def nav_index_built() -> str | None:
+    """The build date of the NAV index, or None without one."""
+    nav_active("")
+    for found in (_NAV_ACTIVE or {}).values():
+        if found:
+            return found[0].get("built_at") or None
+    return None
+
+
 def nav_name_key(name: str) -> str:
     """``jobs.name_key`` without the agent's imports (the index builder uses it): name tokens,
     legal form dropped, æøå folded, accents stripped."""
