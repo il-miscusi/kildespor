@@ -146,7 +146,8 @@ def publish(envelope: dict[str, Any]) -> dict[str, Any]:
             "field": pfield,
             "value": None,
             "availability": availability,
-            "reason": state.get("reason") if state.get("state") != "available" else f"no {pfield.replace('_', ' ')} found on the sources checked",
+            # A family available for another reason keeps a reason that says what was checked for this field ("no dated news ...").
+            "reason": state.get("reason") if state.get("state") != "available" or str(state.get("reason") or "").startswith("no ") else f"no {pfield.replace('_', ' ')} found on the sources checked",
             "checked_sources": state.get("checked_sources", []),
             "evidence_ids": [],
             "internal_field": family,

@@ -1934,6 +1934,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}
     refused: dict[str, str] = {}  # key -> why: a page refused once is not let back in by another route
+    news_checked: list[str] = []  # what was read for news, named in the reason when nothing is published
     entity = entity_words(rec, brand_names, home.final_url)
 
     def add_news(item: NewsItem) -> None:
@@ -1981,6 +1982,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         api = _wordpress_api(home_soup, home.final_url)
         snap = plan.raw(api + "wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list", headers={"Accept": "application/json"})
         found = wordpress_items(snap, site_host) if snap is not None else []
+        if snap is not None and snap.ok:
+            news_checked.append(f"the WordPress post API ({len(found)} dated post(s))")
         library = topic_library(found)
         for item in found:
             if library and not news_path(item.url):
@@ -1992,6 +1995,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if len(news) < 3 and feeds and plan.can(1, 6.0):
         snap = plan.raw(feeds[0], headers={"Accept": "application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.5"})
         found = feed_items(snap, site_host) if snap is not None else []
+        if snap is not None and snap.ok:
+            news_checked.append(f"the feed {feeds[0]} ({len(found)} dated item(s))")
         for item in found:
             add_news(item)
     for item in listing_items(home, home_soup, site_host, require_news_path=True):
@@ -2002,6 +2007,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             page = plan.page(listing)
             if page is not None and _site(page[0].final_url) == site_host:
                 found = listing_items(page[0], page[1], site_host, require_news_path=False)
+                news_checked.append(f"the news listing {page[0].final_url} ({len(found)} dated item(s))")
                 for item in found:
                     add_news(item)
 
@@ -2015,6 +2021,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if len(listing_items(page[0], page[1], site_host, require_news_path=False)) >= 3:
             continue  # a listing, not an article
         item = article_meta(page[0], page[1], brand_names + names)
+        news_checked.append(f"the article page {page[0].final_url}")
         if item is not None:
             add_news(item)
 
@@ -2030,7 +2037,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             per_platform[found.platform] = per_platform.get(found.platform, 0) + 1
     _publish_profiles(rec, list(profiles.values()), exact, company_label, own_pages())
     _publish_hiring(rec, careers, roles, company_label, site_host)
-    _publish_news(rec, list(news.values()), company_label)
+    _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, refused)
 
     _note_pages(rec, own_pages(), home, careers, news, site_host)
     if jobs_complete:
@@ -2461,9 +2468,18 @@ def copy_bursts(items: list[NewsItem]) -> set[int]:
     return out
 
 
-def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None) -> None:
+def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None, checked: list[str] | None = None, refused: dict[str, str] | None = None) -> None:
+    dropped: dict[str, int] = {}
+    for why in (refused or {}).values():
+        dropped[why] = dropped.get(why, 0) + 1
     burst = copy_bursts(items)
-    kept = [item for index, item in enumerate(items) if index not in burst and not truncated_title(item.title, item.url)]
+    kept: list[NewsItem] = []
+    for index, item in enumerate(items):
+        why = "a copy or import date shared by 3+ posts within 10 minutes" if index in burst else "title cut short on the listing card" if truncated_title(item.title, item.url) else None
+        if why:
+            dropped[why] = dropped.get(why, 0) + 1
+        else:
+            kept.append(item)
     items = sorted(kept, key=lambda i: (i.date, i.published), reverse=True)[:MAX_NEWS]
     for item in items:
         ev = rec.evidence_from_snapshot(item.snap, source_class=item.source_class, span=item.span, method=item.method, url=item.snap.final_url)
@@ -2482,3 +2498,9 @@ def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str 
         )
     if items:
         rec.set_state("public_activity", "available", f"{len(items)} dated item(s) on the company's own website")
+    elif checked is not None:
+        # Recorded even when register updates make the family available: the dated-news row reads it.
+        reason = "no dated news about the company on its own website; checked " + ", ".join(checked)
+        if dropped:
+            reason += "; dated items not published: " + ", ".join(f"{n} {why}" for why, n in sorted(dropped.items(), key=lambda kv: -kv[1]))
+        rec.set_state("public_activity", "not_available", reason[:600])
