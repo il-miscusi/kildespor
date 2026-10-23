@@ -32,18 +32,21 @@ from . import __version__
 from .model import CompanyRecord
 from .synthesis import build_synthesis, claim_value, internal_field, job_date, money, nace_en, news_date
 
-PUBLISHED_FIELD = {"careers_page": "hiring_signal", "job_posting": "hiring_signal", "company_news": "dated_news"}
+PUBLISHED_FIELD = {"job_posting": "hiring_signal", "company_news": "dated_news"}
 
 
 # -- projection ---------------------------------------------------------------------------------
 
 
 def claims_of(env: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every claim of an envelope in the internal shape (field names and dict values), either input shape."""
+    """Every claim of an envelope in the internal shape (field names and dict values), either input shape.
+    A careers page published by an older run is not a hiring fact and is left out."""
     out = []
     for c in env.get("claims", []):
         item = dict(c)
         item["field"] = internal_field(c)
+        if item["field"] == "careers_page":
+            continue
         item["value"] = claim_value(c)
         out.append(item)
     return out
@@ -187,7 +190,6 @@ def index_row(env: dict[str, Any], payload: dict[str, Any] | None = None) -> dic
     site = _first(claims, "official_website")
     socials = [c for c in claims if c["field"] == "social_profile"]
     jobs = [c for c in claims if c["field"] == "job_posting"]
-    careers = [c for c in claims if c["field"] == "careers_page"]
     news = sorted((c for c in claims if c["field"] == "company_news"), key=lambda c: news_date(c["value"]), reverse=True)
     roles = [c for c in claims if c["field"] == "role" and isinstance(c["value"], dict)]
     ceo = next((c for c in roles if c["value"].get("role_code") == "DAGL"), None)
@@ -209,8 +211,8 @@ def index_row(env: dict[str, Any], payload: dict[str, Any] | None = None) -> dic
     equity, assets = amount(latest, "equity"), amount(latest, "total_assets")
     for key, claim in (("name", name), ("municipality", muni), ("industry", ind), ("employees", employees), ("website", site), ("revenue", latest.get("revenue")), ("result", latest.get("annual_result")), ("equity", latest.get("equity")), ("ceo", ceo), ("chair", chair), ("parent", parent)):
         remember(key, claim)
-    if jobs or careers:
-        remember("hiring", (jobs or careers)[0])
+    if jobs:
+        remember("hiring", jobs[0])
     if socials:
         remember("social", socials[0])
     if news:
@@ -242,7 +244,6 @@ def index_row(env: dict[str, Any], payload: dict[str, Any] | None = None) -> dic
         "w": ((site["value"] or {}).get("url") if isinstance(site["value"], dict) else site["value"]) if site else None,
         "so": sorted({(c["value"].get("platform") if isinstance(c["value"], dict) else "profile") for c in socials}),
         "j": len(jobs),
-        "cp": bool(careers),
         "nw": len(news),
         "nd": news_date(news[0]["value"]) if news else None,
         "ceo": ceo["value"].get("name") if ceo else None,
@@ -464,7 +465,7 @@ function link(u,label){var s=safeUrl(u);return s?'<a href="'+esc(s)+'" target="_
 function host(u){try{return new URL(u).hostname.replace(/^www\./,"")}catch(e){return u}}
 function store(k,v){try{if(v===undefined)return JSON.parse(localStorage.getItem(k)||"null");localStorage.setItem(k,JSON.stringify(v))}catch(e){return null}}
 var AREAS=["Company record","Financials","People & locations","Company website","Public footprint"];
-var FAMILY={legal_identity:"Legal identity",public_brand:"Brand & self-description",annual_accounts:"Annual accounts",leadership:"Leadership & board",workplaces:"Registered workplaces",official_website:"Official website",company_profiles:"Social profiles",contact_channels:"Contact channels",hiring:"Hiring signal (job ads, careers page)",public_activity:"Dated news & activity"};
+var FAMILY={legal_identity:"Legal identity",public_brand:"Brand & self-description",annual_accounts:"Annual accounts",leadership:"Leadership & board",workplaces:"Registered workplaces",official_website:"Official website",company_profiles:"Social profiles",contact_channels:"Contact channels",hiring:"Hiring signal (single job ads)",public_activity:"Dated news & activity"};
 var METRICS=[["revenue","Revenue"],["operating_result","Operating result"],["annual_result","Net result"],["equity","Equity"],["total_assets","Total assets"],["total_debt","Total liabilities"]];
 var DIVISIONS=null;
 var ROLE_EN={DAGL:"general manager",LEDE:"board chair",NEST:"deputy chair",MEDL:"board member",VARA:"deputy board member",REVI:"auditor",REGN:"accountant",INNH:"owner",DTPR:"partner",DTSO:"partner",KOMP:"general partner","FFØR":"business manager",KONT:"contact person",HFOR:"head office abroad"};
@@ -511,7 +512,7 @@ function sentences(org,list,counter){return list.map(function(s){counter.n++;ret
 
 /* ---------- shared pieces ---------- */
 function covDots(r){var a=r.ca||[];return '<span class="cov" title="'+AREAS.map(function(x,i){return x+": "+(a[i]?"found":"not available")}).join("; ")+'">'+(r.cv==null?"?":r.cv)+'/5 data areas <span class="dots" aria-hidden="true">'+[0,1,2,3,4].map(function(i){return '<span class="dot'+(a[i]?" on":"")+'"></span>'}).join("")+'</span></span>'}
-function badges(r){var b=[];if(r.w)b.push('<span class="badge ok">Website</span>');if(r.so&&r.so.length)b.push('<span class="badge ok">Social: '+esc(r.so.join(", "))+'</span>');if(r.j)b.push('<span class="badge ok">Hiring: '+r.j+' ad'+(r.j>1?"s":"")+'</span>');else if(r.cp)b.push('<span class="badge info">Careers page</span>');if(r.nw)b.push('<span class="badge info">News '+esc(r.nd||"")+'</span>');if(r.ch)b.push('<span class="badge warn">'+r.ch+' change'+(r.ch>1?"s":"")+' this run</span>');if(r.st)b.push('<span class="badge warn">'+r.st+' not re-checked</span>');if(r.rs&&r.rs!=="active")b.push('<span class="badge bad">'+esc(r.rs)+'</span>');if(r.err)b.push('<span class="badge bad">profile error</span>');return '<div class="badges">'+b.join("")+'</div>'}
+function badges(r){var b=[];if(r.w)b.push('<span class="badge ok">Website</span>');if(r.so&&r.so.length)b.push('<span class="badge ok">Social: '+esc(r.so.join(", "))+'</span>');if(r.j)b.push('<span class="badge ok">Hiring: '+r.j+' ad'+(r.j>1?"s":"")+'</span>');if(r.nw)b.push('<span class="badge info">News '+esc(r.nd||"")+'</span>');if(r.ch)b.push('<span class="badge warn">'+r.ch+' change'+(r.ch>1?"s":"")+' this run</span>');if(r.st)b.push('<span class="badge warn">'+r.st+' not re-checked</span>');if(r.rs&&r.rs!=="active")b.push('<span class="badge bad">'+esc(r.rs)+'</span>');if(r.err)b.push('<span class="badge bad">profile error</span>');return '<div class="badges">'+b.join("")+'</div>'}
 function setCompare(list){KD.compare=list.slice(0,4);store("kd-compare",KD.compare);renderTray()}
 function toggleCompare(org,on){var l=KD.compare.filter(function(o){return o!==org});if(on)l.push(org);setCompare(l)}
 function renderTray(){var t=$("#tray");if(!KD.compare.length||/^#\/compare/.test(location.hash)){t.classList.remove("show");return}t.innerHTML='<span class="small">'+KD.compare.length+' selected</span><a class="btn primary" href="#/compare?orgs='+KD.compare.join(",")+'">Compare</a><button class="btn" id="tray-clear">Clear</button>';t.classList.add("show");$("#tray-clear").onclick=function(){setCompare([]);$$("input[data-pick]").forEach(function(i){i.checked=false})}}
@@ -529,7 +530,7 @@ function parseScreen(q){var l=q.toLowerCase(),f=[],un=[];Object.keys(UNSUPPORTED
   var mm=l.match(/\b(?:in|from|based in|located in)\s+([a-zæøåéü][a-zæøåéü .'-]*?)(?=\s+(?:with|and|that|having|which|who|where|over|under|above|below|more|less|by)\b|[,?.!]|$)/);
   if(mm&&munis[mm[1].trim()])f.push({k:"m",v:munis[mm[1].trim()],t:"municipality is "+title(mm[1])});
   else Object.keys(munis).forEach(function(n){if(n.length>3&&new RegExp("\\b"+n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b").test(l)&&!f.some(function(x){return x.k==="m"}))f.push({k:"m",v:munis[n],t:"municipality is "+title(n)})});
-  if(/\b(hiring|recruit|job ads?|vacanc|open roles?|jobs)\b/.test(l))f.push({k:"hire",t:"hiring signal (job ad or careers page)"});
+  if(/\b(hiring|recruit|job ads?|vacanc|open roles?|jobs)\b/.test(l))f.push({k:"hire",t:"hiring signal (open job ad)"});
   if(/\b(without|no|lacking|missing)\s+(an?\s+)?(official\s+)?(web\s?site|homepage)/.test(l))f.push({k:"nw",t:"no verified website found (absence is not proof)"});else if(/\b(with|has|have|having)\s+(an?\s+)?(official\s+|verified\s+)?(web\s?site|homepage)/.test(l)||/\bwebsites?\b/.test(l)&&!/\bno\b/.test(l))f.push({k:"w",t:"verified website"});
   if(/\b(without|no|lacking|missing|but no)\s+(an?\s+)?social/.test(l))f.push({k:"nso",t:"no social profile found"});else if(/\bsocial\b|facebook|instagram|linkedin|youtube|tiktok/.test(l))f.push({k:"so",t:"social profile"});
   if(/\b(news|press|announce|articles?)\b/.test(l))f.push({k:"news",t:"dated news on its own channels"});
@@ -547,11 +548,11 @@ function parseScreen(q){var l=q.toLowerCase(),f=[],un=[];Object.keys(UNSUPPORTED
   var ind=l.match(/industry\s+(?:code\s+)?(\d{2}(?:\.\d{1,3})?)/);if(ind)f.push({k:"ic",v:ind[1],t:"industry code starts "+ind[1]});
   var top=l.match(/\btop\s+(\d+)(?:\s+\w+)?\s+by\s+(revenue|employees|growth)/)||l.match(/\b(largest|biggest)\b/);var sort=null;if(top)sort={k:top[2]==="employees"?"e":top[2]==="growth"?"rg":"r",n:top[1]&&+top[1]||10};
   return {filters:f,unsupported:un,sort:sort}}
-function rowMatch(r,x){switch(x.k){case "m":return r.m===x.v;case "hire":return r.j>0||r.cp;case "w":return !!r.w;case "nw":return !r.w;case "so":return r.so&&r.so.length>0;case "nso":return !(r.so&&r.so.length);case "news":return r.nw>0;case "r":return r.r!=null&&(x.op===">"?r.r>x.v:r.r<x.v);case "e":return r.e!=null&&(x.op===">"?r.e>x.v:r.e<x.v);case "loss":return r.nr!=null&&r.nr<0;case "profit":return r.nr!=null&&r.nr>0;case "negeq":return r.eq!=null&&r.eq<0;case "ch":return r.ch>0;case "st":return r.st>0;case "cv5":return r.cv===5;case "f":return r.f===x.v;case "dv":return x.v.indexOf(r.dv)>=0;case "ic":return String(r.i||"").indexOf(x.v)===0}return false}
+function rowMatch(r,x){switch(x.k){case "m":return r.m===x.v;case "hire":return r.j>0;case "w":return !!r.w;case "nw":return !r.w;case "so":return r.so&&r.so.length>0;case "nso":return !(r.so&&r.so.length);case "news":return r.nw>0;case "r":return r.r!=null&&(x.op===">"?r.r>x.v:r.r<x.v);case "e":return r.e!=null&&(x.op===">"?r.e>x.v:r.e<x.v);case "loss":return r.nr!=null&&r.nr<0;case "profit":return r.nr!=null&&r.nr>0;case "negeq":return r.eq!=null&&r.eq<0;case "ch":return r.ch>0;case "st":return r.st>0;case "cv5":return r.cv===5;case "f":return r.f===x.v;case "dv":return x.v.indexOf(r.dv)>=0;case "ic":return String(r.i||"").indexOf(x.v)===0}return false}
 var CITE_FOR={m:"municipality",hire:"hiring",w:"website",so:"social",news:"news",r:"revenue",e:"employees",loss:"result",profit:"result",negeq:"equity",dv:"industry",ic:"industry",f:"name"};
 function answerCompany(r,q,cb){var l=q.toLowerCase();loadCompany(r.o,function(d){if(!d)return cb('<div class="answer unsupported">The profile of '+esc(r.n)+' could not be loaded.</div>');
   var sec=function(k){return (d.syn.sections||[]).filter(function(s){return s.key===k})[0]};var topic=null;
-  for(var u in UNSUPPORTED)if(l.indexOf(u)>=0)return cb('<div class="answer unsupported"><b>Not supported by the evidence.</b> '+esc(UNSUPPORTED[u])+'. The run covers registry identity, accounts, roles, workplaces, the verified website, social profiles, job ads, careers pages and dated news.</div>');
+  for(var u in UNSUPPORTED)if(l.indexOf(u)>=0)return cb('<div class="answer unsupported"><b>Not supported by the evidence.</b> '+esc(UNSUPPORTED[u])+'. The run covers registry identity, accounts, roles, workplaces, the verified website, social profiles, single job ads and dated news.</div>');
   if(/\b(ceo|chief executive|daglig leder|general manager|managing director|who runs|who leads|chair|board|owner|owns|owned|parent|leader|leadership|auditor|accountant)\b/.test(l))topic="who";
   else if(/\b(hiring|hire|jobs?|vacanc|recruit|careers?|work there|work here|apply)\b/.test(l))topic="hire";
   else if(/\b(website|web site|homepage|online|social|facebook|instagram|linkedin)\b/.test(l))topic="web";
@@ -562,7 +563,7 @@ function answerCompany(r,q,cb){var l=q.toLowerCase();loadCompany(r.o,function(d)
   var n={n:0},parts=[],ok=true;
   var hdr='<b><a href="#/companies/'+esc(r.o)+'">'+esc(r.n)+'</a></b> ('+esc(r.o)+'): ';
   if(topic==="who"){var w=sec("who");if(/\b(ceo|chief executive|daglig leder|general manager|managing director)\b/.test(l)){var c=d.cl.filter(function(c){return c.f==="role"&&c.v&&c.v.role_code==="DAGL"})[0];if(c)parts.push("The general manager (daglig leder) is "+esc(c.v.name)+". "+factChip(r.o,c,++n.n));else{ok=false;parts.push("Not supported by the evidence: the register lists no general manager for this entity. "+(d.fam.leadership?esc(d.fam.leadership.r||""):""))}}else if(w)parts.push(sentences(r.o,w.s,n));else ok=false}
-  else if(topic==="hire"){var jobs=d.cl.filter(function(c){return c.f==="job_posting"&&c.a==="available"}),cp=d.cl.filter(function(c){return c.f==="careers_page"&&c.a==="available"});if(jobs.length){parts.push("Yes: "+jobs.length+" open job ad"+(jobs.length>1?"s":"")+" verified to this organisation number:<ul>"+jobs.slice(0,8).map(function(c){n.n++;return '<li>'+link(c.v.url,c.v.title||c.v.url)+(c.v.published?" ("+esc(String(c.v.published).slice(0,10))+")":"")+" "+factChip(r.o,c,n.n)+'</li>'}).join("")+'</ul>')}if(cp.length){n.n++;parts.push("Careers page: "+link(cp[0].v)+" "+factChip(r.o,cp[0],n.n)+(jobs.length?"":" — a recruiting channel; no open ad was verified."))}if(!jobs.length&&!cp.length){ok=false;var fh=d.fam.hiring||{};parts.push("Not supported by the evidence: no job ad or careers page was found ("+esc(fh.s||"not checked")+": "+esc(fh.r||"")+"). This is not proof that it is not hiring.")}}
+  else if(topic==="hire"){var jobs=d.cl.filter(function(c){return c.f==="job_posting"&&c.a==="available"});if(jobs.length){parts.push("Yes: "+jobs.length+" open job ad"+(jobs.length>1?"s":"")+", each a single ad read at its source:<ul>"+jobs.slice(0,8).map(function(c){n.n++;return '<li>'+link(c.v.url,c.v.title||c.v.url)+(c.v.published?" ("+esc(String(c.v.published).slice(0,10))+")":"")+" "+factChip(r.o,c,n.n)+'</li>'}).join("")+'</ul>')}if(!jobs.length){ok=false;var fh=d.fam.hiring||{};parts.push("Not supported by the evidence: no single open job ad was found ("+esc(fh.s||"not checked")+": "+esc(fh.r||"")+"). This is not proof that it is not hiring.")}}
   else if(topic&&sec(topic==="web"?"signals":topic)){var sc=sec(topic==="web"?"signals":topic);parts.push(sentences(r.o,sc.s,n))}
   else if(!topic){parts.push(sentences(r.o,d.syn.summary||[],n))}
   else{ok=false;parts.push("Not supported by the evidence: nothing in this company's profile answers that.")}
@@ -579,7 +580,7 @@ function answer(q,cb){q=String(q||"").trim();if(!q)return cb("");var company=fin
   if(p.unsupported.length)h+='<div class="notice">Ignored: '+esc(p.unsupported.join("; "))+'.</div>';
   if(p.filters.some(function(x){return x.k==="nw"||x.k==="nso"}))h+='<div class="small muted">"No website" means none was verified in this run; it is not proof that none exists.</div>';
   if(p.filters.some(function(x){return x.k==="ch"})&&KD.meta.baseline)h+='<div class="small muted">This run has no previous snapshot, so no company can have changed; see Refresh.</div>';
-  h+='<ul>'+res.slice(0,25).map(function(r){var cites=keys.map(function(k,i){var c=r.src&&r.src[k];return c?chip(r.o,i+1,[c[1]],[c[0]],"fact",k):""}).join("");var val=[r.m?title(r.m):null,r.r!=null?"revenue "+money(r.r)+(r.y?" ("+r.y+")":""):null,r.e!=null?r.e+" employees":null,r.j?r.j+" job ad"+(r.j>1?"s":""):r.cp?"careers page":null,r.w?host(r.w):null,r.so&&r.so.length?r.so.join("/"):null,r.nw?r.nw+" news":null,r.ch?r.ch+" changes":null].filter(Boolean).join(" · ");return '<li><a href="#/companies/'+esc(r.o)+'">'+esc(r.n)+'</a> <span class="small muted">'+esc(val)+'</span> '+cites+'</li>'}).join("")+'</ul>'+(res.length>25?'<div class="small muted">Showing the first 25.</div>':"")+'<div class="small muted">Each number opens the claim and source used for that criterion.</div></div>';
+  h+='<ul>'+res.slice(0,25).map(function(r){var cites=keys.map(function(k,i){var c=r.src&&r.src[k];return c?chip(r.o,i+1,[c[1]],[c[0]],"fact",k):""}).join("");var val=[r.m?title(r.m):null,r.r!=null?"revenue "+money(r.r)+(r.y?" ("+r.y+")":""):null,r.e!=null?r.e+" employees":null,r.j?r.j+" job ad"+(r.j>1?"s":""):null,r.w?host(r.w):null,r.so&&r.so.length?r.so.join("/"):null,r.nw?r.nw+" news":null,r.ch?r.ch+" changes":null].filter(Boolean).join(" · ");return '<li><a href="#/companies/'+esc(r.o)+'">'+esc(r.n)+'</a> <span class="small muted">'+esc(val)+'</span> '+cites+'</li>'}).join("")+'</ul>'+(res.length>25?'<div class="small muted">Showing the first 25.</div>':"")+'<div class="small muted">Each number opens the claim and source used for that criterion.</div></div>';
   cb(h,p,res)}
 KD.answer=answer;KD.parseScreen=parseScreen;
 
@@ -606,7 +607,7 @@ function renderResearch(){
   var filtered=[];
   var apply=function(){var o=read();setParams(o);var t=o.text.toLowerCase();var rmin=o.rmin===""?null:+o.rmin*1e6,rmax=o.rmax===""?null:+o.rmax*1e6,emin=o.emin===""?null:+o.emin,emax=o.emax===""?null:+o.emax;
     filtered=KD.rows.filter(function(r){if(t){var hay=[r.n,r.b,r.o,r.m,r.il,r.ie,r.i,r.ceo,r.chair,r.w].join(" ").toLowerCase();if(t.split(/\s+/).some(function(w){return hay.indexOf(w)<0}))return false}
-      if(o.muni&&r.m!==o.muni)return false;if(o.div&&r.dv!==o.div)return false;if(o.web==="1"&&!r.w)return false;if(o.social==="1"&&!(r.so&&r.so.length))return false;if(o.hire==="1"&&!(r.j||r.cp))return false;if(o.news==="1"&&!r.nw)return false;if(o.acc==="1"&&!r.y)return false;if(o.chg==="1"&&!r.ch)return false;if(o.full==="1"&&r.cv!==5)return false;
+      if(o.muni&&r.m!==o.muni)return false;if(o.div&&r.dv!==o.div)return false;if(o.web==="1"&&!r.w)return false;if(o.social==="1"&&!(r.so&&r.so.length))return false;if(o.hire==="1"&&!r.j)return false;if(o.news==="1"&&!r.nw)return false;if(o.acc==="1"&&!r.y)return false;if(o.chg==="1"&&!r.ch)return false;if(o.full==="1"&&r.cv!==5)return false;
       if(rmin!=null&&!(r.r!=null&&r.r>=rmin))return false;if(rmax!=null&&!(r.r!=null&&r.r<=rmax))return false;if(emin!=null&&!(r.e!=null&&r.e>=emin))return false;if(emax!=null&&!(r.e!=null&&r.e<=emax))return false;return true});
     var s=o.sort||"cov",cmp={name:function(a,b){return a.n.localeCompare(b.n)},rev:function(a,b){return (b.r==null?-Infinity:b.r)-(a.r==null?-Infinity:a.r)},emp:function(a,b){return (b.e==null?-1:b.e)-(a.e==null?-1:a.e)},recent:function(a,b){return String(b.ld||"").localeCompare(String(a.ld||""))},chg:function(a,b){return (b.ch||0)-(a.ch||0)},cov:function(a,b){return (b.cv||0)-(a.cv||0)||a.n.localeCompare(b.n)}}[s];filtered.sort(cmp);
     $("#count").textContent=filtered.length+" of "+KD.rows.length+" companies";draw()};
@@ -645,10 +646,10 @@ function renderCompany(org){
     var people='<div class="panel" id="s-people"><h2>People and places</h2>'+(roles.length?'<ul class="plain">'+roles.map(function(c){return '<li><b>'+esc(c.v.name)+'</b> — '+esc(c.v.role||"")+(ROLE_EN[c.v.role_code]?' <span class="small muted">('+ROLE_EN[c.v.role_code]+')</span>':"")+stale(c)+(c.d?' <span class="small muted">since '+esc(c.d)+'</span>':"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p class="muted">No public roles: '+esc((d.fam.leadership||{}).r||"")+'</p>')+
       (groups.length?'<h3>Group</h3><ul class="plain">'+groups.map(function(c){return '<li>'+esc(c.v.relationship==="subsidiary"?"Subsidiary":c.v.relationship==="parent"?"Parent":"Ultimate parent")+': <a href="'+(KD.byOrg[c.v.organisation_number]?"#/companies/"+esc(c.v.organisation_number):"#/research")+'">'+esc(c.v.name)+'</a> ('+esc(c.v.organisation_number)+')'+(c.v.ownership?" · "+esc(c.v.ownership):"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':"")+
       '<h3>Registered workplaces</h3>'+(units.length?'<ul class="plain">'+units.slice(0,30).map(function(c){return '<li>'+esc(c.v.name)+' — '+esc(c.v.address||"")+(c.v.employees!=null?' · '+esc(c.v.employees)+' employees':"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p class="muted">'+esc((d.fam.workplaces||{}).r||"None registered")+'</p>')+(id.business_address?'<p class="small">Business address: '+esc(id.business_address)+'</p>':"")+'</div>';
-    var site=claim("official_website")[0],soc=claim("social_profile"),jobs=claim("job_posting"),cp=claim("careers_page"),news=claim("company_news").sort(function(a,b){return String(b.v.published||b.v.date||"").localeCompare(String(a.v.published||a.v.date||""))}),fs=function(f){var x=d.fam[f]||{};return '<span class="state '+esc(x.s||"")+'">'+esc((x.s||"not checked").replace("_"," "))+'</span> <span class="small muted">'+esc(x.r||"")+'</span>'};
+    var site=claim("official_website")[0],soc=claim("social_profile"),jobs=claim("job_posting"),news=claim("company_news").sort(function(a,b){return String(b.v.published||b.v.date||"").localeCompare(String(a.v.published||a.v.date||""))}),fs=function(f){var x=d.fam[f]||{};return '<span class="state '+esc(x.s||"")+'">'+esc((x.s||"not checked").replace("_"," "))+'</span> <span class="small muted">'+esc(x.r||"")+'</span>'};
     var web='<div class="panel" id="s-web"><h2>Web presence and hiring</h2><h3>Official website</h3>'+(site?'<p>'+link(site.v.url||site.v)+(site.st?'<span class="stale-mark">not re-checked</span>':"")+' '+factChip(org,site)+'<br><span class="small muted">'+esc((site.v.identity_method||"").replace(/_/g," "))+'</span></p>':'<p>'+fs("official_website")+'</p>')+
       '<h3>Social profiles</h3>'+(soc.length?'<ul class="plain">'+soc.map(function(c){var u=c.v.url||c.v;return '<li>'+esc(title(c.v.platform||host(u)))+': '+link(u)+(c.st?'<span class="stale-mark">not re-checked</span>':"")+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p>'+fs("company_profiles")+'</p>')+
-      '<h3>Hiring</h3>'+(jobs.length||cp.length?'<ul class="plain">'+jobs.map(function(c){return '<li>'+link(c.v.url,c.v.title||c.v.url)+(c.v.location?' · '+esc(c.v.location):"")+(c.v.published?' · published '+esc(String(c.v.published).slice(0,10)):"")+(c.v.expires?' · closes '+esc(String(c.v.expires).slice(0,10)):"")+stale(c)+" "+factChip(org,c)+'</li>'}).join("")+cp.map(function(c){return '<li>Careers page: '+link(c.v)+stale(c)+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p>'+fs("hiring")+'</p>')+
+      '<h3>Hiring</h3>'+(jobs.length?'<ul class="plain">'+jobs.map(function(c){return '<li>'+link(c.v.url,c.v.title||c.v.url)+(c.v.location?' · '+esc(c.v.location):"")+(c.v.published?' · published '+esc(String(c.v.published).slice(0,10)):"")+(c.v.expires?' · closes '+esc(String(c.v.expires).slice(0,10)):"")+stale(c)+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p>'+fs("hiring")+'</p>')+
       '<h3>Dated news</h3>'+(news.length?'<ul class="plain">'+news.slice(0,15).map(function(c){return '<li><span class="mono">'+esc(String(c.v.published||c.v.date||"").slice(0,10))+'</span> '+link(c.v.url,c.v.title)+stale(c)+" "+factChip(org,c)+'</li>'}).join("")+'</ul>':'<p><span class="state">not available</span> <span class="small muted">no dated news item was found on the company\'s own channels</span></p>')+'</div>';
     var tl=d.syn.timeline||[];
     var changes='<div class="panel" id="s-changes"><h2>What changed</h2>'+(d.ch.length?'<h3>Since the previous run ('+esc((d.rf||{}).previous_run_id||"")+')</h3>'+d.ch.map(function(c){return changeCard(org,c)}).join(""):'<p class="muted">'+((d.rf||{}).baseline!==false?"First snapshot for this company: no earlier run to compare with.":"No published fact changed since the previous run ("+esc((d.rf||{}).previous_run_id||"")+").")+'</p>')+
@@ -693,7 +694,7 @@ function renderCompare(){
     rows.push(["Parent company",function(d){var c=one(d,"group_relationship",function(c){return c.v.relationship==="parent"||c.v.relationship==="ultimate_parent"});return cell(d,c,c?c.v.name:"none registered")}]);
     rows.push(["Website",function(d){var c=one(d,"official_website");return c?link(c.v.url||c.v,host(c.v.url||c.v))+" "+factChip(d.org,c,"✓"):'<span class="muted">'+esc(((d.fam.official_website||{}).s||"").replace("_"," ")||"not available")+'</span>'}]);
     rows.push(["Social profiles",function(d){var l=d.cl.filter(function(c){return c.f==="social_profile"&&c.a==="available"});return l.length?l.map(function(c){return link(c.v.url||c.v,title(c.v.platform||"profile"))+" "+factChip(d.org,c,"✓")}).join("<br>"):'<span class="muted">none found</span>'}]);
-    rows.push(["Hiring",function(d){var j=d.cl.filter(function(c){return c.f==="job_posting"&&c.a==="available"}),cp=one(d,"careers_page");return j.length?j.length+" job ad"+(j.length>1?"s":"")+" "+factChip(d.org,j[0],"✓"):cp?"careers page "+factChip(d.org,cp,"✓"):'<span class="muted">no signal found</span>'}]);
+    rows.push(["Hiring",function(d){var j=d.cl.filter(function(c){return c.f==="job_posting"&&c.a==="available"});return j.length?j.length+" job ad"+(j.length>1?"s":"")+" "+factChip(d.org,j[0],"✓"):'<span class="muted">no single ad found</span>'}]);
     rows.push(["Latest news",function(d){var l=d.cl.filter(function(c){return c.f==="company_news"&&c.a==="available"}).sort(function(a,b){return String(b.v.published||b.v.date||"").localeCompare(String(a.v.published||a.v.date||""))});return l.length?esc(String(l[0].v.published||l[0].v.date||"").slice(0,10))+" "+link(l[0].v.url,l[0].v.title)+" "+factChip(d.org,l[0],"✓"):'<span class="muted">none found</span>'}]);
     rows.push(["Data areas",function(d){return covDots(KD.byOrg[d.org]||{ca:[]})}]);
     rows.push(["Changes this run",function(d){return d.ch.length?d.ch.length+" — "+esc(d.ch.slice(0,2).map(function(c){return String(c.type).replace(/_/g," ")}).join(", ")):'<span class="muted">none</span>'}]);

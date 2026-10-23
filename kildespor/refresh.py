@@ -30,7 +30,10 @@ SINGLE_VALUED = {
     "share_capital", "statutory_purpose", "registered_activity", "vat_registered", "in_business_register", "part_of_group",
     "registry_status", "latest_filed_accounts_year", "registry_website", "official_website", "public_brand_name", "self_description",
 }
-FIELD_CHECKED = {"job_posting", "careers_page", "social_profile", "company_news", "website_phone", "website_email", "public_brand_name", "self_description", "official_website"}
+FIELD_CHECKED = {"job_posting", "social_profile", "company_news", "website_phone", "website_email", "public_brand_name", "self_description", "official_website"}
+# Role links a baseline published without reading their ad page (v1, rc4b): never verified as one
+# open ad, so when this run does not confirm them they are dropped, neither carried nor closed.
+UNREAD_AD_METHODS = {"careers_page_role_link"}
 HIGH = {"legal_name", "registry_status", "registered_business_address", "official_website", "latest_filed_accounts_year", "legal_form"}
 CHANGE_NAMES = {
     "role": ("new_role", "ended_role"),
@@ -174,8 +177,12 @@ def diff(rec: CompanyRecord, previous: dict[str, Any] | None, run_id: str) -> tu
             change_type = CHANGE_NAMES.get(claim["field"], (f"new_{claim['field']}", ""))[0]
             materiality = "medium" if claim["field"] in ("role", "registered_workplace", "job_posting", "group_relationship") else "low"
         changes.append({"change_type": change_type, "field": claim["field"], "family": claim["family"], "previous": None, "current": claim["value"], "current_claim_id": claim["id"], "current_evidence_ids": claim.get("evidence_ids", []), "previous_evidence_ids": [], "materiality": materiality, "summary": f"{change_type.replace('_', ' ')}: {_short(claim['value'])}", "detected_at": now})
+    # An ad merged into another claim's also_at (the NAV twin of a site ad) has not closed.
+    merged = {str(u).rstrip("/") for c in cur_claims.values() if c["field"] == "job_posting" and isinstance(c.get("value"), dict) for u in c["value"].get("also_at") or []}
     for key, claim in prev_claims.items():
         if claim["field"] in SINGLE_VALUED or key in cur_claims:
+            continue
+        if claim["field"] == "job_posting" and (claim.get("extraction_method") in UNREAD_AD_METHODS or str((claim["value"] if isinstance(claim.get("value"), dict) else {}).get("url") or "").rstrip("/") in merged):
             continue
         if claim["field"].startswith("financial."):
             # Older filings roll out of the API's three-year window; keep them as history, not as removals.

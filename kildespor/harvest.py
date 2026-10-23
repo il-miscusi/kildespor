@@ -9,15 +9,18 @@ plan, it publishes:
   data) on Facebook, Instagram, LinkedIn, YouTube, X, TikTok, Pinterest,
   Vimeo, Threads and GitHub, in one canonical form, bound to the company by
   name or domain;
-* hiring: the careers page (own site or a known applicant-tracking system),
-  and one ``job_posting`` claim per open role listed there;
+* hiring: one ``job_posting`` claim per single open ad by this company. The
+  careers page and the applicant-tracking list it links are where ads are
+  found, never claims themselves; each listed role link has its own ad page
+  read, and the ad must be open and name this company (or no other employer
+  on a list that is not a group's);
 * dated news: RSS/Atom, the WordPress post API, sitemaps, news listings and
   article pages, one ``company_news`` claim per item from the last 24 months;
 * brand, self-description, phones and e-mail addresses.
 
 Every claim's evidence points at the page that shows the fact: the linking
-page for a profile, the careers or ATS page for a role, the article (or the
-feed, sitemap or listing that dates it) for a news item.
+page for a profile, the ad page (and the list that linked it) for a role, the
+article (or the feed, sitemap or listing that dates it) for a news item.
 
 Page plan: robots.txt is already cached by the fetcher, so its ``Sitemap:``
 lines cost nothing, and one sitemap read names the contact, careers and news
@@ -25,7 +28,9 @@ pages even on sites that draw their menus with JavaScript. The harvest spends
 at most ``HARVEST_REQUESTS`` requests per verified site (env
 ``KILDESPOR_HARVEST_REQUESTS``) in this order: sitemap, careers page and its
 ATS listing, news feed or listing, a contact page, then up to three article
-pages for their own published datetime.
+pages for their own published datetime. Ad pages are read last, on their own
+allowance of ``MAX_AD_FETCHES`` requests (env ``KILDESPOR_AD_FETCHES``, default
+10); a role link left unread is not published.
 """
 from __future__ import annotations
 
@@ -41,7 +46,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from .http import Snapshot
+from .http import RequestBudgetExhausted, RobotsDisallowed, Snapshot
 from .model import CompanyRecord
 from .website import (
     CREDIT_WORDS,
@@ -49,16 +54,20 @@ from .website import (
     GENERIC_NAME_WORDS,
     SiteVisit,
     _ld_employer_is_ours,
+    _ld_numbers,
     _ld_org_is_ours,
+    _name_matches,
     _names_of,
     _types,
     json_ld_items,
     name_tokens,
     normalise_phone,
+    parse,
     registered_domain,
     safe_link,
     strip_accents,
     utc_today,
+    valid_orgnr,
 )
 
 try:  # Norwegian sites publish in local time; feeds and post APIs give UTC.
@@ -69,6 +78,9 @@ except Exception:  # pragma: no cover - no tz database
     OSLO = None
 
 HARVEST_REQUESTS = int(os.environ.get("KILDESPOR_HARVEST_REQUESTS", "12"))
+# Ad pages read to confirm role links (on top of HARVEST_REQUESTS, after news and profiles): a
+# link that is not read is not published.
+MAX_AD_FETCHES = int(os.environ.get("KILDESPOR_AD_FETCHES", "10"))
 NEWS_MAX_AGE_DAYS = 730
 MAX_NEWS = 30
 MAX_JOBS = 25
@@ -244,6 +256,7 @@ class Plan:
         self.limit = limit
         fetcher = visit.fetcher
         self.start = fetcher.thread_requests() if hasattr(fetcher, "thread_requests") else 0
+        self.ad_start: int | None = None
         if hasattr(fetcher, "begin_company"):
             fetcher.begin_company(limit)
 
@@ -276,6 +289,48 @@ class Plan:
         except Exception as exc:  # robots, budget, network: the plan just moves on
             self.rec.error("website", f"harvest fetch skipped: {type(exc).__name__}: {str(exc)[:120]}", url)
             return None
+
+    def can_read_ad(self) -> bool:
+        """Ad pages draw on their own allowance of ``MAX_AD_FETCHES`` requests (redirects
+        included), opened on first use so the news and profile pages before them keep theirs."""
+        if self.ad_start is None:
+            self.ad_start = self.used()
+            fetcher = self.visit.fetcher
+            if hasattr(fetcher, "raise_company_cap"):
+                fetcher.raise_company_cap(max(0, self.left()) + MAX_AD_FETCHES)
+        return self.used() - self.ad_start < MAX_AD_FETCHES and self.visit.time_left() > 6.0
+
+    def read(self, url: str, *, ad: bool = False) -> tuple[tuple[Snapshot, BeautifulSoup, str] | None, str]:
+        """Like ``page``, but says why nothing came back: "ok", "budget", "blocked" (401/403 or
+        robots.txt), "missing" (404/410) or "error". Hiring needs the reason: a list behind a login
+        is not an empty list. Ad pages (``ad``) use their own allowance and are not added to the
+        site's pages, so they never feed the profile or contact readers."""
+        url = url.split("#")[0]
+        existing = self.known(url)
+        if existing is not None:
+            return existing, "ok"
+        if not (self.can_read_ad() if ad else self.can()):
+            return None, "budget"
+        if self.visit.time_left() < 3 or not self.visit.in_section(url):
+            return None, "error"
+        try:
+            snap = self.visit.fetcher.get(url, retries=0, timeout=(5.0, min(10.0 if ad else 12.0, max(3.0, self.visit.time_left()))))
+        except RobotsDisallowed:
+            return None, "blocked"
+        except Exception as exc:  # budget, network: the plan just moves on
+            self.rec.error("website", f"harvest fetch skipped: {type(exc).__name__}: {str(exc)[:120]}", url)
+            return None, "budget" if isinstance(exc, RequestBudgetExhausted) or "budget" in str(exc) or "cap reached" in str(exc) else "error"
+        if snap.status in (401, 403, 407, 451):
+            return None, "blocked"
+        if not snap.ok:
+            return None, "missing" if snap.status in (404, 410) else "error"
+        if "html" not in snap.content_type.lower() and not snap.body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
+            return None, "error"
+        soup, _html, text = parse(snap)
+        page = (snap, soup, text)
+        if not ad:
+            self.visit.pages.append(page)
+        return page, "ok"
 
     def raw(self, url: str, headers: dict[str, str] | None = None) -> Snapshot | None:
         # On a site verified as one section of a larger domain, domain-wide sources (root sitemap,
@@ -1147,6 +1202,7 @@ class Role:
     source: str
     span: str
     method: str
+    employer: str | None = None  # the employer the listing's structured data names, if any
 
 
 _TITLE_CLASS = re.compile(r"title|heading|name|tittel|overskrift", re.I)
@@ -1277,7 +1333,8 @@ def roles_on_page(
             continue
         seen.add(key)
         posted = stamp(item.get("datePosted"))
-        roles.append(Role(title, url, posted[0] if posted else None, expires, _ld_location(item), "json_ld_jobposting", f'JSON-LD JobPosting title = "{title}"', "json_ld_jobposting"))
+        named = employer.get("legalName") or employer.get("name") if isinstance(employer, dict) else employer
+        roles.append(Role(title, url, posted[0] if posted else None, expires, _ld_location(item), "json_ld_jobposting", f'JSON-LD JobPosting title = "{title}"', "json_ld_jobposting", str(named)[:200] if named else None))
     if (not own_site and not tenant_ok) or contrary:
         return roles
     links: list[Role] = []
@@ -1329,6 +1386,321 @@ def roles_on_page(
     if not own_site or len(links) >= 2 or off_site:
         roles.extend(links)
     return roles[:MAX_JOBS]
+
+
+# ----------------------------------------------------------------------------------------------
+# Ad pages: a role link is a job only once its own page has been read
+#
+# A listing says that a link exists, not that it is one open vacancy posted by this company. The
+# ad page says the rest: whether it is an ad at all (not an open application, a login or a search),
+# whether it is still open, and who the employer is. A group's list carries its subsidiaries' ads,
+# and only the ad page's "Om <unit>" block, employer field or organisation number tells them apart.
+
+# Words on an ad page that say the vacancy is filled, closed or expired.
+AD_CLOSED = re.compile(
+    r"stillingen\s+er\s+(?:nå\s+)?besatt|(?:søknads)?fristen\s+er\s+(?:utløpt|gått\s+ut|passert)|annonsen\s+er\s+(?:utløpt|deaktivert|ikke\s+lenger\s+aktiv)|"
+    r"stillingen\s+er\s+ikke\s+lenger\s+(?:ledig|aktiv|tilgjengelig)|no\s+longer\s+accepting(?:\s+applications)?|"
+    r"(?:this|the)\s+(?:job|position|vacancy)\s+(?:has\s+been\s+filled|has\s+expired|is\s+(?:no\s+longer\s+available|closed|filled))",
+    re.I,
+)
+# A status badge on its own ("Besatt" on finn).
+AD_CLOSED_BADGE = re.compile(r"^(?:besatt|utløpt|expired|filled)$", re.I)
+# Pages under a careers path that are not one vacancy: open applications, talent pools, CV registration.
+AD_NOT_A_ROLE = re.compile(
+    r"spontan|(?:[aå]pen|open)[- ]s[øo]knad|apen-soknad|s[øo]knadsportal|talent\s?bank|talent\s?pool|registrer\s+(?:din\s+)?cv|"
+    r"open[- ]application|general[- ]applications?|generell[- ]s[øo]knad",
+    re.I,
+)
+AD_LOGIN_TEXT = re.compile(r"^(?:logg?\s+inn|log\s*in|sign\s+(?:in|up)|registrer(?:\s+deg)?|register|opprett\s+(?:bruker|konto|profil)|create\s+(?:an\s+)?account|min\s+side)\b", re.I)
+AD_LOGIN_PATH = re.compile(r"/(?:login|logon|log-in|signin|sign-in|sign_in|signup|sign-up|register|registrer|profile|profil|account|konto|auth)(?:/|$|\.|\?)", re.I)
+AD_SEARCH_PATH = re.compile(r"/(?:search|sok|søk|soek|sokeresultat|search-results?)(?:/|$|\.html?|\.aspx|\.php)", re.I)
+AD_SEARCH_QUERY = re.compile(r"(?:^|&)(?:q|query|search|sok|søk|keyword|keywords|searchterm)=", re.I)
+FINN_STALE_DAYS = 90
+_ORGNR_LABELLED = re.compile(r"(?:org(?:anisasjons)?\.?\s*-?\s*n(?:umme)?r\.?|organisasjonsnummer|org\.?\s*no\.?)\s*:?\s*(\d{3}[\s.]?\d{3}[\s.]?\d{3})(?!\d)", re.I)
+# "Arbeidsgiver: Leirvik AS", or a label whose value sits in the next element (dt/dd, th/td).
+_EMPLOYER_LABEL = re.compile(r"^(?:arbeidsgiver|arbeidsgjevar|employer|virksomhet|verksemd)(?:\s*:\s*(.+)|\s*:?)$", re.I)
+_BLOCK_TAGS = ["div", "p", "li", "dd", "dt", "ul", "ol", "dl", "table", "tr", "section", "h2", "h3", "h4"]
+_ABOUT_HEADING = re.compile(r"^(?:om|about)\s+(.{2,80}?)\s*[:.]?$", re.I)
+# "Om oss", "Om stillingen", "About the role": a section of the ad, not an employer's name.
+_ABOUT_GENERIC = re.compile(
+    r"^(?:oss|us|stillingen|stillinga|jobben|rollen|role|the\s+role|the\s+position|the\s+job|position|deg|you|selskapet|bedriften|firmaet|"
+    r"arbeidsgiver(?:en)?|arbeidsgjevar(?:en)?|the\s+company|company|the\s+employer|avdelingen|teamet|team|kontoret|prosjektet|"
+    r"arbeidsstedet|arbeidsplassen|søknaden|søknadsprosessen|prosessen|annonsen|tilbudet|vilkår|personvern|informasjonskapsler|cookies)\b",
+    re.I,
+)
+_LEGAL_FORM_WORD = re.compile(r"\b(?:as|asa|sa|ba|ans|da|ks|iks|hf|sf|nuf|ab|gmbh|ltd|inc)\b\.?$", re.I)
+_CONTENT_CHROME = re.compile(r"footer|site-?header|\bnav|menu|cookie|breadcrumb", re.I)
+
+
+def ad_url_ok(url: str) -> bool:
+    """``url`` can be one ad: never a search, a listing landing, a login or a profile page.
+
+    finn is held to its ad paths (``/job/ad/<id>``, ``finnkode=<id>``) and arbeidsplassen.nav.no to
+    ``/stillinger/stilling/<id>``; on an applicant-tracking host the vendor's landing pages
+    (``/index.php``, ``main?site=``) are refused as well. Checked on the link and again on the
+    final URL after redirects."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").lower()
+    path = unquote(parts.path or "/")
+    if host == "arbeidsplassen.nav.no" or host.endswith(".arbeidsplassen.nav.no"):
+        return bool(re.fullmatch(r"/stillinger/stilling/[\w-]{6,}/?", path))
+    ats = ats_of(url)
+    if ats is not None and ats[0] == "finn":
+        if AD_SEARCH_PATH.search(path) or "/search" in path.lower():
+            return False
+        return bool(re.fullmatch(r"/job/ad/\d+/?", path) or re.search(r"(?:^|&)finnkode=\d+", parts.query))
+    if AD_SEARCH_PATH.search(path) or AD_SEARCH_QUERY.search(parts.query) or AD_LOGIN_PATH.search(path):
+        return False
+    if ats is not None and (_ATS_NOT_PUBLIC.search(path) or re.search(r"/index\.php$|/main$", path, re.I)):
+        return False
+    return True
+
+
+@dataclass
+class AdPage:
+    """What one ad page says about itself."""
+
+    refused: str | None  # why it is not one open ad, or None
+    title: str | None
+    employers: list[str]  # employer names the page states (JSON-LD, employer field, "Om X")
+    numbers: set[str]  # organisation numbers the page states in its own content
+    expires: str | None
+    published: str | None
+
+
+def _content_soup(soup: BeautifulSoup) -> BeautifulSoup:
+    """The page without its header, footer, menus and cookie banner: a site-wide footer's
+    organisation number or "Om AF Gruppen" block is the site owner's, not the ad's employer."""
+    copy = BeautifulSoup(str(soup), "lxml")
+    for tag in copy(["script", "style", "noscript", "template", "svg", "footer", "nav"]):
+        tag.decompose()
+    for tag in copy.find_all("header"):
+        if tag.find_parent(["article", "main"]) is None:
+            tag.decompose()  # the site's header; an article's own header holds the ad's title
+    chrome = [
+        tag for tag in copy.find_all(True)
+        if tag.name not in ("html", "body", "main", "article")
+        and _CONTENT_CHROME.search(" ".join(tag.get("class") or []) + " " + str(tag.get("id") or ""))
+    ]
+    for tag in chrome:
+        if not tag.decomposed:
+            tag.decompose()
+    return copy
+
+
+def _org_like(name: str, own_names: list[str]) -> bool:
+    """An "Om X" heading names an employer when X carries a legal form, is one of our names, or
+    shares our names' first word (a group brand's unit: "AF Bygg Øst" beside "AF Gruppen").
+    "Om Haugesund" (the town) or "Om produktet" names no employer."""
+    words = name_tokens(name)
+    if not words:
+        return False
+    if _LEGAL_FORM_WORD.search(name.strip()):
+        return True
+    firsts = {name_tokens(n)[0] for n in own_names if name_tokens(n)}
+    return words[0] in firsts
+
+
+def read_ad_page(snap: Snapshot, soup: BeautifulSoup, text: str, own_names: list[str]) -> AdPage:
+    """Read one ad page: is it an open ad, and which employer does it name.
+
+    Refused: an error, login, registration or search page (also after redirects); an open
+    application or talent pool; a filled or expired ad (status words, a past ``validThrough`` or
+    deadline, a finn ad with "Snarest" last edited more than 90 days ago)."""
+    today = utc_today()
+    h1 = soup.find("h1")
+    heading = h1.get_text(" ", strip=True) if h1 else ""
+    page_title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    title = heading or re.split(r"\s[|\-–—]\s", page_title)[0].strip() or None
+    employers: list[str] = []
+    numbers: set[str] = set()
+    expires: str | None = None
+    published: str | None = None
+
+    def result(refused: str | None) -> AdPage:
+        return AdPage(refused, title, list(dict.fromkeys(employers)), numbers, expires, published)
+
+    if not ad_url_ok(snap.final_url) or not ad_url_ok(snap.requested_url):
+        return result(f"not an ad URL after redirects: {snap.final_url[:160]}")
+    if ERROR_PAGE.search(f"{page_title} {heading}"[:300]):
+        return result("error page")
+    if title and AD_NOT_A_ROLE.search(title):
+        return result(f"open application, not a vacancy: {title[:80]}")
+    if AD_LOGIN_TEXT.match(heading or page_title) or (not heading and soup.find("input", attrs={"type": "password"}) is not None):
+        return result("login or registration page")
+    for item in json_ld_items(soup):
+        if "JobPosting" not in _types(item):
+            continue
+        valid = str(item.get("validThrough") or "")[:10]
+        if valid and valid < today:
+            return result(f"validThrough {valid} has passed")
+        expires = expires or valid or None
+        posted = stamp(item.get("datePosted"))
+        published = published or (posted[0] if posted else None)
+        employer = item.get("hiringOrganization")
+        if isinstance(employer, str) and employer.strip():
+            employers.append(employer.strip())
+        elif isinstance(employer, dict):
+            if employer.get("name") or employer.get("legalName"):
+                employers.append(str(employer.get("legalName") or employer.get("name")).strip())
+            numbers |= set(_ld_numbers(employer))
+    content = _content_soup(soup)
+    content_text = re.sub(r"\s+", " ", content.get_text(" ", strip=True))
+    closed = AD_CLOSED.search(content_text)
+    if closed:
+        return result(f"filled or closed: \"{closed.group(0)}\"")
+    for node in content.find_all(["span", "div", "p", "strong", "b", "li", "dd", "em", "small"]):
+        own = node.get_text(" ", strip=True)
+        if len(own) <= 20 and AD_CLOSED_BADGE.match(own):
+            return result(f"filled or closed: \"{own}\"")
+    deadline = DEADLINE.search(content_text)
+    # "Søknadsfrist: Snarest" has no date; the next date on the page (published, last edited) is not one.
+    rolling = bool(deadline and re.match(r"\s*(?:snarest|fortl[øo]pende|l[øo]pende|asap|as\s+soon\s+as\s+possible)", deadline.group(1), re.I))
+    if deadline and not rolling:
+        day = text_date(deadline.group(1))
+        if day and day < today:
+            return result(f"application deadline {day} has passed")
+        if day:
+            expires = expires or day
+    if (ats_of(snap.final_url) or ("",))[0] == "finn" and rolling and re.match(r"\s*snarest", deadline.group(1), re.I):
+        edited = re.search(r"sist\s+endret\s*:?\s*(.{0,40})", content_text, re.I)
+        day = text_date(edited.group(1)) if edited else None
+        if day and day < (date.fromisoformat(today) - timedelta(days=FINN_STALE_DAYS)).isoformat():
+            return result(f"finn ad with deadline \"snarest\", last edited {day}")
+    for m in _ORGNR_LABELLED.finditer(content_text):
+        number = re.sub(r"\D", "", m.group(1))
+        if valid_orgnr(number):
+            numbers.add(number)
+    for node in content.find_all(["dt", "th", "span", "div", "p", "strong", "b", "h2", "h3", "h4", "li", "label"]):
+        if node.find(_BLOCK_TAGS) is not None:
+            continue  # a container: its text runs several fields together
+        own = node.get_text(" ", strip=True)
+        if not own or len(own) > 100:
+            continue
+        label = _EMPLOYER_LABEL.match(own)
+        if not label:
+            continue
+        name = (label.group(1) or "").strip(" :")
+        if not name:
+            following = node.find_next_sibling()
+            name = following.get_text(" ", strip=True) if following is not None and following.find(_BLOCK_TAGS) is None else ""
+        if 2 <= len(name) <= 80 and not _EMPLOYER_LABEL.match(name):
+            employers.append(name)
+    for node in content.find_all(["h1", "h2", "h3", "h4", "h5", "strong"]):
+        about = _ABOUT_HEADING.match(node.get_text(" ", strip=True))
+        if about and not _ABOUT_GENERIC.match(about.group(1)) and _org_like(about.group(1), own_names):
+            employers.append(about.group(1).strip())
+    return result(None)
+
+
+def _employer_key(name: str) -> str:
+    return " ".join(_fold_a(t) for t in name_tokens(name))
+
+
+def ad_employer_is_ours(ad: AdPage, rec: CompanyRecord, extra_names: list[str] | None = None) -> bool | None:
+    """True when the ad names this organisation number (or one of its subunits'), or only names
+    that are ours (legal, subunit or brand name); False when it names anyone else; None when it
+    names no employer at all."""
+    own_numbers = {rec.organisation_number} | {s.get("organisation_number") for s in rec.context.get("subunits") or [] if s.get("organisation_number")}
+    if ad.numbers:
+        return bool(ad.numbers & own_numbers)
+    if not ad.employers:
+        return None
+    own_keys = {_employer_key(n) for n in _names_of(rec) + list(extra_names or []) if _employer_key(n)}
+    return all(_name_is_ours(name, own_keys, rec) for name in ad.employers)
+
+
+@dataclass
+class Verified:
+    """Roles that passed their ad page (or came from structured data), and what happened to the rest."""
+
+    kept: list[tuple[Role, Snapshot, Snapshot | None]]  # (role, listing page, ad page)
+    read: int = 0
+    unread: int = 0
+    blocked: int = 0
+    refused: dict[str, str] | None = None  # ad URL -> reason
+    group_list: bool = False
+
+
+def verify_roles(plan: Plan, rec: CompanyRecord, roles: list[tuple[Role, Snapshot]], own_names: list[str], *, group_site: bool) -> Verified:
+    """Keep only roles that are one open ad by this company.
+
+    Structured roles (JSON-LD JobPosting, the ATS's own job feed) were checked where they were
+    read. Every role link has its own ad page read (at most ``MAX_AD_FETCHES`` requests); a link
+    that is not read is not published. The ad page decides: ``read_ad_page`` refuses closed ads,
+    open applications and logins, and the employer it names must be this company. A page naming
+    no employer is accepted only on the company's own (or own-tenant) list that is not a group
+    list; a list is a group list when the site is a group site or its ad pages name two or more
+    employers."""
+    out = Verified([], refused={})
+    ads: list[tuple[Role, Snapshot, AdPage, Snapshot]] = []
+    structured: list[tuple[Role, Snapshot]] = []
+    seen: set[str] = set()
+    for role, listing in roles:
+        if role.method != "careers_page_role_link":
+            structured.append((role, listing))
+            continue
+        if _norm_url(role.url) in seen:
+            continue  # the same link on the careers page and its listing: one read
+        seen.add(_norm_url(role.url))
+        if not ad_url_ok(role.url):
+            out.refused[role.url] = "a search, login or landing URL, not one ad"
+            continue
+        page, why = plan.read(role.url, ad=True)
+        if page is None:
+            out.unread += 1
+            out.blocked += why == "blocked"
+            continue
+        out.read += 1
+        ad = read_ad_page(page[0], page[1], page[2], own_names)
+        if ad.refused:
+            out.refused[role.url] = ad.refused
+            continue
+        ads.append((role, listing, ad, page[0]))
+    extra = list(rec.context.get("site_brand_names") or [])
+    own_keys = {_employer_key(n) for n in _names_of(rec) + extra if _employer_key(n)}
+    named: set[str] = set()
+    for _role, _listing, ad, _snap in ads:
+        verdict = ad_employer_is_ours(ad, rec, extra)
+        if ad.numbers:
+            named.add("ours" if verdict else "#" + ",".join(sorted(ad.numbers)))
+        for name in ad.employers:
+            named.add("ours" if _name_is_ours(name, own_keys, rec) else _employer_key(name))
+    out.group_list = group_site or len(named) >= 2
+    for role, listing, ad, snap in ads:
+        verdict = ad_employer_is_ours(ad, rec, extra)
+        if verdict is False:
+            out.refused[role.url] = "the ad names another employer: " + ", ".join(sorted(ad.numbers) or ad.employers)[:120]
+            continue
+        if verdict is None and out.group_list:
+            out.refused[role.url] = "the ad names no employer and sits on a group's list"
+            continue
+        role.title = role.title or (ad.title or "")[:200]
+        role.expires = role.expires or ad.expires
+        role.published = role.published or ad.published
+        role.employer = role.employer or (ad.employers[0] if ad.employers else None)
+        role.method = "ad_page_read"
+        out.kept.append((role, listing, snap))
+    for role, listing in structured:
+        if not role.employer and out.group_list:
+            out.refused[role.url] = "the posting names no employer and sits on a group's list"
+            continue
+        out.kept.append((role, listing, None))
+    return out
+
+
+def _name_is_ours(name: str, own_keys: set[str], rec: CompanyRecord) -> bool:
+    """One of our names, or its leading words ("Om Leirvik" for LEIRVIK SVEIS AS's brand); a name
+    with more words than ours ("AF Bygg Øst" beside "AF Gruppen") is another unit."""
+    key = _employer_key(name)
+    if not key:
+        return False
+    return key in own_keys or _name_matches(name, rec) or any(own.startswith(key + " ") for own in own_keys)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -2067,7 +2439,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 _brand_and_contacts(rec, home, [page], exact, company_label, contacts_only=True)
     anchors = _anchors(own_pages())
 
-    # Hiring: the careers page (own site first), then the ATS listing it links.
+    # Hiring: the careers page (own site first), then the ATS listing it links. These are where ads
+    # are listed, never hiring facts themselves: only a single ad becomes a claim.
     careers: list[tuple[str, Snapshot, str, str]] = []  # (url, evidence snapshot, span, method)
     roles: list[tuple[Role, Snapshot]] = []
     site_wide = _site_wide_links(home_soup, home.final_url)
@@ -2078,30 +2451,40 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # may then close a site-found role that is gone ("job_posting:site").
     jobs_complete: bool | None = None
     rejected_roles: set[str] = set()
+    hiring_notes = {"blocked": [], "unread": [], "no_openings": []}  # careers sources by outcome
     if own is not None:
         rank, url, snap, span, _text = own
-        page = plan.page(url)
+        page, why = plan.read(url)
         if page is None:
             jobs_complete = False
+            hiring_notes["blocked" if why == "blocked" else "unread"].append(_clean_url(url))
         if page is not None and _is_careers_page(page, rank, site_host):
             jobs_complete = True
-            c_snap, c_soup, _ = page
+            c_snap, c_soup, c_text = page
             title = (c_soup.title.get_text(" ", strip=True) if c_soup.title else "") or url
             careers.append((_clean_url(c_snap.final_url), c_snap, f"careers page: {title[:200]}", "careers_page_on_verified_site"))
+            if NO_OPENINGS.search(c_text):
+                hiring_notes["no_openings"].append(_clean_url(c_snap.final_url))
             roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
             listing = None if roles else _job_listing_link(c_snap, c_soup)
             if listing and listing.endswith(".rss") and plan.can(1, 6.0):
                 feed = plan.raw(listing, headers={"Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.5"})
                 roles += [(r, feed) for r in rss_roles(feed, c_snap.final_url)] if feed is not None else []
                 jobs_complete = feed is not None
+                if feed is None:
+                    hiring_notes["unread"].append(listing)
             elif listing and plan.can(1, 6.0):
-                l_page = plan.page(listing)
+                l_page, l_why = plan.read(listing)
                 if l_page is not None and _site(l_page[0].final_url) == _site(c_snap.final_url):
                     roles += [(r, l_page[0]) for r in roles_on_page(l_page[0], l_page[1], rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
+                    if NO_OPENINGS.search(l_page[2]):
+                        hiring_notes["no_openings"].append(_clean_url(l_page[0].final_url))
                 else:
                     jobs_complete = False
+                    hiring_notes["blocked" if l_why == "blocked" else "unread"].append(listing)
             elif listing:
                 jobs_complete = False  # the job list was not read: the budget ran out
+                hiring_notes["unread"].append(listing)
             for a in c_soup.find_all(["a", "iframe"]):
                 href = a.get("href") or a.get("src")
                 if not href:
@@ -2125,23 +2508,32 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         tenant_ok = bool(tenant) and resembles(tenant, contains, prefixes)
         ats_name = (ats_of(url) or ("", ""))[0]
         page = None
+        why = "budget"
         if not ats_name:
             # A recruiter host we do not know: its page need not name the company in static HTML, so
-            # the evidence is the company's own page linking it as its careers page; never fetched.
+            # it is noted as where the company recruits and never fetched or published.
             if snap is not None and CAREER_TEXT.match(text or ""):
                 careers.append((_clean_url(url), snap, span, "recruiter_link_on_verified_site"))
+                hiring_notes["unread"].append(_clean_url(url))
             jobs_complete = False
             continue
         if ats_name != "finn" and not fetched_ats and plan.can(2, 6.0):
             fetched_ats = True
-            page = plan.page(url)
-        if ats_name != "finn" and (page is None or ERROR_PAGE.search(page[0].final_url)):
+            page, why = plan.read(url)
+        # A list that redirects to a login or registration page sits behind it (recman.no/index.php
+        # -> recman.io/login): it is blocked, not empty, and never a source of roles.
+        behind_login = page is not None and (not ad_url_ok(page[0].final_url) or bool(AD_LOGIN_TEXT.match((page[1].title.get_text(" ", strip=True) if page[1].title else "")[:80])))
+        if ats_name != "finn" and (page is None or ERROR_PAGE.search(page[0].final_url) or behind_login):
             jobs_complete = False  # an ATS listing this site points to was not read
+            if ats_name != "finn":
+                hiring_notes["blocked" if why == "blocked" or behind_login else "unread"].append(_clean_url(url))
         elif ats_name != "finn" and jobs_complete is None:
             jobs_complete = True
-        if page is not None and not ERROR_PAGE.search(page[0].final_url + " " + ((page[1].title.get_text(" ", strip=True) if page[1].title else "")[:200])):
-            a_snap, a_soup, _ = page
+        if page is not None and not behind_login and not ERROR_PAGE.search(page[0].final_url + " " + ((page[1].title.get_text(" ", strip=True) if page[1].title else "")[:200])):
+            a_snap, a_soup, a_text = page
             careers.append((_clean_url(a_snap.final_url), a_snap, f"applicant-tracking page ({ats_name}): {(a_soup.title.get_text(' ', strip=True) if a_soup.title else '')[:160]}", "ats_page_linked_from_verified_site"))
+            if NO_OPENINGS.search(a_text):
+                hiring_notes["no_openings"].append(_clean_url(a_snap.final_url))
             roles += [(r, a_snap) for r in roles_on_page(a_snap, a_soup, rec, own_site=False, tenant_ok=tenant_ok, rejected=rejected_roles)]
         elif snap is not None and (tenant_ok or text == "@careers-page" or ats_name == "finn" or CAREER_TEXT.match(text or "")):
             careers.append((_clean_url(url), snap, span, "ats_link_on_verified_site"))
@@ -2263,7 +2655,18 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         careers, roles, news, jobs_complete = [], [], {}, None
         company_label = None
     _publish_profiles(rec, list(profiles.values()), exact, company_label, own_pages())
-    _publish_hiring(rec, careers, roles, company_label, site_host)
+
+    # -- job ads: each role link's own page is read last, on its own allowance ----------------------
+    # A subsidiary never takes ads from a group site (its parent's list); the group's parent may,
+    # but only ads whose page names it.
+    parents_site = company_label == "group_site" and rec.context.get("group_root") != rec.organisation_number
+    if parents_site:
+        verified = Verified([], refused={r.url: "an ad on a group site is not attributed to a subsidiary" for r, _ in roles}, group_list=True)
+    else:
+        verified = verify_roles(plan, rec, roles, names, group_site=company_label == "group_site")
+    if verified.unread and jobs_complete:
+        jobs_complete = False  # a listed ad that was not read can be neither published nor closed
+    _publish_hiring(rec, careers, verified.kept, company_label, site_host, complete=jobs_complete, notes=hiring_notes, verified=verified, parents_site=parents_site)
     _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, refused)
     if group_site:
         reason = (rec.context.get("website") or {}).get("group_reason") or "the verified site is a group site"
@@ -2279,10 +2682,14 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     _note_pages(rec, own_pages(), home, careers, news, site_host)
     if jobs_complete:
         rec.checked_fields.add("job_posting:site")
-    rec.checked_fields.update({"social_profile", "website_phone", "website_email", "public_brand_name", "self_description", "careers_page"})
+    rec.checked_fields.update({"social_profile", "website_phone", "website_email", "public_brand_name", "self_description"})
     if visit.time_left() > 5:
         rec.checked_fields.add("company_news")
-    rec.context["harvest"] = {"requests": plan.used(), "sitemap_entries": len(sitemap), "profiles": len(profiles), "careers": len(careers), "roles": len(roles), "news": len(news)}
+    rec.context["harvest"] = {
+        "requests": plan.used(), "ad_requests": plan.used() - plan.ad_start if plan.ad_start is not None else 0, "sitemap_entries": len(sitemap),
+        "profiles": len(profiles), "careers": len(careers), "roles": len(roles), "ads_read": verified.read, "ads_unread": verified.unread,
+        "ads_refused": len(verified.refused or {}), "jobs": len(verified.kept), "news": len(news),
+    }
 
 
 def _own_on_group_site(handle: str, rec: CompanyRecord) -> bool:
@@ -2664,31 +3071,49 @@ def _hiring_source(snap: Snapshot, site_host: str) -> str:
     return "company_ats_page" if ats_of(snap.final_url) else "recruitment_page_linked_from_company_site"
 
 
-def _publish_hiring(rec: CompanyRecord, careers: list[tuple[str, Snapshot, str, str]], roles: list[tuple[Role, Snapshot]], company_label: str | None, site_host: str = "") -> None:
-    seen: set[str] = set()
-    for url, snap, span, method in careers:
-        key = _norm_url(url)
-        if key in seen or len(seen) >= 3:
-            continue
-        seen.add(key)
-        ev = rec.evidence_from_snapshot(snap, source_class=_hiring_source(snap, site_host), span=span, method=method, url=snap.final_url)
-        rec.add_claim(family="hiring", field_name="careers_page", value=url, evidence_ids=[ev], confidence=0.88, method=method, relationship=company_label, label="Careers page")
-        rec.context.setdefault("career_pages", []).append(url)
+def _publish_hiring(
+    rec: CompanyRecord,
+    careers: list[tuple[str, Snapshot, str, str]],
+    roles: list[tuple[Role, Snapshot, Snapshot | None]],
+    company_label: str | None,
+    site_host: str = "",
+    *,
+    complete: bool | None = None,
+    notes: dict[str, list[str]] | None = None,
+    verified: "Verified | None" = None,
+    parents_site: bool = False,
+) -> None:
+    """One ``job_posting`` claim per single ad that passed ``verify_roles``. Careers pages, ATS
+    lists and recruiter pages are where ads are listed, not hiring facts: they are never claims,
+    only the checked sources of the hiring verdict (and ``context["career_pages"]``)."""
+    notes = notes or {}
+    sources = list(dict.fromkeys(url for url, *_ in careers))[:6]
+    rec.context["career_pages"] = sources
     existing = {_norm_url(c["value"].get("url") or "") for c in rec.claims if c["field"] == "job_posting" and isinstance(c["value"], dict)}
     published = 0
-    for role, snap in roles:
+    for role, listing, ad_snap in roles:
         key = _norm_url(role.url)
-        if published >= MAX_JOBS or (key in existing and role.url != snap.final_url):
+        title = _clean(role.title)[:300]
+        if published >= MAX_JOBS or not title or (key in existing and role.url != listing.final_url):
             continue
+        if not ad_url_ok(role.url) or (key == _norm_url(listing.final_url) and not _role_url(listing.final_url)):
+            continue  # a search or login link, or a posting whose only address is the careers page
         existing.add(key)
-        value = {"title": role.title[:300], "url": role.url, "published": role.published, "expires": role.expires, "location": role.location, "source": role.source}
-        ev = rec.evidence_from_snapshot(snap, source_class=_hiring_source(snap, site_host), span=role.span, method=role.method, url=snap.final_url)
+        value = {"title": title, "url": role.url, "published": role.published, "expires": role.expires, "location": role.location, "employer": role.employer, "source": role.source}
+        evidence = []
+        if ad_snap is not None:
+            # The ad page is the fact: it was read, is open, and names (or does not contradict) us.
+            span = f'ad page: "{title[:150]}"' + (f"; employer named: {role.employer[:80]}" if role.employer else "; no other employer named")
+            evidence.append(rec.evidence_from_snapshot(ad_snap, source_class=_hiring_source(ad_snap, site_host), span=span, method="ad_page_read", url=ad_snap.final_url))
+            if _site(ad_snap.final_url) == site_host and hasattr(rec, "note_page"):
+                rec.note_page(ad_snap, title, "job_ad")
+        evidence.append(rec.evidence_from_snapshot(listing, source_class=_hiring_source(listing, site_host), span=role.span, method="careers_page_role_link" if ad_snap is not None else role.method, url=listing.final_url))
         rec.add_claim(
             family="hiring",
             field_name="job_posting",
             value={k: v for k, v in value.items() if v not in (None, "")},
-            key=["job", key if role.url != snap.final_url else f"{key}|{role.title.lower()}"],
-            evidence_ids=[ev],
+            key=["job", key if role.url != listing.final_url else f"{key}|{title.lower()}"],
+            evidence_ids=evidence,
             confidence=0.9,
             method=role.method,
             effective_date=(role.published or "")[:10] or None,
@@ -2696,8 +3121,30 @@ def _publish_hiring(rec: CompanyRecord, careers: list[tuple[str, Snapshot, str, 
             label="Job posting",
         )
         published += 1
-    if seen or published:
-        rec.set_state("hiring", "available", f"careers page{'s' if len(seen) > 1 else ''} and {published} open role(s) on the verified website" if published else "careers page linked from the verified website")
+
+    from .jobs import record_site_hiring
+
+    first = sources[0] if sources else None
+    refused = (verified.refused if verified is not None else None) or {}
+    if published:
+        record_site_hiring(rec, "available", f"{published} single job ad(s) read on the company's own careers channel", sources)
+    elif not careers and not any(notes.values()):
+        return  # no careers page found: the site says nothing either way; NAV decides
+    elif parents_site:
+        record_site_hiring(rec, "not_available", f"the careers page {first} is on a group site; its ads belong to the group's units and are not attributed to this organisation number", sources)
+    elif notes.get("no_openings"):
+        record_site_hiring(rec, "not_available", f"careers page {notes['no_openings'][0]} says there are no open positions", sources, explicit=True)
+    elif notes.get("blocked") or (verified is not None and verified.blocked):
+        where = (notes.get("blocked") or [first])[0]
+        what = "its ad list" if notes.get("blocked") else f"{verified.blocked if verified else 0} of its ad pages"
+        record_site_hiring(rec, "blocked", f"careers page found ({first}), but {what} sits behind a login, a 401/403 or robots.txt ({where})", sources + notes.get("blocked", []))
+    elif complete:
+        why = f"; {len(refused)} listed link(s) were not single open ads by this company (filled, expired, open applications or another employer's)" if refused else ""
+        record_site_hiring(rec, "not_available", f"careers page {first} lists no open ad{why}", sources)
+    else:
+        unread = (notes.get("unread") or [])[:2]
+        detail = f"; not read: {', '.join(unread)}" if unread else (f"; {verified.unread} ad page(s) not read within the request budget" if verified is not None and verified.unread else "")
+        record_site_hiring(rec, "failed", f"careers page found ({first}), but its ad list could not be read in full, so absence is not established{detail}", sources + unread)
 
 
 COPY_BURST_ITEMS = 3
