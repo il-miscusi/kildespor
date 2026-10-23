@@ -470,6 +470,16 @@ FOREIGN_PLACE = re.compile(
 )
 
 
+def in_norway(ad: Ad, rec: Any) -> bool:
+    """The ad's workplace is in Norway: country code NO, or a location naming Norway, a Norwegian
+    town or a place where the entity is registered."""
+    from .harvest import _names_norwegian_place
+
+    if ad.country and ad.country.strip().lower() in NORWAY:
+        return True
+    return bool(ad.location and _names_norwegian_place(ad.location, rec))
+
+
 def abroad(ad: Ad) -> bool:
     """The ad's workplace is outside Norway, by its country code or a foreign place in its location."""
     if ad.country and ad.country.strip().lower() not in NORWAY:
@@ -549,10 +559,11 @@ def select(rec: Any, listing: TenantList, *, own_tenant: bool, extra_names: list
         elif not own_tenant or several or named:
             refused[ad.url] = "the ad names no employer and the list is not this company's own"
             continue
-        elif abroad(ad):
-            # A list naming no employer: a workplace abroad is most often a foreign sister's
-            # (Zaptec's Paris and Munich ads), and nothing on the list says otherwise.
-            refused[ad.url] = f"the ad names no employer and its workplace is abroad: {(ad.location or ad.country or '')[:60]}"
+        elif abroad(ad) or not in_norway(ad, rec):
+            # A list naming no employer: an ad is this company's only for a workplace in Norway. A
+            # workplace abroad is most often a foreign sister's (Zaptec's Paris and Munich ads),
+            # and an ad that says nothing about where it is cannot be told apart from one.
+            refused[ad.url] = f"the ad names no employer and no workplace in Norway: {(ad.location or ad.country or 'no location given')[:60]}"
             continue
         key = ad.url.split("#")[0].rstrip("/").lower()
         if key in seen:
