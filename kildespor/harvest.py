@@ -2810,6 +2810,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     gated: dict[str, str] = {}
     scores: dict[int, float | None] = {}
     near_miss: dict[str, tuple[float, str]] = {}  # gated items' (score, url): read first when nothing passed
+    refused_by_gate: dict[str, tuple[float, NewsItem]] = {}  # the gate's refusals, latest copy of each item: the rescue below reads them
     # News sources that could not be read (timeout, 5xx, a 401/403, the request allowance): when
     # nothing is published, absence is then not established and the dated-news state is "failed".
     news_failed: list[str] = []
@@ -2845,6 +2846,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 # The article page is the fullest evidence there is: when it says no, an earlier copy goes too.
                 gated[key] = "below the news gate (product, service, guide, commentary or other entity)"
                 news.pop(key, None)
+            if score is not None:
+                refused_by_gate[key] = (score, item)
             if item.method != "article_page_meta" and item.url and score is not None:
                 near_miss[key] = (score, item.url)
             else:
@@ -2852,6 +2855,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             return
         gated.pop(key, None)
         near_miss.pop(key, None)
+        refused_by_gate.pop(key, None)
         current = news.get(key)
         if current is None:
             for other_key, other in news.items():
@@ -2955,6 +2959,15 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         news_checked.append(f"the article page {page[0].final_url}")
         if item is not None:
             add_news(item)
+
+    # A company whose every candidate the gate refused keeps its best-scoring ones (newsgate.rescue_limit):
+    # the model is a classifier of content, and on a thin blog its word alone should not turn "has posts"
+    # into "no news". Ties break on the URL, so the choice is the same on every run.
+    if not news and refused_by_gate and newsgate.rescue_limit():
+        best = sorted(((sc, key, it) for key, (sc, it) in refused_by_gate.items() if sc >= newsgate.rescue_floor()), key=lambda t: (-t[0], t[1]))[: newsgate.rescue_limit()]
+        for _sc, key, it in best:
+            news[key] = it
+            gated.pop(key, None)
 
     # -- social profiles from every page of the site that was read --------------------------------
     profiles: dict[str, Found] = {}

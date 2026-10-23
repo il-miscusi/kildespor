@@ -39,6 +39,8 @@ from urllib.parse import unquote, urlsplit
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "newsgate.json"
 FEATURE_VERSION = 2
 LEAD_CHARS = 600
+RESCUE_ITEMS = 1  # a company whose every item the gate refused keeps its best-scoring one
+RESCUE_FLOOR = 0.0  # ... if that item scores at least this
 # Opens the dated-news reason when a news source could not be read; contract.py publishes such a
 # row as "failed" even when register updates make the internal family available.
 NEWS_UNREAD = "no dated news established"
@@ -316,6 +318,19 @@ def gate() -> Gate | None:
                 _GATE = None
             _GATE_LOADED = True
     return _GATE
+
+
+def rescue_limit() -> int:
+    """How many of a company's refused items are kept when the gate refused all of them: the company
+    then keeps its best-scoring ones instead of going from "has posts" to "no news" on a model's
+    word. KILDESPOR_NEWSGATE_RESCUE overrides it for measurement (0 = off)."""
+    raw = os.environ.get("KILDESPOR_NEWSGATE_RESCUE")
+    return RESCUE_ITEMS if raw in (None, "") else max(0, int(raw))
+
+
+def rescue_floor() -> float:
+    raw = os.environ.get("KILDESPOR_NEWSGATE_RESCUE_FLOOR")
+    return RESCUE_FLOOR if raw in (None, "") else float(raw)
 
 
 def verdict(c: dict[str, Any]) -> tuple[bool, float | None]:

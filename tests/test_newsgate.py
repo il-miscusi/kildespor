@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import requests
 
@@ -185,10 +186,25 @@ class GateTests(unittest.TestCase):
 
     def test_all_refused_is_not_available_with_the_reason(self) -> None:
         newsgate._GATE, newsgate._GATE_LOADED = TitleGate("rullestol"), True
-        rec = run_site([post("Easy Sport Small rullestol i titan", "easy-sport", ["nyheter"], f"{RECENT}T11:00:00", "Pris 12 990 kr.")])
+        with mock.patch.dict(os.environ, {"KILDESPOR_NEWSGATE_RESCUE": "0"}):
+            rec = run_site([post("Easy Sport Small rullestol i titan", "easy-sport", ["nyheter"], f"{RECENT}T11:00:00", "Pris 12 990 kr.")])
         state = rec.family_state["public_activity"]
         self.assertEqual(state["state"], "not_available")
         self.assertIn("below the news gate", state["reason"])
+
+    def test_a_company_whose_every_item_was_refused_keeps_its_best_one(self) -> None:
+        newsgate._GATE, newsgate._GATE_LOADED = TitleGate("rullestol", "titan"), True
+        rec = run_site([
+            post("Easy Sport Small rullestol i titan", "easy-sport", ["nyheter"], f"{RECENT}T11:00:00", "Pris 12 990 kr."),
+            post("Rullestol i titan", "titan", ["nyheter"], f"{RECENT}T12:00:00", "Pris 9 990 kr."),
+        ])
+        self.assertEqual(len([c for c in rec.claims if c["field"] == "company_news"]), 1)
+        with mock.patch.dict(os.environ, {"KILDESPOR_NEWSGATE_RESCUE": "2"}):
+            rec = run_site([
+                post("Easy Sport Small rullestol i titan", "easy-sport", ["nyheter"], f"{RECENT}T11:00:00", "Pris 12 990 kr."),
+                post("Rullestol i titan", "titan", ["nyheter"], f"{RECENT}T12:00:00", "Pris 9 990 kr."),
+            ])
+        self.assertEqual(len([c for c in rec.claims if c["field"] == "company_news"]), 2)
 
     def test_shipped_model_loads_and_scores(self) -> None:
         if not newsgate.MODEL_PATH.exists():
