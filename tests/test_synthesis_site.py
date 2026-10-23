@@ -456,6 +456,72 @@ class SiteTests(unittest.TestCase):
             self.assertIn(words, js)
 
 
+class ServeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        import threading
+
+        from kildespor.serve import serve
+        from kildespor.site import build_site
+
+        cls.dir = Path(tempfile.mkdtemp())
+        envs = [envelope_of(rich_record()), envelope_of(bare_holding())]
+        (cls.dir / "envelopes.jsonl").write_text("".join(json.dumps(published(e), ensure_ascii=False) + "\n" for e in envs), encoding="utf-8")
+        build_site(envs, cls.dir / "site", None)
+        cls.httpd = serve(str(cls.dir), "127.0.0.1", 0)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def get(self, path: str) -> tuple[int, str, str]:
+        import urllib.error
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}") as r:
+                return r.status, r.headers.get("Content-Type", ""), r.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Content-Type", ""), e.read().decode("utf-8")
+
+    def test_preferred_routes(self) -> None:
+        status, ctype, body = self.get("/companies/938702675")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", ctype)
+        self.assertIn('"server": true', body)
+        self.assertIn('href="/research"', body)
+        self.assertIn('src="/site/assets/viewer.js"', body)
+        for path in ("/", "/research", "/refresh", "/compare?orgs=938702675,919263601", "/companies/938702675/"):
+            self.assertEqual(self.get(path)[0], 200, path)
+        self.assertEqual(self.get("/site/assets/viewer.js")[0], 200)
+
+    def test_json_formats(self) -> None:
+        status, ctype, body = self.get("/companies/938702675?format=json")
+        self.assertEqual((status, ctype.split(";")[0]), (200, "application/json"))
+        env = json.loads(body)
+        self.assertEqual(env["organisation_number"], "938702675")
+        self.assertTrue(env["claims"])
+        research = json.loads(self.get("/research?format=json")[2])
+        self.assertEqual([c["organisation_number"] for c in research["companies"]], ["938702675", "919263601"])
+        answer = json.loads(self.get("/research?format=json&q=who+is+the+CEO+of+FJORD+DATA+AS")[2])
+        self.assertTrue(answer["supported"])
+        self.assertIn("Kari Nordmann", answer["answer"])
+        self.assertTrue(answer["citations"][0]["source_url"].startswith("https://data.brreg.no/"))
+        refresh = json.loads(self.get("/refresh?format=json")[2])
+        self.assertTrue(refresh["baseline"])
+        compare = json.loads(self.get("/compare?orgs=938702675,919263601&format=json")[2])
+        self.assertEqual(len(compare["companies"]), 2)
+
+    def test_unknown_and_unsafe_paths(self) -> None:
+        self.assertEqual(self.get("/companies/999999999")[0], 404)
+        self.assertEqual(json.loads(self.get("/companies/999999999?format=json")[2])["state"], "not_available")
+        self.assertEqual(self.get("/../../../etc/passwd")[0], 404)
+        self.assertEqual(self.get("/site/../../etc/passwd")[0], 404)
+
+
 class ExportTests(unittest.TestCase):
     def test_app_dataset_from_either_shape(self) -> None:
         from kildespor.export_profiles import build
