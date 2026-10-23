@@ -83,7 +83,8 @@ HARVEST_REQUESTS = int(os.environ.get("KILDESPOR_HARVEST_REQUESTS", "12"))
 # link that is not read is not published.
 MAX_AD_FETCHES = int(os.environ.get("KILDESPOR_AD_FETCHES", "10"))
 NEWS_MAX_AGE_DAYS = 730
-MAX_NEWS = 30
+# One correct item per company is the first goal; ten is the cap (review B, WP-C). Env override for corpus runs.
+MAX_NEWS = int(os.environ.get("KILDESPOR_MAX_NEWS", "10"))
 MAX_JOBS = 25
 MAX_ARTICLE_FETCHES = 3
 MAX_PROFILES_PER_PLATFORM = 3
@@ -2621,6 +2622,12 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # Every candidate with the rules' verdict, for the development corpus (newsgate.dump; off by default).
     candidates: list[tuple[NewsItem, str | None]] = []
     corpus = bool(newsgate.dump_dir())
+    # The learned content gate (newsgate.py) judges what the rules let through. Its refusals are kept
+    # apart from the rules': a richer copy of the same item (its article page) is judged again.
+    gate_ctx = {"org": rec.organisation_number, "legal_name": (rec.context.get("entity") or {}).get("navn") or "", "brands": brand_names, "host": site_host,
+                "home": home.final_url, "wordpress": wordpress, "group_site": group_site, "own": sorted(entity.own), "other": entity.other}
+    gated: dict[str, str] = {}
+    scores: dict[int, float | None] = {}
 
     def add_news(item: NewsItem) -> None:
         early = None
@@ -2642,6 +2649,15 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             refused[key] = why
             news.pop(key, None)
             return
+        keep, score = newsgate.verdict(newsgate.record(item, gate_ctx))
+        scores[id(item)] = score
+        if not keep:
+            if item.method == "article_page_meta" or key not in news:
+                # The article page is the fullest evidence there is: when it says no, an earlier copy goes too.
+                gated[key] = "below the news gate (product, service, guide, commentary or other entity)"
+                news.pop(key, None)
+            return
+        gated.pop(key, None)
         current = news.get(key)
         if current is None:
             for other_key, other in news.items():
@@ -2759,18 +2775,17 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if verified.unread and jobs_complete:
         jobs_complete = False  # a listed ad that was not read can be neither published nor closed
     _publish_hiring(rec, careers, verified.kept, company_label, site_host, complete=jobs_complete, notes=hiring_notes, verified=verified, parents_site=parents_site)
-    published = _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, refused)
+    published = _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, {**gated, **refused})
     if corpus:
-        ctx = {"org": rec.organisation_number, "legal_name": (rec.context.get("entity") or {}).get("navn") or "", "brands": brand_names, "host": site_host,
-               "home": home.final_url, "wordpress": wordpress, "group_site": group_site, "own": sorted(entity.own), "other": entity.other}
         keys = {_norm_url(i.url) if i.url else f"{i.title.lower()}|{i.date}" for i in published}
         rows = []
         for item, why in candidates:
-            row = newsgate.record(item, ctx)
+            row = newsgate.record(item, gate_ctx)
+            row["gate"] = scores.get(id(item))
             key = _norm_url(item.url) if item.url else f"{item.title.lower()}|{item.date}"
             row["rule"] = why or ""
             row["published_ok"] = key in keys and not why
-            row["final_rule"] = "" if key in keys else (why or refused.get(key) or "not published (publish-stage rule, cap or group site)")
+            row["final_rule"] = "" if key in keys else (why or refused.get(key) or gated.get(key) or "not published (publish-stage rule, cap or group site)")
             rows.append(row)
         newsgate.dump(rows)
     if group_site:
