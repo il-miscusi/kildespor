@@ -3303,8 +3303,13 @@ def _publish_hiring(
         title = _clean(role.title)[:300]
         if published >= MAX_JOBS or not title or (key in existing and role.url != listing.final_url):
             continue
-        if not ad_url_ok(role.url) or (key == _norm_url(listing.final_url) and not _role_url(listing.final_url)):
-            continue  # a search or login link, or a posting whose only address is the careers page
+        on_listing = key == _norm_url(listing.final_url) and not _role_url(listing.final_url)
+        if not ad_url_ok(role.url) or (on_listing and not (role.method == "json_ld_jobposting" and role.employer and not ats.OPEN_APPLICATION.search(title))):
+            # A search or login link, or a posting whose only address is the careers page. The one
+            # exception: a JobPosting in the page's own structured data that names this employer
+            # (halvorsenforvaltning.no/karriere carries exactly that for its one vacancy), which is
+            # one ad by this company even though it has no page of its own.
+            continue
         existing.add(key)
         value = {"title": title, "url": role.url, "published": role.published, "expires": role.expires, "location": role.location, "employer": role.employer, "source": role.source}
         evidence = []

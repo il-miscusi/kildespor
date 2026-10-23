@@ -6,6 +6,7 @@ entries (descriptions cut). Run with ``python -m pytest -q tests/test_ats.py``.
 from __future__ import annotations
 
 import gzip
+import re
 import hashlib
 import json
 import tempfile
@@ -463,3 +464,27 @@ class NavIndex(unittest.TestCase):
             rows = ats.nav_active("983975240", path)
             self.assertEqual([r["uuid"] for r in rows], ["1e98d75d-dd59-46df-8517-811a03b422f9"])
             self.assertEqual(ats.nav_active("000000000", path), [])
+
+
+class JobPostingOnTheCareersPage(unittest.TestCase):
+    """halvorsenforvaltning.no/karriere carries its one vacancy as a JobPosting naming this employer
+    and has no ad page of its own: one ad by this company, published at the careers page's address."""
+
+    HOME = '<html><head><title>Halvorsen Bygg</title></head><body><nav><a href="/karriere/">Karriere</a></nav><footer>Halvorsen Bygg og Eiendomsforvaltning AS</footer></body></html>'
+
+    def run_site(self, careers: str) -> CompanyRecord:
+        rec = record("HALVORSEN BYGG OG EIENDOMSFORVALTNING AS", "935547423")
+        harvest_site(rec, "https://halvorsenforvaltning.no/", self.HOME, {"https://halvorsenforvaltning.no/karriere/": careers})
+        return rec
+
+    def test_named_posting_is_published(self) -> None:
+        rec = self.run_site(fixture("halvorsen-karriere.html"))
+        claims = job_claims(rec)
+        self.assertEqual([(c["value"]["title"], c["value"]["url"]) for c in claims], [("Tømrer/snekker", "https://halvorsenforvaltning.no/karriere/")])
+        self.assertEqual(rec.evidence[claims[0]["evidence_ids"][0]]["span_check"], "verbatim")
+
+    def test_unnamed_or_open_application_posting_is_not(self) -> None:
+        html = fixture("halvorsen-karriere.html")
+        unnamed = re.sub(r'"hiringOrganization": \{.*?\},\s*"jobLocation"', '"jobLocation"', html, flags=re.S)
+        self.assertEqual(job_claims(self.run_site(unnamed)), [])
+        self.assertEqual(job_claims(self.run_site(html.replace('"title": "Tømrer/snekker"', '"title": "Åpen søknad"'))), [])
