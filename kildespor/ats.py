@@ -78,7 +78,11 @@ OPEN_APPLICATION = re.compile(
     r"spontan|(?:[aå]pen|open|aapen)[- ]s[øo]knad|apen-soknad|s[øo]knadsportal|open[- ]application|general[- ]applications?|"
     r"generell[- ]s[øo]knad|talent\s?(?:bank|pool|community|network)|registrer\s+(?:din\s+)?cv|send\s+(?:oss\s+)?(?:din\s+)?cv|"
     r"interesseliste|interessemelding|unsolicited|ikke\s+funnet\s+(?:en\s+)?(?:passende|riktig)\s+stilling|"
-    r"didn.?t\s+find\s+(?:the\s+)?(?:right|a\s+suitable)|(?:jobb|work)\s+(?:hos|with)\s+oss\s+i\s+fremtiden|framtidige\s+stillinger|fremtidige\s+stillinger",
+    r"didn.?t\s+find\s+(?:the\s+)?(?:right|a\s+suitable)|(?:jobb|work)\s+(?:hos|with)\s+oss\s+i\s+fremtiden|framtidige\s+stillinger|fremtidige\s+stillinger|"
+    # a casting call or a call for participants is not a vacancy ("Kompani Lauritzen ... søker nye deltakere!")
+    r"\bdelta(?:k|g)ere?\b|\bcasting\b|\bparticipants?\b|"
+    # a generic "work with us" entry is a talent pool, not one vacancy
+    r"^\s*(?:(?:jobb(?:e)?|karriere)\s+(?:hos|i|med)\s+(?:oss|[\w&.' ]{2,40})|bli\s+(?:en\s+)?del\s+av\s+(?:oss|teamet|laget)[\w ]{0,20}|join\s+(?:us|our\s+team)|work\s+(?:with|at|for)\s+us)\s*!?\s*$",
     re.I,
 )
 _TT_MARK = re.compile(r"teamtailor-cdn\.com|assets[\w.-]*\.teamtailor-cdn|teamtailor-production", re.I)

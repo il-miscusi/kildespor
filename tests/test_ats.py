@@ -145,6 +145,15 @@ class Parsers(unittest.TestCase):
         self.assertEqual([a.title for a in tl.open_ads()], ["Prosjektleder"])
         self.assertEqual(len([a for a in tl.ads if a.refused]), 4)
 
+    def test_not_a_vacancy_titles(self) -> None:
+        # Raggamuffin AS's only Teamtailor "job" on 23 Oct was a TV casting call
+        refused = ["Kompani Lauritzen - Tropp 6 Blodsbånd - søker nye deltakere!", "Jobb hos oss", "Jobb hos Fjordbygg", "Bli en del av teamet vårt", "Join us!", "Talent pool", "Open application"]
+        kept = ["Prosjektleder og faglig ansvarlig bygg", "Summer Internship 2027", "Join us as a developer", "Jobb i barnehage - pedagogisk leder", "Rørlegger i Oslo"]
+        for title in refused:
+            self.assertTrue(ats.OPEN_APPLICATION.search(title), title)
+        for title in kept:
+            self.assertFalse(ats.OPEN_APPLICATION.search(title), title)
+
 
 class EmployerRule(unittest.TestCase):
     def test_single_employer_tenant(self) -> None:
