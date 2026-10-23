@@ -1664,9 +1664,13 @@ NORWEGIAN_TOWNS = {
     "kirkenes", "finnsnes", "sortland", "svolvaer", "mosjoen", "brønnøysund", "bronnoysund", "orkanger", "melhus", "askoy", "sotra",
     "straume", "nesttun", "fyllingsdalen", "voss", "odda", "sogndal", "volda", "orsta", "ulsteinvik", "fosnavag", "surnadal", "oppdal",
     "roros", "tynset", "fagernes", "otta", "lyngdal", "flekkefjord", "farsund", "kvinesdal", "tvedestrand", "risor", "kragero", "bo",
-    "rjukan", "kopervik", "sauda", "jorpeland", "klepp", "kleppe", "time", "nærbø", "naerbo", "eidsvoll", "ski", "kolbotn", "drobak",
+    "rjukan", "kopervik", "sauda", "jorpeland", "klepp", "kleppe", "time", "nærbø", "naerbo", "eidsvoll", "kolbotn", "drobak",
     "vestby", "mysen", "askim", "spydeberg", "rakkestad", "gol", "geilo", "nesbyen", "hokksund", "lier", "royken", "holmestrand",
 }
+# Town names that are also common words (English "time", "moss", "ski"; Norwegian "bo", "time",
+# "lier"; Spanish "alta", "gol"): they count in a location field or JSON-LD jobLocation, never in
+# free text, where "full-time" or "å bo" names no place.
+AMBIGUOUS_TOWNS = {"time", "moss", "ski", "bo", "lier", "alta", "gol"}
 _NORWAY_WORD = re.compile(r"\b(?:norge|norway|noreg|norwegen|norvège|norvege)\b", re.I)
 # Bokmål and nynorsk function words: an ad written in Norwegian (and naming no place abroad)
 # is for a workplace in Norway.
@@ -1695,9 +1699,14 @@ def _registered_places(rec: CompanyRecord) -> set[str]:
     return {p for p in places if len(p) >= 2}
 
 
-def _names_norwegian_place(text: str, rec: CompanyRecord) -> bool:
+def _names_norwegian_place(text: str, rec: CompanyRecord, *, field: bool = True) -> bool:
+    """``text`` names Norway, a larger Norwegian town or a place the entity is registered in. In free
+    text (``field=False``) a town name that is also a common word does not count."""
     key = " " + " ".join(re.findall(r"[a-z0-9æøå]+", _place_key(text))) + " "
-    return bool(_NORWAY_WORD.search(text)) or any(f" {p} " in key for p in NORWEGIAN_TOWNS | _registered_places(rec))
+    places = NORWEGIAN_TOWNS | _registered_places(rec)
+    if not field:
+        places = places - AMBIGUOUS_TOWNS
+    return bool(_NORWAY_WORD.search(text)) or any(f" {p} " in key for p in places)
 
 
 def norwegian_workplace(ad: AdPage, rec: CompanyRecord, listed_location: str | None = None) -> bool:
@@ -1718,7 +1727,7 @@ def norwegian_workplace(ad: AdPage, rec: CompanyRecord, listed_location: str | N
     text = ad.text or ""
     if not text or FOREIGN_PLACE.search(text):
         return False  # nothing said, or a list of offices abroad ("Belgium, France, ... Norway")
-    if _names_norwegian_place(text, rec):
+    if _names_norwegian_place(text, rec, field=False):
         return True
     words = re.findall(r"[a-zæøåäöüé]+", text.lower())
     nb = sum(w in _NORWEGIAN_WORDS for w in words)

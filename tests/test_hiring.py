@@ -425,6 +425,18 @@ class ParentVacanciesAbroad(unittest.TestCase):
         kept = sorted(c["value"]["url"].rsplit("/", 2)[-2] for c in rec.claims_for("hiring"))
         self.assertEqual(kept, ["a-oslo", "c-norsk", "d-ld-no"])
 
+    def test_common_word_town_names_count_only_in_a_location_field(self) -> None:
+        base = "https://www.pnoinnovation.com/position/"
+        rec = self.site({
+            base + "a-fulltime/": self.ad("Consultant", "A full time role for an experienced consultant who wants to grow with us."),
+            base + "b-ski/": self.ad("Sales Engineer", "We are hiring a sales engineer. Benefits include a ski cabin and a long lunch time."),
+            base + "c-field/": self.ad("Accountant", "We are hiring an accountant. Location: Ski"),
+        })
+        # "full time", "ski cabin", "lunch time" name no place; "Location: Ski" does
+        self.assertEqual(sorted(c["value"]["url"].rsplit("/", 2)[-2] for c in rec.claims_for("hiring")), ["c-field"])
+        self.assertFalse(harvest._names_norwegian_place("full-time position, flexible time", rec, field=False))
+        self.assertTrue(harvest._names_norwegian_place("Time, Rogaland", rec))
+
     def test_ad_naming_this_employer_needs_no_place(self) -> None:
         named = self.ad("Consultant", "Join us.").replace("</main>", "<h2>Om PNO Innovation</h2><p>Advisers in Europe.</p></main>")
         rec = self.site({"https://www.pnoinnovation.com/position/g-named/": named, "https://www.pnoinnovation.com/position/h-named/": named.replace("Consultant", "Adviser")})
