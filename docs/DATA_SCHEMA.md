@@ -34,12 +34,13 @@ order.
      "retrieved_at": "...", "content_sha256": "...", "claim_span": "SELSKAP 2025 driftsinntekter/sumDriftsinntekter = 914000000.0",
      "extraction_method": "brreg_accounts_api", "reporting_period": "2025-01-01/2025-12-31", "http_status": 200, "access_policy": "NLOD 2.0 open data, data.brreg.no", "snapshot_path": "state/snapshots/ab/abcd....gz"}
   ],
-  "synthesis": {"headline": "...", "summary": "...", "summary_sentences": [{"text": "...", "claim_ids": [], "evidence_ids": [], "sources": [{"url": "...", "retrieved_at": "...", "evidence_id": "ev-..."}], "basis": "fact"}],
-                "sections": [{"key": "what", "heading": "What the company does", "question": "What does the company do?", "text": "...", "sentences": [...], "claim_ids": [], "evidence_ids": []}],
+  "synthesis": {"headline": "LEGAL NAME AS (Brand) · Industry · Town", "summary": "...", "summary_sentences": [{"text": "...", "claim_ids": [], "evidence_ids": [], "sources": [{"url": "...", "retrieved_at": "..."}]}],
+                "sections": [{"key": "what", "heading": "Company overview", "question": "What does the company do?", "text": "...", "sentences": [...]}],
                 "timeline": [{"date": "2026-09-20", "text": "...", "kind": "news", "claim_ids": [], "evidence_ids": []}],
                 "signals": [{"key": "hiring", "text": "...", "tone": "positive", "claim_ids": [], "evidence_ids": []}],
                 "unknowns": [{"family": "official_website", "label": "official website", "state": "not_available", "state_words": "checked, none found", "reason": "...", "checked_sources": []}],
-                "coverage": {"score": 3, "total": 5, "areas": [{"key": "company", "label": "Company record", "available": true}]}, "method": "..."},
+                "coverage": {"score": 3, "total": 5, "areas": [{"key": "company", "label": "Company record", "available": true}]},
+                "checks": {"sentences": 25, "unsupported_dropped": 0}, "method": "..."},
   "changes": [{"change_type": "new_job", "field": "job_posting", "previous": null, "current": {...}, "previous_evidence_ids": [], "current_evidence_ids": ["ev-..."], "previous_evidence": [], "materiality": "medium", "summary": "...", "detected_at": "..."}],
   "refresh": {"previous_run_id": null, "baseline": true, "history": ["..."]},
   "errors": [{"module": "website", "error": "...", "url": "...", "at": "..."}],
@@ -49,19 +50,29 @@ order.
 
 ## The brief (`synthesis`)
 
-Six sections, always in this order and each answering one question:
-`what` (what does the company do?), `who` (who runs and owns it?), `money`
-(how big is it and how is it doing?), `changed` (what changed recently?),
-`signals` (is it hiring, and where is it online?) and `unknown` (what could
-not be established?). `summary` is a five-to-six sentence version of the
-same for a 20-second read.
+`headline` is the legal name, the public brand in brackets when one is
+verified (a page title is never a brand), the industry and the town.
 
-Every sentence carries `claim_ids`, `evidence_ids` and up to four `sources`
-(URL and retrieval time), and a `basis`:
+`summary_sentences` (joined in `summary`) are, in order: what the company
+does with its size and the direction of its latest filed figures; whether it
+is hiring and its latest dated activity; who runs it (and its parent); what
+changed; what could not be established. Seven `sections` follow, in the
+order of Builderr's sample profile: `what` (Company overview), `money`
+(Latest financials), `who` (Who runs it?), `hiring` (Working here),
+`activity` (Recent activity), `changed` (What changed) and `unknown` (What we
+could not establish). Briefs written before 24 October have the older
+`signals` section in place of `hiring` and `activity`.
+
+Every sentence carries `claim_ids`, `evidence_ids` and up to two `sources`
+(URL and retrieval time; `evidence_ids` is complete), and a `basis` when it
+is not a plain fact. Before a sentence is kept, `sentence_support` checks
+that every number, quotation and name in it is in the claims it cites or is
+arithmetic on two of them; `checks` counts the sentences checked and any
+dropped.
 
 | basis | meaning |
 |---|---|
-| `fact` | stated by the cited sources |
+| `fact` (the default, omitted) | stated by the cited sources |
 | `computed` | arithmetic on cited filed figures (year-on-year change, equity ratio) |
 | `carried_forward` | rests on a claim kept from the previous run because its source could not be re-checked |
 | `run_to_run` | a comparison with the previous run (or the statement that this run is the baseline) |
@@ -70,7 +81,7 @@ Every sentence carries `claim_ids`, `evidence_ids` and up to four `sources`
 
 `coverage` counts the five data areas of Builderr's sample viewer: company
 record, financials, people and locations, company website, and public
-footprint (social profiles, job ads, careers page or dated news; register
+footprint (social profiles, single job ads or dated news; register
 update events do not count). `timeline` lists dated events from the sources,
 newest first.
 

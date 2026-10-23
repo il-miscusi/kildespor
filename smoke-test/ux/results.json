@@ -1,0 +1,296 @@
+{
+ "envelopes": "envelopes.jsonl.gz",
+ "previous": "envelopes.jsonl.gz",
+ "companies": 100,
+ "run_id": "rev2a-gold100",
+ "previous_runs": [
+  "rc4b-gold100"
+ ],
+ "targets": {
+  "a": [
+   "982215668",
+   "RSV GRUPPEN AS"
+  ],
+  "b": [
+   "938702675",
+   "AF GRUPPEN ASA"
+  ]
+ },
+ "seconds": 33.4,
+ "passed": 34,
+ "failed": 0,
+ "results": [
+  {
+   "task": "find-name",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "typed 'RSV GRUPPEN', opened RSV GRUPPEN AS",
+   "ms": 631
+  },
+  {
+   "task": "find-org",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "typed 938702675, opened AF GRUPPEN ASA",
+   "ms": 433
+  },
+  {
+   "task": "profile",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "11 sections, brief 1313 chars",
+   "ms": 383
+  },
+  {
+   "task": "compare",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "RSV GRUPPEN AS vs AF GRUPPEN ASA at compare/index.html?orgs=982215668,938702675",
+   "ms": 409
+  },
+  {
+   "task": "evidence",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "fact and sentence evidence show URL, retrieval time and span",
+   "ms": 405
+  },
+  {
+   "task": "vacancy",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "LEIRVIK AS: Senior HR-Rådgjevar (published 2026-10-07)",
+   "ms": 407
+  },
+  {
+   "task": "refresh",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "refresh run, 10 companies changed",
+   "ms": 481
+  },
+  {
+   "task": "ask",
+   "width": "375",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "Working here · RSV GRUPPEN AS",
+   "ms": 545
+  },
+  {
+   "task": "find-name",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "typed 'RSV GRUPPEN', opened RSV GRUPPEN AS",
+   "ms": 523
+  },
+  {
+   "task": "find-org",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "typed 938702675, opened AF GRUPPEN ASA",
+   "ms": 566
+  },
+  {
+   "task": "profile",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "11 sections, brief 1313 chars",
+   "ms": 1152
+  },
+  {
+   "task": "compare",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "RSV GRUPPEN AS vs AF GRUPPEN ASA at compare/index.html?orgs=982215668,938702675",
+   "ms": 946
+  },
+  {
+   "task": "evidence",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "fact and sentence evidence show URL, retrieval time and span",
+   "ms": 1728
+  },
+  {
+   "task": "vacancy",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "RSV GRUPPEN AS: Vi søker etter morgenfugler til helgearbeid som har erfaring (published 2026-10-09)",
+   "ms": 1344
+  },
+  {
+   "task": "refresh",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "refresh run, 10 companies changed",
+   "ms": 720
+  },
+  {
+   "task": "ask",
+   "width": "375",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "Latest financials · RSV GRUPPEN AS",
+   "ms": 1085
+  },
+  {
+   "task": "find-name",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "typed 'RSV GRUPPEN', opened RSV GRUPPEN AS",
+   "ms": 359
+  },
+  {
+   "task": "find-org",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "typed 938702675, opened AF GRUPPEN ASA",
+   "ms": 379
+  },
+  {
+   "task": "profile",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "11 sections, brief 1313 chars",
+   "ms": 351
+  },
+  {
+   "task": "compare",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "RSV GRUPPEN AS vs AF GRUPPEN ASA at compare/index.html?orgs=982215668,938702675",
+   "ms": 376
+  },
+  {
+   "task": "evidence",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "fact and sentence evidence show URL, retrieval time and span",
+   "ms": 410
+  },
+  {
+   "task": "vacancy",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "LEIRVIK AS: Senior HR-Rådgjevar (published 2026-10-07)",
+   "ms": 447
+  },
+  {
+   "task": "refresh",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "refresh run, 10 companies changed",
+   "ms": 496
+  },
+  {
+   "task": "ask",
+   "width": "1280",
+   "mode": "pointer",
+   "ok": true,
+   "detail": "Working here · RSV GRUPPEN AS",
+   "ms": 474
+  },
+  {
+   "task": "find-name",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "typed 'RSV GRUPPEN', opened RSV GRUPPEN AS",
+   "ms": 507
+  },
+  {
+   "task": "find-org",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "typed 938702675, opened AF GRUPPEN ASA",
+   "ms": 527
+  },
+  {
+   "task": "profile",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "11 sections, brief 1313 chars",
+   "ms": 1117
+  },
+  {
+   "task": "compare",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "RSV GRUPPEN AS vs AF GRUPPEN ASA at compare/index.html?orgs=982215668,938702675",
+   "ms": 908
+  },
+  {
+   "task": "evidence",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "fact and sentence evidence show URL, retrieval time and span",
+   "ms": 1499
+  },
+  {
+   "task": "vacancy",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "RSV GRUPPEN AS: Vi søker etter morgenfugler til helgearbeid som har erfaring (published 2026-10-09)",
+   "ms": 1486
+  },
+  {
+   "task": "refresh",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "refresh run, 10 companies changed",
+   "ms": 758
+  },
+  {
+   "task": "ask",
+   "width": "1280",
+   "mode": "keyboard",
+   "ok": true,
+   "detail": "Latest financials · RSV GRUPPEN AS",
+   "ms": 1249
+  },
+  {
+   "task": "server-routes",
+   "width": "1280",
+   "mode": "server",
+   "ok": true,
+   "detail": "/companies/982215668 -> /companies/938702675, /research, /refresh render",
+   "ms": 511
+  },
+  {
+   "task": "server-json",
+   "width": "1280",
+   "mode": "server",
+   "ok": true,
+   "detail": "envelope with 104 claims; 100 companies; cited answer; refresh baseline=False",
+   "ms": 51
+  }
+ ]
+}

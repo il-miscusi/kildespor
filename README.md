@@ -10,18 +10,28 @@ pip install -r requirements.txt
 python -m kildespor --input companies.jsonl --output out/envelopes.jsonl
 ```
 
-**Viewer:** every run writes `out/site/index.html`. Open it in a browser
-straight from disk (no server, no network, nothing to install), or serve it
-with `python -m http.server -d out/site 8000`. The committed 100-company smoke
-run is in [`smoke-test/site/index.html`](smoke-test/site/index.html).
+**Viewer:** every run writes `out/index.html` (next to the envelopes) and
+`out/site/`. Open `out/index.html` in a browser straight from disk (no server,
+no network, nothing to install), put `out/` on any static host, or serve it at
+Builderr's preferred routes with `python -m kildespor.serve --dir out --port 8000`
+(standard library only; every route also answers `?format=json`). The
+committed 100-company smoke run is in [`smoke-test/index.html`](smoke-test/index.html).
 
-| task | route in the viewer |
-|---|---|
-| **Find** companies: search by name, org. no., town or industry; filter by website, social profile, hiring, news, accounts, revenue and employee ranges; or ask "hiring companies in Oslo", "revenue over 10 MNOK", "who is the CEO of …" | `#/research` |
-| **Read** one company: a 20-second brief, financials by year, people, web and hiring, changes, what is unknown, all facts | `#/companies/<organisation_number>` |
-| **Compare** up to four companies side by side, on the same financial year | `#/compare?orgs=<org>,<org>,<org>` |
-| **Verify** any fact: each numbered button opens the source URL, retrieval time, quoted span, extraction method and SHA-256 | on every page |
-| **Refresh**: what changed in this run, both sides with their evidence; facts that could not be re-checked are marked | `#/refresh` |
+| task | page on disk (`out/site/…`) | route with `kildespor.serve` |
+|---|---|---|
+| **Find** a company: one labelled search box (name or organisation number; Enter on an exact match opens it), a directory sorted by data found, filters for website, social profile, hiring, news, changes, revenue and employees | `research/index.html` (also `out/index.html`) | `/research` |
+| **Read** one company in the sections of Builderr's sample: Company brief, Company overview, Latest financials, Who runs it?, Locations, Working here, Recent activity, What changed, What we could not establish, Check the evidence, Sources found | `companies/<org>/index.html` | `/companies/<organisation_number>` |
+| **Compare** two to four companies on the same financial year, from the Compare button on any row | `compare/index.html?orgs=<org>,<org>` | `/compare?orgs=<org>,<org>` |
+| **Verify** any fact: "View source" and the numbered buttons show the source URL, retrieval time, quoted span, extraction method and SHA-256; missing data shows its state (not available, ambiguous, failed, blocked) | on every page | |
+| **Refresh**: refresh status, what changed in this run with both sides and their evidence, facts carried forward, sources not fully checked | `refresh/index.html` | `/refresh` |
+| **Ask Signalpost**: Company brief, Latest financials, Who runs it?, Working here, Recent activity, or a typed question; answers come only from the run's cited claims | on research and company pages | `/research?q=<question>&format=json` |
+
+`index.html` keeps the older hash routes (`#/companies/<org>`, `#/compare?orgs=`, `#/refresh`).
+`python3 tools/ux_tasks.py --envelopes out/envelopes.jsonl` drives these tasks in
+Chrome at 375 px and 1280 px, with the pointer and with the keyboard only, and
+fails on any miss (it needs `pip install playwright`, and uses the installed Chrome
+when Playwright's own Chromium is not downloaded); its screenshots and results are
+in [`smoke-test/ux/`](smoke-test/ux/).
 
 The same questions work from the command line:
 `python -m kildespor.ask --envelopes out/envelopes.jsonl "hiring companies in Oslo"`.
@@ -62,7 +72,8 @@ model. Expected third-party cost per official run: **$0**.
 |---|---|
 | `out/envelopes.jsonl` | one terminal envelope per input, in input order |
 | `out/run-report.json` | validation checks, coverage by field family, request count, p50/p95 latency, runtime, cost |
-| `out/site/index.html` | the viewer (routes above); it loads `out/site/data/index.json` and one `data/companies/<org>.json` per company on demand (`.js` twins make it work from `file://`) |
+| `out/index.html` | the viewer's research page, reading `out/site/` |
+| `out/site/` | the viewer (pages above): `assets/viewer.js` and `viewer.css` shared by every page, `data/index.js` (one row per company) and `data/companies/<org>.js` (one profile, loaded on demand); about 50 KB per company (49 MB for a 1,000-company run) |
 | `out/profiles.json` | the same run in the JBOX web app's format (see "Web app") |
 | `state/latest.jsonl`, `state/runs/<run_id>.jsonl` | envelope snapshots used by the next run to refresh profiles |
 | `state/snapshots/<sha[:2]>/<sha>.gz` | the raw source bodies behind every claim, content-addressed; each envelope's `source_snapshots` and each evidence record's `snapshot_path` point here |
@@ -109,16 +120,21 @@ explicitly with `--previous old/envelopes.jsonl`.
 | Refresh metadata and material changes | previous snapshot diff | |
 
 Each envelope also carries a `synthesis` brief written for a buyer, investor
-or applicant: a lead sentence in plain English on what the company does (its
-own website's description when verified, else its legal form, town, founding
-year and Statistics Norway's English industry label), who runs and owns it,
-size and finances (latest filed revenue, operating and net result, equity,
-with the change from the year before in NOK and %, and a computed equity ratio
-labelled as such), what changed (dated events newest first, plus run-to-run
-changes and carried-forward facts), hiring and web presence (hiring is claimed
-only from single job ads, never from a careers page), and what remains unknown, each gap with
-its state and reason. Every sentence carries the claim ids, evidence ids and
-source URLs it rests on; the template is deterministic and uses no model.
+or applicant. It opens with two sentences to act on: what the company does
+(legal form, town and Statistics Norway's English industry label), its size
+and which way its latest filed figures moved (revenue and net result with
+their years and the change on the year before, from the group accounts when a
+parent files them), then whether it is hiring now (single job ads only, never
+a careers page) and its latest dated activity. Then who runs it, what changed
+(run to run, or on a first run the latest filing against the year before and
+the latest register change) and what could not be established. The sections
+follow Builderr's sample: Company overview, Latest financials, Who runs it?,
+Working here, Recent activity, What changed, What we could not establish
+(each missing area with its state and reason). Every sentence carries the
+claim ids, evidence ids and source URLs it rests on and must pass a
+sentence-support check: each number, quotation and name it states has to be
+in the claims it cites (or be arithmetic on two of them), or the sentence is
+dropped. The template is deterministic and uses no model.
 `docs/DATA_SCHEMA.md` describes the fields.
 
 See [`docs/AGENT.md`](docs/AGENT.md) for the research and abstention policy,
@@ -170,10 +186,11 @@ command are only `pip install -r requirements.txt` and `python -m kildespor ...`
 machine (fresh virtualenv, only `pip install -r requirements.txt`, then the run
 command), plus a refresh re-run of the same batch:
 `smoke-test/run-report.json`, `smoke-test/envelopes.jsonl`,
-`smoke-test/refresh-report.json` and the viewer `smoke-test/site/index.html`
-(rebuilt with the current viewer by `python -m kildespor.site --input
-smoke-test/envelopes.jsonl --output smoke-test/site`). Screenshots of the
-viewer's tasks at 375 px and 1280 px are in [`smoke-test/ux/`](smoke-test/ux/).
+`smoke-test/refresh-report.json` and the viewer `smoke-test/index.html` with
+`smoke-test/site/` (rebuilt with the current viewer by `python -m kildespor.site
+--input smoke-test/envelopes.jsonl --output smoke-test/site --root-page`; it shows
+each envelope's own brief). Screenshots and results of the viewer's task checks
+at 375 px and 1280 px are in [`smoke-test/ux/`](smoke-test/ux/).
 [`smoke-test/SUMMARY.md`](smoke-test/SUMMARY.md) summarises it.
 
 ## Tests
@@ -185,9 +202,10 @@ python -m unittest discover -s tests
 Offline tests cover the organisation-number checksum and page matching, domain
 guessing, social-link parsing, the URL safety policy, the one-envelope-per-input
 contract, evidence resolution, refresh idempotency, change detection,
-stale carry-forward, the brief (every sentence cited with real ids, hiring
-only from job evidence, states kept apart), the viewer's data files and
-script, the app export and the question answering.
+stale carry-forward, the brief (every sentence cited with real ids and passing
+the sentence-support check, hiring only from job evidence, states kept apart),
+the viewer's pages, data files and script, the server's routes, the app export
+and the question answering.
 
 ## Licences
 
