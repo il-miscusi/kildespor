@@ -82,7 +82,7 @@ HARVEST_REQUESTS = int(os.environ.get("KILDESPOR_HARVEST_REQUESTS", "12"))
 # Ad pages read to confirm role links (on top of HARVEST_REQUESTS, after news and profiles): a
 # link that is not read is not published.
 MAX_AD_FETCHES = int(os.environ.get("KILDESPOR_AD_FETCHES", "10"))
-NEWS_MAX_AGE_DAYS = 730
+NEWS_MAX_AGE_DAYS = int(os.environ.get("KILDESPOR_NEWS_MAX_AGE_DAYS", "730"))
 # One correct item per company is the first goal; ten is the cap (review B, WP-C). Env override for corpus runs.
 MAX_NEWS = int(os.environ.get("KILDESPOR_MAX_NEWS", "10"))
 MAX_JOBS = 25
@@ -1752,9 +1752,14 @@ NOT_NEWS_PATH = re.compile(
 NOT_ARTICLE_SEGMENT = re.compile(r"^(?:kategori|category|categories|tag|tags|emne|author|forfatter|page|side|arkiv|archive|feed|rss|search|sok)$", re.I)
 NOT_HEADLINE = re.compile(
     r"^(?:les\s+mer|read\s+more|se\s+alle|vis\s+alle|view\s+all|all\s+news|alle\s+nyheter|nyheter|aktuelt|news|presse|press(?:\s*room)?|"
-    r"blogg?|siste\s+nytt|latest\s+news|more|mer|neste|forrige|next|previous|hello\s+world!?|hei\s*,?\s+verden!?)$",
+    r"blogg?|siste\s+nytt|latest\s+news|more|mer|neste|forrige|next|previous|hello\s+world!?|hei\s*,?\s+verden!?|"
+    r"les\s+(?:hele\s+)?(?:nyheten|nyhet|saken|sak|artikkelen|artikkel|innlegget|innlegg|mer\s+her)|read\s+(?:the\s+)?(?:article|story|post|full\s+story)|"
+    r"se\s+mer|vis\s+mer|last\s+ned|download|continue\s+reading|fortsett\s+å\s+lese|nyhet|news\s+item)$",
     re.I,
 )
+# A card label around the headline ("News New CEO News - 03. November 2022", "Siste nytt 19.08.2026").
+_CARD_LABEL = re.compile(r"^(?:(?:siste\s+)?nytt|nyheter|nyhet|news|aktuelt|pressemelding|press\s+release|event|arrangement|blogg?|artikkel|article)\b[\s:|\-–—]*|"
+                         r"[\s:|\-–—]*\b(?:nyheter|nyhet|news|aktuelt|pressemelding|press\s+release|event|blogg?)$", re.I)
 CARD_CLASS = re.compile(r"news|nyhet|post|article|artikkel|card|teaser|entry|story|blog|item|aktuelt|press", re.I)
 # A theme's slider, test or cloned post ("HeroSliderPost ( Cloned )", "TestPostMobil"): a page element, never news.
 TEMPLATE_TITLE = re.compile(r"slider|test\s?post|lorem|ipsum|dummy|placeholder|\(\s*cloned\s*\)|\bcopy\b|\bkopi\b|untitled|uten\s+tittel|hello\s+world", re.I)
@@ -1800,8 +1805,24 @@ GENERIC_CATEGORY = re.compile(r"^(?:uncategori[sz]ed|ukategorisert|okategorisera
 TOPIC_LIBRARY_CATEGORIES = 4
 
 
+def _bare_title(title: str) -> str:
+    """The title without a date written into it, its card labels and edge punctuation: what is left
+    when "Siste nytt 19.08.2026" or "Read more>" are not headlines."""
+    text = _D_MONTH_Y_RE.sub(" ", _DMY_RE.sub(" ", _ISO_RE.sub(" ", title)))
+    text = re.sub(r"^[\W_]+|[\W_]+$", "", " ".join(text.split()))
+    for _ in range(3):
+        stripped = re.sub(r"^[\W_]+|[\W_]+$", "", _CARD_LABEL.sub("", text).strip())
+        if stripped == text:
+            break
+        text = stripped
+    return text
+
+
 def is_headline(title: str) -> bool:
     if not title or NOT_HEADLINE.match(title.strip()) or TEMPLATE_TITLE.search(title):
+        return False
+    bare = _bare_title(title)
+    if not bare or NOT_HEADLINE.match(bare) or NOT_HEADLINE.match(re.sub(r"^[\W_]+|[\W_]+$", "", title.strip())):
         return False
     letters = re.sub(r"[^A-Za-zÆØÅæøåÄÖäöÜüÉé]", "", title)
     return len(letters) >= 8 and 8 <= len(title) <= 250 and text_date(title) != title.strip()
@@ -2033,6 +2054,10 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
             title = text if is_headline(text) else None
         if title is None:
             continue
+        if dated_by and text_date(title) and text_date(title) == text_date(dated_by):
+            # The heading carries the card's own date and labels ("News New CEO News - 03. November 2022").
+            bare = _bare_title(title)
+            title = bare if is_headline(bare) else title
         if truncated_title(title, url):
             # The card cut its title short: the link's own title or label often carries it in full.
             stem = _alnum(ELLIPSIS.sub("", title))

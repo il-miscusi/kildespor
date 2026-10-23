@@ -17,7 +17,9 @@ from kildespor.contract import publish
 from kildespor.model import CompanyRecord
 from kildespor.website import SiteVisit, parse
 
-from test_news_precision import RECENT, FakeFetcher, snap
+from test_news_precision import RECENT, TODAY, FakeFetcher, snap
+
+TODAY_YEAR = TODAY.year if TODAY.month >= 11 else TODAY.year - 1  # a 3 November inside the news window
 
 
 HOME = """<html><head><title>Fjordbygg</title><link rel="https://api.w.org/" href="https://www.fjordbygg.no/wp-json/">
@@ -87,6 +89,33 @@ class LeadTests(unittest.TestCase):
     def test_shop_page_flags(self) -> None:
         flags = newsgate.page_signals('<button class="single_add_to_cart_button">Legg i handlekurv</button>', "Easy Sport Small 12 990 kr inkl. mva", {"Product"})
         self.assertEqual(flags, ("cart", "ld_product", "price"))
+
+
+class TitleTests(unittest.TestCase):
+    """Card and button labels published as titles (teacher-audit sample, 23 Oct)."""
+
+    def test_labels_are_not_headlines(self) -> None:
+        for title in ("Les Nyhet", "Read more>", "Siste nytt 19.08.2026", "News - 03. November 2022", "Les hele saken", "Vis mer"):
+            self.assertFalse(harvest.is_headline(title), title)
+        for title in ("Lasse er ny administrasjonsleder på SAFE-huset", "Nyhet: Ny avdeling i Bergen", "NYHET! Recaro Monza CFX Reha"):
+            self.assertTrue(harvest.is_headline(title), title)
+
+    def test_card_with_a_styled_title_and_a_written_date(self) -> None:  # cchange.no/news
+        html = """<html><body><div class="section"><div class="ItemListing__item ItemListing__item--news">
+        <a class="ItemListing__itemContent" href="/news/you-should-read-this"><div class="ItemListing__itemInfo">
+        <div class="ItemListing__itemType">News</div><div class="ItemListing__title">"You should read this"</div>
+        <div class="ItemListing__date">06.10.2026</div><div class="ItemListing__ingress"><p>The email was from Vernice.</p></div></div></a></div></div></body></html>"""
+        page = snap("https://www.cchange.no/news", html)
+        soup, _html, _text = parse(page)
+        items = harvest.listing_items(page, soup, "cchange.no", require_news_path=False)
+        self.assertEqual([(i.title, i.date) for i in items], [('"You should read this"', "2026-10-06")])
+
+    def test_heading_with_the_cards_date_and_labels(self) -> None:
+        html = f"""<html><body><ul><li class="news-item"><a href="/articles/new-ceo"><h3>News New CEO appointed News - 03. November {TODAY_YEAR}</h3></a><time datetime="{TODAY_YEAR}-11-03">3.11.{TODAY_YEAR}</time></li></ul></body></html>"""
+        page = snap("https://bergencarbonsolutions.com/articles", html)
+        soup, _html, _text = parse(page)
+        items = harvest.listing_items(page, soup, "bergencarbonsolutions.com", require_news_path=False)
+        self.assertEqual([i.title for i in items], ["New CEO appointed"])
 
 
 class FeatureTests(unittest.TestCase):
