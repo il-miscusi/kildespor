@@ -151,7 +151,10 @@ title). Only items above its threshold are published, at most ten per
 company. Inference is pure Python and deterministic; the model refuses
 items, it never adds one or decides whose they are. When nothing passes on
 the evidence of a feed or post API, the two closest refusals get their own
-page read before giving up. A news source that could not be read (timeout,
+page read before giving up. A company whose every candidate the model
+refused keeps its single best-scoring one (ties broken on the URL), so a
+thin blog is not turned into "no news" on the model's word alone.
+A news source that could not be read (timeout,
 5xx, 401/403, the request allowance) makes the dated-news row `failed`, not
 `not_available`.
 

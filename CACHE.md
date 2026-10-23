@@ -160,6 +160,9 @@ a bias and a threshold; `kildespor/newsgate.py` reads it.
 | size, hash | 47 KB; the spec's own `sha256` field is checked by `tests/test_newsgate.py` |
 | rebuild | `python3 tools/news_train.py --items <teacher_items> --labels <teacher_labels> --audit <audit_labels.tsv> --holdout-orgs <batches> --threshold 0.65` |
 
+A company whose every candidate the model refused keeps its single best-scoring one
+(`newsgate.RESCUE_ITEMS`, ties broken on the URL; `KILDESPOR_NEWSGATE_RESCUE=0` turns it off).
+
 `KILDESPOR_NEWSGATE=0` switches the gate off (the rules decide alone);
 `KILDESPOR_NEWSGATE_THRESHOLD` moves the operating point for measurement.
 Delete the file and every item is judged by the rules alone.
