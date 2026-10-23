@@ -163,10 +163,10 @@ def company(env: dict[str, Any]) -> dict[str, Any]:
     syn = synthesis_of(env)
     brief = []
     if syn.get("summary_sentences"):
-        brief.append({"heading": "In 20 seconds", "text": syn.get("summary"), "sources": sorted({e for s in syn["summary_sentences"] for e in s.get("evidence_ids", [])})})
+        brief.append({"heading": "Company brief", "text": syn.get("summary"), "sources": sorted({e for s in syn["summary_sentences"] for e in s.get("evidence_ids", [])})})
     for section in syn.get("sections", []):
         sources = sorted({e for s in section.get("sentences", []) for e in s.get("evidence_ids", [])}) or section.get("evidence_ids", [])
-        brief.append({"heading": section.get("question") or section.get("heading"), "text": section.get("text"), "sources": sources})
+        brief.append({"heading": section.get("heading") or section.get("question"), "question": section.get("question"), "text": section.get("text"), "sources": sources})
     jobs = []
     for c in by("job_posting"):
         v = c["value"] if isinstance(c["value"], dict) else {"url": c["value"]}

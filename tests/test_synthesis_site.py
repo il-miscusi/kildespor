@@ -1,4 +1,4 @@
-"""Offline tests for the brief (synthesis), the viewer (site), the app export and the Q&A layer.
+"""Offline tests for the brief (synthesis), the viewer (site), the server, the app export and the Q&A layer.
 
 Run with ``python -m unittest discover -s tests``. No network.
 """
@@ -125,35 +125,101 @@ def all_sentences(syn: dict) -> list[dict]:
     return [s for sec in syn["sections"] for s in sec["sentences"]] + syn["summary_sentences"]
 
 
+def support_problems(rec: CompanyRecord, syn: dict) -> list[tuple[str, list[str]]]:
+    """Every sentence of a brief run back through the support check against the record's claims."""
+    from kildespor.synthesis import Builder, _names_on_record, sentence_support
+
+    b = Builder(rec)
+    by_id = {c["id"]: c for items in b.by_field.values() for c in items}
+    reasons = sorted({str(st.get("reason")) for st in rec.family_state.values() if st.get("reason")})
+    out = []
+    for s in all_sentences(syn):
+        problems = sentence_support(s, by_id, reasons, [], _names_on_record(b))
+        if problems:
+            out.append((s["text"], problems))
+    return out
+
+
+SMOKE = Path(__file__).resolve().parents[1] / "smoke-test" / "envelopes.jsonl"
+
+
 class SynthesisTests(unittest.TestCase):
-    def test_rich_company_answers_the_six_questions(self) -> None:
-        rec = rich_record()
-        syn = build_synthesis(rec)
-        keys = [sec["key"] for sec in syn["sections"]]
-        self.assertEqual(keys, ["what", "who", "money", "changed", "signals", "unknown"])
-        self.assertTrue(syn["summary"].startswith("FJORD DATA AS is a private limited company in Oslo, founded in 2015"))
-        self.assertIn("computer consultancy", syn["summary"])
+    def test_sections_follow_builderrs_sample(self) -> None:
+        syn = build_synthesis(rich_record())
+        self.assertEqual([sec["key"] for sec in syn["sections"]], ["what", "money", "who", "hiring", "activity", "changed", "unknown"])
+        self.assertEqual([sec["heading"] for sec in syn["sections"]], ["Company overview", "Latest financials", "Who runs it?", "Working here", "Recent activity", "What changed", "What we could not establish"])
         text = " ".join(sec["text"] for sec in syn["sections"])
         self.assertIn("The general manager (daglig leder) is Kari Nordmann", text)
+        self.assertIn("the other is Per Berg", text)
         self.assertIn("FJORD GRUPPEN AS", text)
         self.assertIn("revenue of NOK 50.0 million (up NOK 10.0 million, +25% on 2024)", text)
         self.assertIn("net loss of NOK 1.0 million", text)
         self.assertIn("Hiring now: 1 open job ad", text)
-        self.assertIn("2026-10-01", text)
         self.assertIn("Ny avtale med Fjord1", text)
         self.assertEqual(syn["coverage"]["score"], 5)
         self.assertTrue(any(s["key"] == "hiring" for s in syn["signals"]))
         self.assertTrue(any(s["key"] == "loss" for s in syn["signals"]))
-        # the timeline is newest first
         dates = [t["date"] for t in syn["timeline"]]
         self.assertEqual(dates, sorted(dates, reverse=True))
+
+    def test_lead_is_two_sentences_to_act_on(self) -> None:
+        syn = build_synthesis(rich_record())
+        first, second = (s["text"] for s in syn["summary_sentences"][:2])
+        # what it does, where, size and direction with periods
+        self.assertTrue(first.startswith("FJORD DATA AS is a private limited company in Oslo working in computer consultancy"), first)
+        self.assertIn("with 42 employees in the register", first)
+        self.assertIn("its 2025 accounts show revenue of NOK 50.0 million, up 25% on 2024, and a net loss of NOK 1.0 million", first)
+        # hiring now, and the latest dated activity
+        self.assertIn('It is hiring: 1 open job ad, the latest "Senior utvikler", published 2026-10-01', second)
+        self.assertIn('latest dated news is "Ny avtale med Fjord1" (2026-09-20)', second)
+        bare = build_synthesis(bare_holding())
+        self.assertIn("No open job ad was found in NAV's vacancy feed", bare["summary_sentences"][1]["text"])
+        self.assertIn("no operating revenue and a net profit of NOK 250 thousand", bare["summary_sentences"][0]["text"])
+
+    def test_first_run_still_says_what_changed(self) -> None:
+        syn = build_synthesis(rich_record(), None, baseline=True)
+        changed = next(s for s in syn["summary_sentences"] if "first run" in s["text"])
+        self.assertIn("the net result moved from a profit of NOK 2.0 million in 2024 to a loss of NOK 1.0 million in 2025", changed["text"])
+        self.assertIn("employee-count update to 42 (2026-09-01)", changed["text"])
+        self.assertTrue(changed["claim_ids"])
+        section = next(sec for sec in syn["sections"] if sec["key"] == "changed")
+        self.assertIn("revenue went from NOK 40.0 million in 2024 to NOK 50.0 million in 2025 (+25%)", section["text"])
+        self.assertIn("Latest changes in the Entity Register", section["text"])
+
+    def test_unknowns_name_each_missing_family_and_why(self) -> None:
+        syn = build_synthesis(bare_holding())
+        gap = syn["summary_sentences"][-1]["text"]
+        for label in ("official website", "social media profiles", "single job ads", "dated news", "leadership and board"):
+            self.assertIn(label, gap)
+        section = next(sec for sec in syn["sections"] if sec["key"] == "unknown")
+        self.assertEqual(section["heading"], "What we could not establish")
+        self.assertIn("Official website: not available (no register-listed website and no name-derived domain shows this organisation number).", section["text"])
+
+    def test_headline_is_legal_name_brand_industry_town(self) -> None:
+        rec = rich_record()
+        site = next(c for c in rec.claims if c["field"] == "official_website")
+        rec.add_claim(family="public_brand", field_name="public_brand_name", value="Fjordbooking", evidence_ids=site["evidence_ids"], method="t")
+        self.assertEqual(build_synthesis(rec)["headline"], "FJORD DATA AS (Fjordbooking) · Computer consultancy and computer facilities management activities · Oslo")
+        # a page title is never a brand
+        rec2 = rich_record()
+        rec2.add_claim(family="public_brand", field_name="public_brand_name", value="Hjem | Fjord Data – booking for ferjer", evidence_ids=site["evidence_ids"], method="t")
+        self.assertEqual(build_synthesis(rec2)["headline"], "FJORD DATA AS · Computer consultancy and computer facilities management activities · Oslo")
+        self.assertEqual(build_synthesis(bare_holding())["headline"], "NORDMANN HOLDING AS · Holding company · Bærum")
+
+    def test_group_accounts_lead_for_a_group_parent(self) -> None:
+        rec = rich_record()
+        acc = next(c for c in rec.claims if c["field"] == "financial.revenue")["evidence_ids"]
+        for year, revenue in (("2024", 400e6), ("2025", 480e6)):
+            rec.add_claim(family="annual_accounts", field_name="financial.revenue", value={"amount": revenue, "currency": "NOK", "account_type": "KONSERN", "fiscal_year": year}, key=["revenue", "KONSERN", year], evidence_ids=acc, method="t")
+        lead = build_synthesis(rec)["summary_sentences"][0]["text"]
+        self.assertIn("its 2025 group (consolidated) accounts show revenue of NOK 480.0 million, up 20% on 2024", lead)
 
     def test_every_fact_sentence_is_cited_with_real_ids(self) -> None:
         for rec in (rich_record(), bare_holding(), sole_proprietor()):
             syn = build_synthesis(rec)
             claim_ids = {c["id"] for c in rec.claims}
             for s in all_sentences(syn):
-                if s["basis"] in ("fact", "computed"):
+                if s.get("basis", "fact") in ("fact", "computed"):
                     self.assertTrue(s["claim_ids"], s["text"])
                     self.assertTrue(s["sources"] or s.get("checked_sources"), s["text"])
                 self.assertTrue(set(s["claim_ids"]) <= claim_ids, s["text"])
@@ -161,6 +227,55 @@ class SynthesisTests(unittest.TestCase):
                 for src in s["sources"]:
                     self.assertTrue(src["url"].startswith("http"))
                     self.assertTrue(src["retrieved_at"])
+
+    def test_every_sentence_passes_the_support_check(self) -> None:
+        for rec in (rich_record(), bare_holding(), sole_proprietor()):
+            syn = build_synthesis(rec)
+            self.assertEqual(syn["checks"]["unsupported_dropped"], 0)
+            self.assertEqual(support_problems(rec, syn), [])
+
+    def test_support_check_catches_unsupported_text(self) -> None:
+        from kildespor.synthesis import Builder, _names_on_record, sentence_support
+
+        rec = rich_record()
+        syn = build_synthesis(rec)
+        b = Builder(rec)
+        by_id = {c["id"]: c for items in b.by_field.values() for c in items}
+        names = _names_on_record(b)
+        lead = syn["summary_sentences"][0]
+        self.assertEqual(sentence_support(lead, by_id, [], [], names), [])
+        for bad in (lead["text"].replace("50.0", "55.0"), lead["text"].replace("25%", "35%"), lead["text"].replace("42 employees", "43 employees"),
+                    lead["text"] + " Per Berg sits on the board.", lead["text"] + ' It sells "ferry tickets online".'):
+            self.assertTrue(sentence_support(dict(lead, text=bad), by_id, [], [], names), bad)
+        self.assertTrue(sentence_support(dict(lead, claim_ids=lead["claim_ids"] + ["cl-missing"]), by_id, [], [], names))
+
+    def test_unsupported_sentences_are_dropped_not_published(self) -> None:
+        from kildespor import synthesis
+
+        original = synthesis.sentence_support
+        try:
+            synthesis.sentence_support = lambda s, *a, **k: ["forced"] if "Kari Nordmann" in s["text"] else []
+            syn = build_synthesis(rich_record())
+        finally:
+            synthesis.sentence_support = original
+        self.assertNotIn("Kari Nordmann", json.dumps(syn["summary_sentences"]) + json.dumps(syn["sections"]))
+        self.assertGreater(syn["checks"]["unsupported_dropped"], 0)
+
+    @unittest.skipUnless(SMOKE.exists(), "smoke-test envelopes not in this checkout")
+    def test_smoke_run_briefs_are_fully_supported(self) -> None:
+        from kildespor.site import _record
+
+        envs = [json.loads(line) for line in SMOKE.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(envs), 100)
+        dropped, problems = 0, []
+        for env in envs:
+            rec = _record(env)
+            syn = build_synthesis(rec)
+            dropped += syn["checks"]["unsupported_dropped"]
+            problems += support_problems(rec, syn)
+            self.assertGreaterEqual(len(syn["summary_sentences"]), 3, env["organisation_number"])
+            self.assertTrue(syn["headline"].startswith(env["legal_identity"]["legal_name"]))
+        self.assertEqual((dropped, problems), (0, []))
 
     def test_bare_holding_company(self) -> None:
         syn = build_synthesis(bare_holding())
@@ -178,6 +293,7 @@ class SynthesisTests(unittest.TestCase):
         syn = build_synthesis(sole_proprietor())
         money = next(sec for sec in syn["sections"] if sec["key"] == "money")
         self.assertIn("sole proprietorships are generally not required to file annual accounts", money["text"])
+        self.assertIn("sole proprietorships are generally not required to file annual accounts", syn["summary_sentences"][0]["text"])
         self.assertNotIn("NOK 0", money["text"])
 
     def test_states_are_distinguished(self) -> None:
@@ -192,6 +308,7 @@ class SynthesisTests(unittest.TestCase):
         text = next(sec for sec in syn["sections"] if sec["key"] == "unknown")["text"]
         self.assertIn("blocked by the source", text)
         self.assertIn("not proven to be this company", text)
+        self.assertIn("official website (blocked by the source)", syn["summary"])
 
     def test_published_shape_reads_the_same(self) -> None:
         rec = rich_record()
@@ -217,8 +334,9 @@ class SynthesisTests(unittest.TestCase):
         syn = build_synthesis(rec, changes, baseline=False)
         changed = next(sec for sec in syn["sections"] if sec["key"] == "changed")
         self.assertIn("Since the previous run, 1 change was detected: new job ad: Senior utvikler", changed["text"])
+        self.assertIn("Since the previous run, 1 change was detected", syn["summary"])
         self.assertIn("carried forward", changed["text"])
-        self.assertTrue(any(s["basis"] == "carried_forward" for s in changed["sentences"]))
+        self.assertTrue(any(s.get("basis") == "carried_forward" for s in changed["sentences"]))
 
     def test_deterministic(self) -> None:
         self.assertEqual(json.dumps(build_synthesis(rich_record()), sort_keys=True), json.dumps(build_synthesis(rich_record()), sort_keys=True))
@@ -311,12 +429,26 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(rich["profiles"][0]["platform"], "linkedin", shape)
             self.assertEqual(rich["coverage"]["hiring"]["state"], "available")
             self.assertTrue(any(a["kind"].startswith("dated news") for a in rich["activity"]))
-            # no hiring badge without a job ad, whatever else the activity family holds
             self.assertNotEqual(bare["coverage"]["hiring"]["state"], "available")
-            self.assertEqual(rich["brief"][0]["heading"], "In 20 seconds")
+            self.assertEqual([b["heading"] for b in rich["brief"]], ["Company brief", "Company overview", "Latest financials", "Who runs it?", "Working here", "Recent activity", "What changed", "What we could not establish"])
             ids = {e["id"] for e in rich["evidence"]}
             for item in rich["brief"] + rich["facts"] + rich["jobs"]:
                 self.assertTrue(set(item["sources"]) <= ids)
+
+    def test_app_reads_the_export(self) -> None:
+        """The JBOX app's parseDataset needs run.runId, companies with org and name, known coverage states and list fields."""
+        from kildespor.export_profiles import build
+
+        data = json.loads(json.dumps(build([envelope_of(rich_record()), envelope_of(sole_proprietor())])))
+        self.assertIsInstance(data["run"]["runId"], str)
+        states = {"available", "not_available", "ambiguous", "blocked", "failed", "not_applicable"}
+        for c in data["companies"]:
+            self.assertIsInstance(c["name"], str)
+            self.assertTrue(set(c["coverage"]) <= {"identity", "accounts", "people", "web", "hiring"})
+            self.assertTrue(all(v["state"] in states for v in c["coverage"].values()))
+            for key in ("brief", "signals", "facts", "accounts", "roles", "workplaces", "profiles", "jobs", "activity", "changes", "unknowns", "evidence"):
+                self.assertIsInstance(c.get(key, []), list)
+                self.assertTrue(all(isinstance(x, dict) for x in c.get(key, [])))
 
     def test_stale_and_change_sides_survive(self) -> None:
         from kildespor.export_profiles import company
@@ -350,6 +482,21 @@ class AskTests(unittest.TestCase):
         self.assertIn("not proof", nope["answer"])
         does = run.answer("what does FJORD DATA AS do")
         self.assertIn("computer consultancy", does["answer"])
+
+    def test_builderr_prompts(self) -> None:
+        run = self.run_of()
+        brief = run.answer("Give me a useful company brief for FJORD DATA AS")
+        self.assertTrue(brief["supported"])
+        self.assertTrue(brief["answer"].startswith("FJORD DATA AS is a private limited company"))
+        money = run.answer("How is FJORD DATA AS doing?")
+        self.assertIn("NOK 50.0 million", money["answer"])
+        recent = run.answer("What has FJORD DATA AS published recently?")
+        self.assertIn("Ny avtale med Fjord1", recent["answer"])
+        who = run.answer("Who runs FJORD DATA AS?")
+        self.assertIn("Ola Hansen", who["answer"])
+        for answer in (brief, money, recent, who):
+            self.assertTrue(answer["citations"])
+            self.assertTrue(all(c["source_url"].startswith("http") for c in answer["citations"]))
 
     def test_screening(self) -> None:
         run = self.run_of()
