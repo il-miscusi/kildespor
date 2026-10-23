@@ -10,8 +10,9 @@ empty result.
 Files (gzipped TSV, first line is the header):
 
 * ``candidates-<source>.tsv.gz``: ``orgnr kind platform url match_rule source_record release_date licence``
-* ``candidates-noindex.tsv.gz``: ``orgnr rank domain page_url rule domain_orgnrs retrieved_at`` (our own
-  crawl: the page at ``page_url`` printed the organisation number as its owner's)
+* ``candidates-noindex.tsv.gz``: ``orgnr rank domain page_url rule domain_orgnrs retrieved_at`` plus the optional
+  ``source n_pages named_other`` (the reverse organisation-number index: the page at ``page_url`` printed the
+  organisation number as its owner's, in our own crawl or in a Common Crawl capture)
 * ``shared-phones.tsv.gz``: ``phone8 count`` (last eight digits, held by >= 5 register entities)
 * ``shared-email-domains.tsv.gz``: ``domain count`` (held by >= 5 entities, or a generic mailbox provider)
 * ``register-contacts.tsv.gz``: ``orgnr phones emails websites`` (``|``-separated; main entity plus its sub-units)
@@ -74,6 +75,7 @@ def _load(key: str, builder: Any) -> Any:
 
 
 NOINDEX_COLUMNS = ("orgnr", "rank", "domain", "page_url", "rule", "domain_orgnrs", "retrieved_at")
+NOINDEX_OPTIONAL = ("source", "n_pages", "named_other")  # where the page was read; pages that printed it; another name before it
 REPO_LICENCE = "MIT"  # facts we extracted ourselves ship under the repository's licence
 
 
@@ -118,10 +120,11 @@ def _noindex_rows(path: Path, header: list[str]) -> Iterator[tuple[str, tuple[in
         log.warning("cache file %s lacks columns %s", path, sorted(set(NOINDEX_COLUMNS) - set(col)))
         return
     width = max(col.values()) + 1
+    col.update({name: header.index(name) for name in NOINDEX_OPTIONAL if name in header})
     for fields in _rows(path):
         if len(fields) < width:
             continue
-        get = lambda name: fields[col[name]].strip()  # noqa: E731
+        get = lambda name: fields[col[name]].strip() if name in col and col[name] < len(fields) else ""  # noqa: E731
         url = site_root(get("page_url"))
         if not url:
             continue
@@ -129,10 +132,18 @@ def _noindex_rows(path: Path, header: list[str]) -> Iterator[tuple[str, tuple[in
         owners = int(get("domain_orgnrs")) if get("domain_orgnrs").isdigit() else 1
         rule = get("rule") or "unknown"
         retrieved = get("retrieved_at")
+        named_other = get("named_other")
         extra = {"rank": rank, "domain": get("domain"), "domain_orgnrs": owners, "retrieved_at": retrieved or None}
-        # A domain several companies print as theirs (a shared platform, a group site) and a number found only
-        # in script or attribute text are the weakest leads: they go after every other candidate.
-        demoted = 1 if owners > 1 or rule == "raw" else 0
+        if get("source"):
+            extra["index_source"] = get("source")
+        if get("n_pages").isdigit():
+            extra["n_pages"] = int(get("n_pages"))
+        if named_other:
+            extra["named_other"] = named_other
+        # A domain several companies print as theirs (a shared platform, a group site), a number found only
+        # in script or attribute text and a number printed under another company's name are the weakest
+        # leads: they go after every other candidate.
+        demoted = 1 if owners > 1 or rule == "raw" or named_other else 0
         row = (url, "website", "", "noindex", rule, _clean_url(get("page_url")), retrieved[:10], REPO_LICENCE, extra)
         yield get("orgnr"), (demoted, rank), row
 
