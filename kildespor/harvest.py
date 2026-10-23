@@ -1360,13 +1360,162 @@ NOT_HEADLINE = re.compile(
     re.I,
 )
 CARD_CLASS = re.compile(r"news|nyhet|post|article|artikkel|card|teaser|entry|story|blog|item|aktuelt|press", re.I)
+# A theme's slider, test or cloned post ("HeroSliderPost ( Cloned )", "TestPostMobil"): a page element, never news.
+TEMPLATE_TITLE = re.compile(r"slider|test\s?post|lorem|ipsum|dummy|placeholder|\(\s*cloned\s*\)|\bcopy\b|\bkopi\b|untitled|uten\s+tittel|hello\s+world", re.I)
+# WordPress category slugs (from the post's class_list) for posts a theme uses as page parts, catalogue
+# or treatment pages, guides and portfolio entries. Exact slugs, a few with a prefix: "kosmetiske-
+# behandlinger" holds a clinic's own news as well as its treatments, so only "behandling..." counts.
+NOT_NEWS_CATEGORY = re.compile(
+    r"^(?:frontpage[\w-]*|slider|hero[\w-]*|banner[\w-]*|produkt[\w-]*|products?|behandling[\w-]*|tjenest[\w-]*|services?|guides?|"
+    r"knowledge|kunnskap[\w-]*|whitepapers?|outlet|faq|kampanje[\w-]*|tilbud[\w-]*)$"
+    r"|^[\w-]*(?:investeringsprosjekt|portfolio|portefolj)[\w-]*$",
+    re.I,
+)
+# A job advertisement posted as news: by its title, or by a word run inside a path segment
+# (/aktuelt/ledige-stillinger-bli-en-av-oss).
+JOB_AD_TITLE = re.compile(
+    r"ledige?\s+stilling|søker\s+(?:nye?\s+)?(?:[\wæøå-]+\s+){0,2}(?:medarbeider|teammedlem|kolleg|ansatt|lærling)|vi\s+ansetter|"
+    r"bli\s+en\s+(?:av\s+oss|del\s+av)|arbeta\s+i|we.?re\s+hiring|join\s+our\s+team",
+    re.I,
+)
+JOB_AD_SEGMENT = re.compile(
+    r"(?:^|[-_])(?:ledige?-stillinger?|ledig-stilling|stillingsannonse|vi-ansetter|jobb(?:e)?-hos-oss|bli-en-av-oss|"
+    r"job-openings?|were-hiring|we-are-hiring|join-our-team|vacanc(?:y|ies))(?:[-_]|$)",
+    re.I,
+)
+# Evergreen guides, explainers and white papers: dated, but not news about the company. Matched at the
+# start of the title or of a part after a dash or colon ("Lipødem – Hvordan kan behandling hjelpe?").
+GUIDE_TITLE = re.compile(
+    r"practical\s+guide|whitepaper|\be-?bok\b|sjekkliste|checklist|\btips\b"
+    r"|(?:^|[–—:|]\s*|\s-\s)(?:guide\b|report:|slik\s+(?:sjekker|forebygger|feirer|gjør|unngår|velger|fungerer)\b|hvordan\b|how\s+to\b|"
+    r"hva\s+er\b|alt\s+(?:du\s+trenger|om)\b|\d+\s+[\wæøå]+\s+(?:feil|tips|grunner|ting)\b)",
+    re.I,
+)
+ELLIPSIS = re.compile(r"(?:\.\.\.|…)\s*$")
+# A WordPress site with no news-like category that files its posts under four or more topics (therapy
+# areas, treatments, product lines) uses posts as a content library: such a post is news only under a
+# news or /YYYY/MM/ path. Measured on the audited set: 25 wrong items, 1 correct.
+NEWS_CATEGORY = re.compile(
+    r"^(?:nyheter|nyhet|nyheiter|news|aktuelt|presse|press|pressemeldinger|pressemelding|press-releases?|blogg?|blogpost|"
+    r"artikler|artikkel|articles?|nyhetsbrev|newsroom|media|events?|arrangementer?)$",
+    re.I,
+)
+GENERIC_CATEGORY = re.compile(r"^(?:uncategori[sz]ed|ukategorisert|okategoriserade|general|generelt|ingen-kategori|annet|other|diverse)$", re.I)
+TOPIC_LIBRARY_CATEGORIES = 4
 
 
 def is_headline(title: str) -> bool:
-    if not title or NOT_HEADLINE.match(title.strip()):
+    if not title or NOT_HEADLINE.match(title.strip()) or TEMPLATE_TITLE.search(title):
         return False
     letters = re.sub(r"[^A-Za-zÆØÅæøåÄÖäöÜüÉé]", "", title)
     return len(letters) >= 8 and 8 <= len(title) <= 250 and text_date(title) != title.strip()
+
+
+def truncated_title(title: str, url: str | None) -> bool:
+    """A card title cut short by the theme ("Astaxanthin: Naturens kraftigste antioksidant o..."):
+    a single ellipsis at the end, with the article's slug running on past the words shown, or a
+    cut of 40 characters or more. A title that ends in a deliberate "……" is kept."""
+    if not ELLIPSIS.search(title) or re.search(r"(?:…|\.\.\.)\s*(?:…|\.\.\.)\s*$", title):
+        return False
+    stem = _alnum(ELLIPSIS.sub("", title))
+    slug = _alnum(_segments(url)[-1]) if url and _segments(url) else ""
+    return (bool(stem) and slug.startswith(stem) and len(slug) > len(stem)) or len(ELLIPSIS.sub("", title).strip()) >= 40
+
+
+def news_path(url: str | None) -> bool:
+    """The URL sits under a news section (/nyheter/<slug>) or a dated path (/2026/10/<slug>)."""
+    if not url:
+        return False
+    return any(NEWS_SEGMENT.match(s) for s in _segments(url)[:-1]) or bool(re.search(r"/20\d\d/\d\d?/", urlsplit(url).path))
+
+
+def topic_library(items: list["NewsItem"]) -> bool:
+    """The WordPress posts read are filed by topic, not as news: no news-like category among them and
+    four or more distinct topical categories."""
+    categories = {c.lower() for item in items for c in item.categories}
+    if not categories or any(NEWS_CATEGORY.match(c) for c in categories):
+        return False
+    return len({c for c in categories if not GENERIC_CATEGORY.match(c)}) >= TOPIC_LIBRARY_CATEGORIES
+
+
+def _plain_words(text: str) -> str:
+    return " " + " ".join(re.sub(r"[^a-z0-9]+", " ", _fold_a(text)).split()) + " "
+
+
+@dataclass
+class EntityWords:
+    """Who a news title may be about. ``own``: words of our legal, subunit and brand names and our domain;
+    ``other``: phrases naming the parent group (the register's parent and ultimate parent, and the group
+    word an umbrella brand puts beside our name, "Aderian Netsolution")."""
+    own: set[str]
+    other: list[str]
+
+
+def entity_words(rec: CompanyRecord, names: list[str], site_url: str) -> EntityWords:
+    def words(name: str) -> list[str]:
+        out: list[str] = []
+        for token in name_tokens(name or ""):
+            for fold in (_fold_a, _fold_b):
+                word = re.sub(r"[^a-z0-9]", "", fold(token))
+                if word and word not in out:
+                    out.append(word)
+        return out
+
+    legal = [n for n in [(rec.context.get("entity") or {}).get("navn") or ""] + [s.get("name") or "" for s in rec.context.get("subunits") or []] if n]
+    legal_words = {w for n in legal for w in words(n) if w not in IDENTITY_STOP and len(w) >= 3}
+    label = re.sub(r"[^a-z0-9]", "", _site(site_url).split(".")[0]) if site_url else ""
+    own = set(legal_words) | ({label} if len(label) >= 4 else set())
+    other: list[str] = []
+
+    def overlaps(word: str) -> bool:
+        return any(word in w or w in word for w in own if len(w) >= 3)
+
+    for name in names:
+        brand = [w for w in words(name) if w not in IDENTITY_STOP and len(w) >= 3]
+        if len(brand) >= 2 and any(w in legal_words for w in brand):
+            # An umbrella brand: our name plus the group's ("Aderian Netsolution"); the extra word is the group's.
+            other += [w for w in brand if not overlaps(w) and len(w) >= 4]
+        own.update(w for w in brand if w in legal_words or len(brand) == 1)
+    for claim in rec.claims:
+        value = claim.get("value") if claim.get("field") == "group_relationship" else None
+        if not isinstance(value, dict) or value.get("relationship") not in ("parent", "ultimate_parent"):
+            continue
+        core = [re.sub(r"[^a-z0-9]", "", _fold_a(t)) for t in name_tokens(str(value.get("name") or ""))]
+        core = [w for w in core if w and w not in ("holding", "holdings", "group", "gruppen", "konsern", "invest", "og", "and")]
+        phrase = " ".join(core)
+        if len(phrase.replace(" ", "")) >= 5 and not any(overlaps(w) for w in core) and (len(core) > 1 or core[0] not in IDENTITY_STOP):
+            other.append(phrase)
+    return EntityWords(own, list(dict.fromkeys(other)))
+
+
+def names_other_entity(title: str, entity: EntityWords | None) -> bool:
+    """The title names the parent group (or the group's brand) and not this company: group press
+    re-posted on the company's site ("Searchlight Capital Partners Announces Investment in Aderian Group")."""
+    if entity is None or not entity.other:
+        return False
+    text = _plain_words(title)
+    if not any(f" {phrase} " in text for phrase in entity.other):
+        return False
+    squashed = text.replace(" ", "")
+    return not any(len(w) >= 4 and w in squashed for w in entity.own)
+
+
+def news_drop_reason(item: "NewsItem", entity: EntityWords | None = None) -> str | None:
+    """Why a dated item is not news about the company, or None. Each rule is a precision rule measured on
+    the audited v1 output (campaign/audit/oct23/C_news_labels.tsv): it removed wrong items only."""
+    title = item.title
+    if any(NOT_NEWS_CATEGORY.match(c) for c in item.categories):
+        return "page element, product, service, guide or portfolio category"
+    if not is_headline(title):
+        return "template or non-headline title"
+    path_segments = _segments(item.url) if item.url else []
+    if JOB_AD_TITLE.search(title) or any(JOB_AD_SEGMENT.search(s) for s in path_segments):
+        return "job advertisement"
+    if GUIDE_TITLE.search(re.sub(r"^[^\wæøåÆØÅ]+", "", title)):
+        return "guide or explainer"
+    if names_other_entity(title, entity):
+        return "about the parent group, not the company"
+    return None
 
 
 def is_article_url(url: str, site_host: str) -> bool:
@@ -1400,6 +1549,7 @@ class NewsItem:
     method: str
     source: str
     source_class: str = "company_owned_website"
+    categories: tuple[str, ...] = ()  # WordPress category slugs (class_list "category-<slug>")
 
 
 def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, require_news_path: bool) -> list[NewsItem]:
@@ -1411,7 +1561,7 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
     seen: set[str] = set()
     blocks = soup.find_all(["article", "li"]) + soup.find_all(["div", "section"], class_=CARD_CLASS)
     for block in blocks:
-        if block.find_parent(["nav", "header"]) is not None:
+        if _site_chrome_block(block):
             continue
         links: dict[str, Any] = {}
         for anchor in block.find_all("a", href=True):
@@ -1437,9 +1587,14 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
         if require_news_path and not is_article_url(url, site_host):
             continue
         published = None
-        time_tag = next((t for t in block.find_all("time") if not _update_date(t)), None)
+        dated_by = ""
+        times = [t for t in block.find_all("time") if not _update_date(t)]
+        # A <time> marked as the publication date wins over the card's first <time>.
+        time_tag = next((t for t in times if _PUBLISHED_MARK.search(_ident(t))), times[0] if times else None)
         if time_tag is not None:
+            raw_time = time_tag.get("datetime") or time_tag.get_text(" ", strip=True)
             published = stamp(time_tag.get("datetime")) or stamp(time_tag.get_text(" ", strip=True))
+            dated_by = f'<time datetime="{raw_time}">' if time_tag.get("datetime") else f"<time>{raw_time}</time>"
         if published is None:
             # A dateline beside the item's own title ("14.10.2026", "Publisert 14. oktober 2026"),
             # never a date inside a sentence of the teaser, never an update date.
@@ -1447,6 +1602,7 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
                 text = str(string).strip()
                 if 6 <= len(text) <= 40 and string.parent is not None and not _update_date(string.parent) and (day := text_date(text)):
                     published = (day, day)
+                    dated_by = text
                     break
         if published is None:
             continue
@@ -1461,9 +1617,35 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
             title = text if is_headline(text) else None
         if title is None:
             continue
+        if truncated_title(title, url):
+            # The card cut its title short: the link's own title or label often carries it in full.
+            stem = _alnum(ELLIPSIS.sub("", title))
+            full = next((t for t in (str(anchor.get("title") or ""), str(anchor.get("aria-label") or "")) if is_headline(t) and _alnum(t).startswith(stem) and len(_alnum(t)) > len(stem)), None)
+            title = full or title
         seen.add(key)
-        items.append(NewsItem(_clean(title), url, published[0], published[1], snap, title, "news_listing_item", "company_website"))
+        items.append(NewsItem(_clean(title), url, published[0], published[1], snap, f"{title} | {dated_by}", "news_listing_item", "company_website"))
     return items
+
+
+_PUBLISHED_MARK = re.compile(r"publi|datepublished|post-?date|entry-?date", re.I)
+# Site chrome a dated card can sit in without being news: menus, mega-menus, footers and sidebars.
+_CHROME_CLASS = re.compile(r"(?<![a-z])(?:menu|mega|dropdown|submenu|sub-menu|navbar|navigation)(?![a-z])|menu-item|mega-?menu", re.I)
+
+
+def _ident(node: Any) -> str:
+    return " ".join(node.get("class") or []) + " " + str(node.get("id") or "") + " " + str(node.get("itemprop") or "")
+
+
+def _site_chrome_block(block: Any) -> bool:
+    """The block is (or sits in) navigation, a menu, the footer or a sidebar: never a news card."""
+    if re.search(r"menu-item", " ".join(block.get("class") or []), re.I):
+        return True
+    for parent in block.parents:
+        if getattr(parent, "name", None) in (None, "[document]", "html", "body"):
+            break
+        if parent.name in ("nav", "header", "footer", "aside") or str(parent.get("role") or "").lower() == "navigation" or _CHROME_CLASS.search(" ".join(parent.get("class") or []) + " " + str(parent.get("id") or "")):
+            return True
+    return False
 
 
 _PUBLISHED_META = (
@@ -1495,6 +1677,11 @@ def _update_date(node: Any) -> bool:
     """The date is labelled as an update ("Sist oppdatert", "Endret", "Updated", "Last modified"):
     judged on the node's own text and on a short parent (the label usually sits beside the date)."""
     if "datemodified" in str(node.get("itemprop") or "").lower() if hasattr(node, "get") else False:
+        return True
+    # hentry themes mark the modification time <time class="updated"> (and a never-edited post's
+    # single date "entry-date published updated", which is the publication date).
+    classes = " ".join(node.get("class") or []) if hasattr(node, "get") else ""
+    if re.search(r"(?<![a-z])(?:updated|modified)(?![a-z])", classes, re.I) and not re.search(r"publi", classes, re.I):
         return True
     texts = [node.get_text(" ", strip=True) if hasattr(node, "get_text") else str(node)]
     parent = node.parent
@@ -1560,8 +1747,11 @@ def _refers_to(item: dict[str, Any], page_url: str) -> bool:
 def page_article(soup: BeautifulSoup, page_url: str) -> dict[str, Any] | None:
     """The JSON-LD article (or WebPage) that describes this page: bound to it by url, @id or
     mainEntityOfPage, or the page's only article object. A related or embedded article never
-    lends this page its date."""
-    items = [i for i in json_ld_items(soup) if i.get("datePublished") and (_article_like(i) or "WebPage" in _types(i))]
+    lends this page its date. A WebPage counts only on a page that declares og:type article:
+    SEO plugins give every page, service and product pages included, a WebPage datePublished."""
+    og_type = soup.find("meta", attrs={"property": "og:type"})
+    webpage_ok = og_type is not None and str(og_type.get("content") or "").strip().lower() == "article"
+    items = [i for i in json_ld_items(soup) if i.get("datePublished") and (_article_like(i) or (webpage_ok and "WebPage" in _types(i)))]
     bound = [i for i in items if _refers_to(i, page_url)]
     if bound:
         return next((i for i in bound if _article_like(i)), bound[0])
@@ -1626,6 +1816,19 @@ _FEED_TITLE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.S | re.I)
 _FEED_LINK_TEXT = re.compile(r"<link\b[^>]*>\s*(?:<!\[CDATA\[)?\s*(https?://[^<\s\]]+)", re.S | re.I)
 _FEED_LINK_HREF = re.compile(r"<link\b([^>]*?)/?>", re.S | re.I)
 _FEED_DATE = re.compile(r"<(pubDate|published|dc:date|updated|a10:updated)\b[^>]*>(.*?)</\1\s*>", re.S | re.I)
+_FEED_CATEGORY = re.compile(r"<category\b([^>]*?)(?:/>|>(.*?)</category\s*>)", re.S | re.I)
+
+
+def _feed_categories(block: str) -> tuple[str, ...]:
+    """Category slugs of a feed item: RSS <category>Produkter</category>, Atom <category term="produkter"/>."""
+    out: list[str] = []
+    for attrs, text in _FEED_CATEGORY.findall(block):
+        term = re.search(r'term\s*=\s*["\']([^"\']+)', attrs)
+        name = _clean(text) or (html_lib.unescape(term.group(1)) if term else "")
+        slug = "-".join(re.sub(r"[^a-z0-9]+", " ", _fold_a(name)).split())
+        if slug and slug not in out:
+            out.append(slug)
+    return tuple(out)
 
 
 def feed_items(snap: Snapshot, site_host: str) -> list[NewsItem]:
@@ -1653,7 +1856,7 @@ def feed_items(snap: Snapshot, site_host: str) -> list[NewsItem]:
         if not published or not is_headline(title):
             continue
         link = safe_link(link, site_host) if link else None
-        items.append(NewsItem(title[:300], link, published[0], published[1], snap, f"{title[:200]} | {raw}", "rss_atom_feed", "company_feed", "company_owned_feed"))
+        items.append(NewsItem(title[:300], link, published[0], published[1], snap, f"{title[:200]} | {raw}", "rss_atom_feed", "company_feed", "company_owned_feed", categories=_feed_categories(block)))
     return items
 
 
@@ -1685,7 +1888,11 @@ def wordpress_items(snap: Snapshot, site_host: str) -> list[NewsItem]:
         link = safe_link(post.get("link"), site_host)
         if not link:
             continue
-        items.append(NewsItem(title[:300], link, published, local[:10], snap, f"{rendered} | date {local}", "wordpress_posts_api", "company_website"))
+        classes = post.get("class_list")
+        classes = list(classes.values()) if isinstance(classes, dict) else classes if isinstance(classes, list) else []
+        categories = tuple(c[len("category-"):] for c in classes if isinstance(c, str) and c.startswith("category-"))
+        span = f"{rendered} | date {local}" + (f" | category {', '.join(categories)}" if categories else "")
+        items.append(NewsItem(title[:300], link, published, local[:10], snap, span, "wordpress_posts_api", "company_website", categories=categories))
     return items
 
 
@@ -1944,11 +2151,19 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
 
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}
+    refused: dict[str, str] = {}  # key -> why: a page refused once is not let back in by another route
+    news_checked: list[str] = []  # what was read for news, named in the reason when nothing is published
+    entity = entity_words(rec, brand_names, home.final_url)
 
     def add_news(item: NewsItem) -> None:
         if not item.title or not _news_window(item.date) or (item.url and (NOT_NEWS_PATH.search(urlsplit(item.url).path) or foreign_page(item.url, own_text))):
             return
         key = _norm_url(item.url) if item.url else f"{item.title.lower()}|{item.date}"
+        why = refused.get(key) or news_drop_reason(item, entity)
+        if why:
+            refused[key] = why
+            news.pop(key, None)
+            return
         current = news.get(key)
         if current is None:
             for other_key, other in news.items():
@@ -1983,15 +2198,24 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     feeds = _declared_feeds(own_pages(), site_host)
     if wordpress and plan.can(1, 6.0):
         api = _wordpress_api(home_soup, home.final_url)
-        snap = plan.raw(api + "wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title", headers={"Accept": "application/json"})
+        snap = plan.raw(api + "wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list", headers={"Accept": "application/json"})
         found = wordpress_items(snap, site_host) if snap is not None else []
+        if snap is not None and snap.ok:
+            news_checked.append(f"the WordPress post API ({len(found)} dated post(s))")
+        library = topic_library(found)
         for item in found:
+            if library and not news_path(item.url):
+                refused.setdefault(_norm_url(item.url) if item.url else item.title.lower(), "a post in a topic library (4+ topic categories, no news category)")
+                continue
             add_news(item)
         if not found and not feeds:
             feeds = [urlunsplit((urlsplit(home.final_url).scheme, urlsplit(home.final_url).netloc, "/feed/", "", ""))]
     if len(news) < 3 and feeds and plan.can(1, 6.0):
         snap = plan.raw(feeds[0], headers={"Accept": "application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.5"})
-        for item in feed_items(snap, site_host) if snap is not None else []:
+        found = feed_items(snap, site_host) if snap is not None else []
+        if snap is not None and snap.ok:
+            news_checked.append(f"the feed {feeds[0]} ({len(found)} dated item(s))")
+        for item in found:
             add_news(item)
     for item in listing_items(home, home_soup, site_host, require_news_path=True):
         add_news(item)
@@ -2000,7 +2224,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if listing and plan.can(1, 6.0):
             page = plan.page(listing)
             if page is not None and _site(page[0].final_url) == site_host:
-                for item in listing_items(page[0], page[1], site_host, require_news_path=False):
+                found = listing_items(page[0], page[1], site_host, require_news_path=False)
+                news_checked.append(f"the news listing {page[0].final_url} ({len(found)} dated item(s))")
+                for item in found:
                     add_news(item)
 
     # Article pages: the headline and published datetime as the article itself states them.
@@ -2013,6 +2239,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         if len(listing_items(page[0], page[1], site_host, require_news_path=False)) >= 3:
             continue  # a listing, not an article
         item = article_meta(page[0], page[1], brand_names + names)
+        news_checked.append(f"the article page {page[0].final_url}")
         if item is not None:
             add_news(item)
 
@@ -2037,7 +2264,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         company_label = None
     _publish_profiles(rec, list(profiles.values()), exact, company_label, own_pages())
     _publish_hiring(rec, careers, roles, company_label, site_host)
-    _publish_news(rec, list(news.values()), company_label)
+    _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, refused)
     if group_site:
         reason = (rec.context.get("website") or {}).get("group_reason") or "the verified site is a group site"
         rec.set_state("public_brand", "ambiguous", f"{reason}; its brand and self-description are the group's, not attributed to this entity")
@@ -2275,6 +2502,10 @@ def _articles_to_read(anchors: list[tuple[str, str, Snapshot, str]], news: dict[
         if key not in done and key not in {_norm_url(u) for u in out}:
             out.append(url)
 
+    # A card that cut its title short is published only once its own page gives the full headline.
+    for item in sorted(news.values(), key=lambda n: n.date, reverse=True):
+        if item.url and truncated_title(item.title, item.url) and _site(item.url) == site_host:
+            add(item.url)
     for url, _text, snap, _raw in anchors:
         if len(_segments(snap.final_url)) == 0 and is_article_url(url, site_host):
             add(url)
@@ -2469,8 +2700,52 @@ def _publish_hiring(rec: CompanyRecord, careers: list[tuple[str, Snapshot, str, 
         rec.set_state("hiring", "available", f"careers page{'s' if len(seen) > 1 else ''} and {published} open role(s) on the verified website" if published else "careers page linked from the verified website")
 
 
-def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None) -> None:
-    items = sorted(items, key=lambda i: (i.date, i.published), reverse=True)[:MAX_NEWS]
+COPY_BURST_ITEMS = 3
+COPY_BURST_SECONDS = 600
+
+
+def _instant(item: NewsItem) -> datetime | None:
+    """The item's publication instant, when it carries a time of day (a bare date cannot burst)."""
+    if "T" not in item.published:
+        return None
+    try:
+        when = datetime.fromisoformat(item.published.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=OSLO or timezone.utc)
+    return when
+
+
+def copy_bursts(items: list[NewsItem]) -> set[int]:
+    """Indexes of items whose timestamps fall, three or more together, within ten minutes: a CMS copy
+    or bulk-import date (a site migration, a group's stories re-posted in one sitting), not the dates
+    the posts were first published."""
+    timed = sorted((when, i) for i, item in enumerate(items) if (when := _instant(item)) is not None)
+    out: set[int] = set()
+    end = 0
+    for start in range(len(timed)):
+        end = max(end, start)
+        while end + 1 < len(timed) and (timed[end + 1][0] - timed[start][0]).total_seconds() <= COPY_BURST_SECONDS:
+            end += 1
+        if end - start + 1 >= COPY_BURST_ITEMS:
+            out.update(i for _, i in timed[start:end + 1])
+    return out
+
+
+def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None, checked: list[str] | None = None, refused: dict[str, str] | None = None) -> None:
+    dropped: dict[str, int] = {}
+    for why in (refused or {}).values():
+        dropped[why] = dropped.get(why, 0) + 1
+    burst = copy_bursts(items)
+    kept: list[NewsItem] = []
+    for index, item in enumerate(items):
+        why = "a copy or import date shared by 3+ posts within 10 minutes" if index in burst else "title cut short on the listing card" if truncated_title(item.title, item.url) else None
+        if why:
+            dropped[why] = dropped.get(why, 0) + 1
+        else:
+            kept.append(item)
+    items = sorted(kept, key=lambda i: (i.date, i.published), reverse=True)[:MAX_NEWS]
     for item in items:
         ev = rec.evidence_from_snapshot(item.snap, source_class=item.source_class, span=item.span, method=item.method, url=item.snap.final_url)
         value = {"title": item.title[:300], "url": item.url, "published": item.published, "date": item.date, "source": item.source}
@@ -2488,3 +2763,9 @@ def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str 
         )
     if items:
         rec.set_state("public_activity", "available", f"{len(items)} dated item(s) on the company's own website")
+    elif checked is not None:
+        # Recorded even when register updates make the family available: the dated-news row reads it.
+        reason = "no dated news about the company on its own website; checked " + ", ".join(checked)
+        if dropped:
+            reason += "; dated items not published: " + ", ".join(f"{n} {why}" for why, n in sorted(dropped.items(), key=lambda kv: -kv[1]))
+        rec.set_state("public_activity", "not_available", reason[:600])
