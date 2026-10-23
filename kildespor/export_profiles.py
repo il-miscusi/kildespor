@@ -50,8 +50,16 @@ def _coverage(claims: list[dict[str, Any]], families: dict[str, dict[str, Any]])
         "accounts": state("annual_accounts", has("financial."), "filed annual accounts"),
         "people": state("leadership" if not has("registered_workplace") else "workplaces", people, "registered roles or workplaces"),
         "web": state("official_website", has("official_website", "social_profile"), "verified website or company-linked profiles"),
-        "hiring": state("hiring", has("job_posting", "careers_page"), "job ads or a careers page"),
+        "hiring": state("hiring", has("job_posting"), "single open job ads"),
     }
+
+
+def _careers_pages(families: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The careers pages and ATS lists the hiring verdict read (its checked sources), as "apply
+    here" links; NAV's feed is a checked source too but not a page to apply on."""
+    info = families.get("hiring") or {}
+    urls = [u for u in info.get("checked_sources") or [] if str(u).startswith(("http://", "https://")) and "pam-stilling-feed.nav.no" not in str(u)]
+    return [{"url": u, "sources": [], "checked": True} for u in urls[:3]]
 
 
 def _text(value: Any) -> Any:
@@ -186,7 +194,8 @@ def company(env: dict[str, Any]) -> dict[str, Any]:
         "workplaces": [{"name": c["value"].get("name"), "org": c["value"].get("organisation_number"), "address": c["value"].get("address"), "employees": c["value"].get("employees"), "sources": c["evidence_ids"]} for c in by("registered_workplace") if isinstance(c["value"], dict)],
         "profiles": profiles,
         "jobs": jobs,
-        "careersPages": [{"url": c["value"] if isinstance(c["value"], str) else (c["value"] or {}).get("url"), "sources": c["evidence_ids"]} for c in by("careers_page")],
+        # Where to apply, never a hiring fact: the careers pages the hiring verdict checked.
+        "careersPages": _careers_pages(families),
         "activity": activity,
         # Both sides of every change keep their evidence: sources lists the current and the previous records.
         "changes": [

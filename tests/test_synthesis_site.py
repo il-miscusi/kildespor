@@ -47,7 +47,7 @@ def rich_record(org: str = "938702675") -> CompanyRecord:
     rec.add_claim(family="company_profiles", field_name="social_profile", value={"platform": "linkedin", "url": "https://www.linkedin.com/company/fjorddata", "handle": "fjorddata"}, evidence_ids=[site], method="t")
     job = _ev(rec, "https://fjorddata.no/karriere", "Senior utvikler", "company_website")
     rec.add_claim(family="hiring", field_name="job_posting", value={"title": "Senior utvikler", "url": "https://fjorddata.no/karriere/senior", "published": "2026-10-01"}, key=["job", "senior"], evidence_ids=[job], method="t")
-    rec.add_claim(family="hiring", field_name="careers_page", value="https://fjorddata.no/karriere", evidence_ids=[job], method="t")
+    rec.set_state("hiring", "available", "1 single job ad(s) read on the company's own careers channel", checked_sources=["https://fjorddata.no/karriere", "https://pam-stilling-feed.nav.no/api/v1/feed (last 45 days)"])
     news = _ev(rec, "https://fjorddata.no/nyheter/ny-avtale", "Ny avtale med Fjord1", "company_website")
     rec.add_claim(family="public_activity", field_name="company_news", value={"title": "Ny avtale med Fjord1", "url": "https://fjorddata.no/nyheter/ny-avtale", "published": "2026-09-20"}, key=["news", "ny-avtale"], evidence_ids=[news], method="t", effective_date="2026-09-20")
     for family in FAMILIES:
@@ -202,7 +202,8 @@ class SynthesisTests(unittest.TestCase):
         rec2.family_state = dict(rec.family_state)
         self.assertEqual(build_synthesis(rec)["summary"], build_synthesis(rec2)["summary"])
         fields = {internal_field(c) for c in rec2.claims}
-        self.assertTrue({"job_posting", "careers_page", "company_news", "official_website"} <= fields)
+        self.assertTrue({"job_posting", "company_news", "official_website"} <= fields)
+        self.assertNotIn("careers_page", fields)
         news = next(c for c in rec2.claims if internal_field(c) == "company_news")
         self.assertEqual(claim_value(news)["title"], "Ny avtale med Fjord1")
 
@@ -245,11 +246,12 @@ class SiteTests(unittest.TestCase):
             index = json.loads((out / "data" / "index.json").read_text())
             self.assertEqual([r["o"] for r in index["rows"]], [e["organisation_number"] for e in envs])
             rich = index["rows"][0]
-            self.assertEqual((rich["j"], rich["cp"], rich["nw"], rich["cv"]), (1, True, 1, 5), shape)
+            self.assertEqual((rich["j"], rich["nw"], rich["cv"]), (1, 1, 5), shape)
+            self.assertNotIn("cp", rich)
             self.assertEqual(rich["w"], "https://fjorddata.no/")
             self.assertEqual(rich["so"], ["linkedin"])
             bare = index["rows"][1]
-            self.assertEqual((bare["j"], bare["cp"], bare["w"]), (0, False, None))
+            self.assertEqual((bare["j"], bare["w"]), (0, None))
             for env in envs:
                 org = env["organisation_number"]
                 data = json.loads((out / "data" / "companies" / f"{org}.json").read_text())
@@ -304,11 +306,12 @@ class ExportTests(unittest.TestCase):
             rich, bare = data["companies"]
             self.assertEqual(rich["website"], "https://fjorddata.no/", shape)
             self.assertEqual([j["title"] for j in rich["jobs"]], ["Senior utvikler"], shape)
-            self.assertEqual(rich["careersPages"][0]["url"], "https://fjorddata.no/karriere", shape)
+            # an "apply here" link from the hiring verdict's checked sources, never a hiring fact
+            self.assertEqual(rich["careersPages"], [{"url": "https://fjorddata.no/karriere", "sources": [], "checked": True}], shape)
             self.assertEqual(rich["profiles"][0]["platform"], "linkedin", shape)
             self.assertEqual(rich["coverage"]["hiring"]["state"], "available")
             self.assertTrue(any(a["kind"].startswith("dated news") for a in rich["activity"]))
-            # no hiring badge without a job ad or careers page, whatever else the activity family holds
+            # no hiring badge without a job ad, whatever else the activity family holds
             self.assertNotEqual(bare["coverage"]["hiring"]["state"], "available")
             self.assertEqual(rich["brief"][0]["heading"], "In 20 seconds")
             ids = {e["id"] for e in rich["evidence"]}

@@ -14,7 +14,9 @@ The builder reads claims in both shapes: the internal one (dict values, fields
 ``careers_page``, ``job_posting``, ``company_news``) and the published one
 written to disk (scalar ``value`` with the dict in ``detail``, fields
 ``hiring_signal`` and ``dated_news``), so carried-forward claims read back from
-an earlier envelope are handled like fresh ones.
+an earlier envelope are handled like fresh ones. Only a single job ad says a
+company is hiring; a careers page (still found in older envelopes) is read as
+``careers_page`` and never cited as a hiring fact.
 """
 from __future__ import annotations
 
@@ -37,11 +39,11 @@ def internal_field(claim: dict[str, Any]) -> str:
     """The internal field name of a claim in either shape."""
     field = claim.get("internal_field") or claim.get("field") or ""
     if field == "hiring_signal":
-        kind = claim.get("signal_type")
-        if kind in ("careers_page", "job_posting"):
-            return kind
+        # Older envelopes also published careers pages here; only a titled ad is a job posting.
         value = claim_value(claim)
-        return "job_posting" if isinstance(value, dict) and value.get("title") else "careers_page"
+        if claim.get("signal_type") == "careers_page" or not (isinstance(value, dict) and value.get("title")):
+            return "careers_page"
+        return "job_posting"
     if field == "dated_news":
         return "company_news"
     return field
@@ -51,6 +53,11 @@ def news_date(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
     return str(value.get("published") or value.get("date") or value.get("published_at") or "")[:10]
+
+
+def _nav_ad(claim: dict[str, Any]) -> bool:
+    value = claim_value(claim)
+    return str(claim.get("extraction_method") or "").startswith("nav") or (isinstance(value, dict) and value.get("board") == "arbeidsplassen.nav.no")
 
 
 def job_date(value: Any) -> str:
@@ -103,7 +110,7 @@ FAMILY_LABELS = {
     "official_website": "official website",
     "company_profiles": "social media profiles",
     "contact_channels": "contact channels",
-    "hiring": "job ads or careers page",
+    "hiring": "single job ads",
     "public_activity": "dated news",
 }
 STATE_WORDS = {
@@ -636,22 +643,24 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
 
     # ---- (e) signals: hiring, web footprint, group -------------------------------------------
     jobs = b.claims("job_posting")
-    careers = b.claims("careers_page")
     socials = [c for c in b.claims("social_profile") if isinstance(c["value"], dict) or isinstance(c["value"], str)]
     news = sorted(b.claims("company_news"), key=lambda c: news_date(c["value"]), reverse=True)
     s = []
     if jobs:
         titles = [f'"{_quote(c["value"].get("title", ""), 60)}"' for c in jobs[:3] if isinstance(c["value"], dict)]
-        s.append(b.sentence(f"Hiring now: {len(jobs)} open job ad{'s' if len(jobs) != 1 else ''} naming this organisation number" + (f", for example {_list(titles, 3)}" if titles else "") + ".", jobs[:6]))
+        # Only NAV's feed names the employer's organisation number; a site ad was read on the
+        # company's own careers channel and names it (or no one else) as employer.
+        nav = [c for c in jobs if _nav_ad(c)]
+        where = []
+        if nav:
+            where.append(f"{len(nav)} in NAV's vacancy feed verified to this organisation number")
+        if len(jobs) > len(nav):
+            where.append(f"{len(jobs) - len(nav)} read on its own careers channel")
+        s.append(b.sentence(f"Hiring now: {len(jobs)} open job ad{'s' if len(jobs) != 1 else ''} ({'; '.join(where)})" + (f", for example {_list(titles, 3)}" if titles else "") + ".", jobs[:6]))
         b.signal("hiring", f"Hiring: {len(jobs)} open job ad{'s' if len(jobs) != 1 else ''}", jobs, "positive")
-    if careers:
-        url = careers[0]["value"] if isinstance(careers[0]["value"], str) else (careers[0]["value"] or {}).get("url")
-        s.append(b.sentence(f"It has a careers page ({url})" + ("." if jobs else "; no open job ad was verified, so this shows a recruiting channel, not a current vacancy."), careers[:1]))
-        if not jobs:
-            b.signal("careers_page", "Careers page found", careers[:1], "neutral")
-    if not jobs and not careers:
+    else:
         st = b.state("hiring")
-        s.append(b.sentence(f"No hiring signal was found: {st.get('reason') or 'job sources were not checked in this run'}.", [], checked=st.get("checked_sources", [])))
+        s.append(b.sentence(f"No single open job ad was found: {st.get('reason') or 'job sources were not checked in this run'}.", [], checked=st.get("checked_sources", [])))
     if site_c:
         method = str((site_c["value"] or {}).get("identity_method", "")) if isinstance(site_c["value"], dict) else ""
         if "organisation_number" in method:
@@ -685,7 +694,7 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     present = {
         "official_website": bool(site_c),
         "company_profiles": bool(socials),
-        "hiring": bool(jobs or careers),
+        "hiring": bool(jobs),
         "public_activity": bool(news),
         "contact_channels": bool(b.claims("registry_phone") or b.claims("website_phone") or b.claims("website_email") or b.claims("registry_email")),
         "public_brand": bool(brand_c or desc_c),
@@ -723,7 +732,7 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
         "financials": bool(stmts),
         "people_places": bool(roles or units),
         "website": bool(site_c),
-        "footprint": bool(socials or jobs or careers or news),
+        "footprint": bool(socials or jobs or news),
     }
     coverage = {
         "score": sum(coverage_flags.values()),
@@ -756,13 +765,11 @@ def build_synthesis(rec: CompanyRecord, changes: list[dict[str, Any]] | None = N
     missing: list[str] = []
     (found if site_url else missing).append(f"website {_host(site_url)}" if site_url else "website")
     (found if socials else missing).append(f"{len(socials)} social profile{'s' if len(socials) != 1 else ''}" if socials else "social profiles")
-    (found if jobs else missing).append(f"{len(jobs)} open job ad{'s' if len(jobs) != 1 else ''}" if jobs else ("careers page" if not careers else ""))
-    if careers and not jobs:
-        found.append("a careers page")
+    (found if jobs else missing).append(f"{len(jobs)} open job ad{'s' if len(jobs) != 1 else ''}" if jobs else "job ads")
     (found if news else missing).append(f"{len(news)} dated news item{'s' if len(news) != 1 else ''}" if news else "dated news")
     found, missing = [x for x in found if x], [x for x in missing if x]
     text = ("Online: " + _list(found, 5) + ("; not found: " + _list(missing, 5) if missing else "") + ".") if found else "No verified website, social profile, job ad or dated news item was found (see what remains unknown)."
-    summary_sentences.append(b.sentence(text, ([site_c] if site_c else []) + socials[:3] + jobs[:3] + careers[:1] + news[:2], checked=[] if found else [u for x in unknowns for u in x["checked_sources"]]))
+    summary_sentences.append(b.sentence(text, ([site_c] if site_c else []) + socials[:3] + jobs[:3] + news[:2], checked=[] if found else [u for x in unknowns for u in x["checked_sources"]]))
     headline = " · ".join(x for x in headline_bits if x)
     return {
         "headline": headline,
@@ -804,7 +811,7 @@ def _markdown(headline: str, summary: list[dict[str, Any]], sections: list[dict[
 
 
 FIELD_WORDS = {
-    "official_website": "website", "social_profile": "social profile", "job_posting": "job ad", "careers_page": "careers page",
+    "official_website": "website", "social_profile": "social profile", "job_posting": "job ad",
     "company_news": "news item", "public_brand_name": "public brand", "self_description": "self-description",
     "website_phone": "phone (website)", "website_email": "e-mail (website)", "role": "role", "registered_workplace": "workplace",
 }

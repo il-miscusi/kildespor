@@ -127,7 +127,7 @@ class Run:
                     filters.append({"k": "m", "v": original, "t": "municipality is " + _title(name)})
                     break
         if re.search(r"\b(hiring|recruit|job ads?|vacanc|open roles?|jobs)\b", l):
-            filters.append({"k": "hire", "t": "hiring signal (job ad or careers page)"})
+            filters.append({"k": "hire", "t": "hiring signal (open job ad)"})
         if re.search(r"\b(without|no|lacking|missing)\s+(an?\s+)?(official\s+)?(web\s?site|homepage)", l):
             filters.append({"k": "nw", "t": "no verified website found (absence is not proof)"})
         elif re.search(r"\b(with|has|have|having)\s+(an?\s+)?(official\s+|verified\s+)?(web\s?site|homepage)", l) or (re.search(r"\bwebsites?\b", l) and not re.search(r"\bno\b", l)):
@@ -183,7 +183,7 @@ class Run:
         if k == "m":
             return r.get("m") == f["v"]
         if k == "hire":
-            return bool(r.get("j") or r.get("cp"))
+            return bool(r.get("j"))
         if k == "w":
             return bool(r.get("w"))
         if k == "nw":
@@ -234,7 +234,7 @@ class Run:
                     citations.append({"criterion": key, "claim_id": c[0], "evidence_id": c[1], "source_url": c[2], "retrieved_at": c[3]})
             results.append({
                 "organisation_number": r["o"], "name": r["n"], "municipality": r.get("m"), "revenue": r.get("r"), "fiscal_year": r.get("y"),
-                "employees": r.get("e"), "website": r.get("w"), "social": r.get("so"), "job_ads": r.get("j"), "careers_page": r.get("cp"),
+                "employees": r.get("e"), "website": r.get("w"), "social": r.get("so"), "job_ads": r.get("j"),
                 "news_items": r.get("nw"), "changes": r.get("ch"), "citations": citations,
             })
         notes = []
@@ -276,7 +276,7 @@ class Run:
         base = {"kind": "company", "question": q, "organisation_number": row["o"], "name": row["n"]}
         for term, message in UNSUPPORTED.items():
             if term in l:
-                return {**base, "supported": False, "answer": f"Not supported by the evidence: {message}. The run covers registry identity, accounts, roles, workplaces, the verified website, social profiles, job ads, careers pages and dated news.", "citations": []}
+                return {**base, "supported": False, "answer": f"Not supported by the evidence: {message}. The run covers registry identity, accounts, roles, workplaces, the verified website, social profiles, single job ads and dated news.", "citations": []}
         if re.search(r"\b(ceo|chief executive|daglig leder|general manager|managing director)\b", l):
             ceo = next((c for c in claims if c["field"] == "role" and isinstance(c["value"], dict) and c["value"].get("role_code") == "DAGL"), None)
             if ceo:
@@ -299,19 +299,13 @@ class Run:
         elif re.search(r"\b(what does|what do|do they|business|industry|about|what is|describe)\b", l):
             topic = "what"
         if topic == "hire":
+            # Only a single job ad answers "is it hiring"; a careers page is context in the reason.
             jobs = [c for c in claims if c["field"] == "job_posting"]
-            careers = [c for c in claims if c["field"] == "careers_page"]
-            if not jobs and not careers:
+            if not jobs:
                 fam = families.get("hiring") or {}
-                return {**base, "supported": False, "answer": f"Not supported by the evidence: no job ad or careers page was found ({fam.get('state', 'not checked')}: {fam.get('reason', '')}). This is not proof that it is not hiring.", "citations": []}
-            parts = []
-            if jobs:
-                parts.append(f"Yes: {len(jobs)} open job ad(s) verified to this organisation number: " + "; ".join(f"{(c['value'] or {}).get('title')} ({(c['value'] or {}).get('url')})" for c in jobs[:8] if isinstance(c["value"], dict)) + ".")
-            if careers:
-                url = careers[0]["value"] if isinstance(careers[0]["value"], str) else (careers[0]["value"] or {}).get("url")
-                parts.append(f"Careers page: {url}" + ("." if jobs else " (a recruiting channel; no open ad was verified)."))
-            used = jobs[:8] + careers[:1]
-            return {**base, "supported": True, "answer": " ".join(parts), "citations": [x for c in used for x in cite([c["id"]], c["evidence_ids"])]}
+                return {**base, "supported": False, "answer": f"Not supported by the evidence: no single open job ad was found ({fam.get('state', 'not checked')}: {fam.get('reason', '')}). This is not proof that it is not hiring.", "citations": []}
+            answer = f"Yes: {len(jobs)} open job ad(s), each a single ad read at its source: " + "; ".join(f"{(c['value'] or {}).get('title')} ({(c['value'] or {}).get('url')})" for c in jobs[:8] if isinstance(c["value"], dict)) + "."
+            return {**base, "supported": True, "answer": answer, "citations": [x for c in jobs[:8] for x in cite([c["id"]], c["evidence_ids"])]}
         found = from_section(topic) if topic else {"answer": syn.get("summary", ""), "citations": [c for s in syn.get("summary_sentences", []) for c in cite(s["claim_ids"], s["evidence_ids"])]}
         if not found or not found["answer"]:
             return {**base, "supported": False, "answer": "Not supported by the evidence: nothing in this company's profile answers that.", "citations": []}
@@ -345,7 +339,7 @@ def render(result: dict[str, Any]) -> str:
                 _title(r.get("municipality") or ""),
                 f"revenue {_money(r['revenue'])} ({r['fiscal_year']})" if r.get("revenue") is not None else "",
                 f"{r['employees']} employees" if r.get("employees") is not None else "",
-                f"{r['job_ads']} job ad(s)" if r.get("job_ads") else ("careers page" if r.get("careers_page") else ""),
+                f"{r['job_ads']} job ad(s)" if r.get("job_ads") else "",
                 r.get("website") or "",
                 "/".join(r.get("social") or []),
                 f"{r['news_items']} news" if r.get("news_items") else "",

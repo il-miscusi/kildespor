@@ -116,7 +116,7 @@ size and finances (latest filed revenue, operating and net result, equity,
 with the change from the year before in NOK and %, and a computed equity ratio
 labelled as such), what changed (dated events newest first, plus run-to-run
 changes and carried-forward facts), hiring and web presence (hiring is claimed
-only from job ads or a careers page), and what remains unknown, each gap with
+only from single job ads, never from a careers page), and what remains unknown, each gap with
 its state and reason. Every sentence carries the claim ids, evidence ids and
 source URLs it rests on; the template is deterministic and uses no model.
 `docs/DATA_SCHEMA.md` describes the fields.
@@ -156,8 +156,8 @@ or convert an existing run:
 above) when you use both. The committed `public/data/profiles.json` is the
 100-company smoke run below (run id `smoke-100-a`, shown in the app header),
 not demo data. `kildespor/export_profiles.py` defines the mapping: each of the
-app's five areas is decided by its own facts (the Hiring area needs a job ad
-or a careers page), carried-forward facts keep their marker, and both sides of
+app's five areas is decided by its own facts (the Hiring area needs a single
+job ad), carried-forward facts keep their marker, and both sides of
 a change keep their evidence. The equity ratio it adds is labelled as computed
 from equity and total assets, and it cites both figures.
 
