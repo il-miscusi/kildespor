@@ -118,6 +118,18 @@ class TitleTests(unittest.TestCase):
         self.assertEqual([i.title for i in items], ["New CEO appointed"])
 
 
+class SharedTitleTests(unittest.TestCase):
+    def test_banner_title_on_several_articles(self) -> None:  # drivenergi.no, held-out audit
+        items = [harvest.NewsItem("Farget diesel er blå", f"https://drivenergi.no/{slug}/", f"{RECENT}T10:00:00+02:00", RECENT, snap("https://drivenergi.no/", ""), "t", "article_page_meta", "company_website")
+                 for slug in ("avgiftsfri-diesel-skifter-farge-2", "drivfondet-har-apnet-for-4-kvartal")]
+        self.assertEqual(harvest.shared_titles(items), {0, 1})
+
+    def test_a_post_published_twice_keeps_one(self) -> None:
+        items = [harvest.NewsItem("Smarte hjem utfordrer personvernet", f"https://bratlandconsulting.com/{slug}/", f"{RECENT}T10:00:00+02:00", RECENT, snap("https://bratlandconsulting.com/", ""), "t", "wordpress_posts_api", "company_website")
+                 for slug in ("smarte-hjem-utfordrer-personvernet-2", "smarte-hjem-utfordrer-personvernet")]
+        self.assertEqual(harvest.shared_titles(items), {0})
+
+
 class FeatureTests(unittest.TestCase):
     def test_features_are_deterministic_and_order_free(self) -> None:
         c = {"title": "Fjordbygg vinner kontrakt for ny skole i 2026", "url": "https://www.fjordbygg.no/nyheter/2026/10/kontrakt/", "lead": "Fjordbygg skal bygge.",

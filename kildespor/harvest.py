@@ -3416,14 +3416,41 @@ def copy_bursts(items: list[NewsItem]) -> set[int]:
     return out
 
 
+def _slug_match(item: NewsItem) -> float:
+    """Share of the title's words that the article's own URL slug spells."""
+    words = [w for w in re.sub(r"[^a-z0-9]+", " ", _fold_a(item.title)).split() if len(w) >= 3]
+    slug = _alnum(_segments(item.url)[-1]) if item.url and _segments(item.url) else ""
+    return sum(1 for w in words if w in slug) / len(words) if words else 0.0
+
+
+def shared_titles(items: list[NewsItem]) -> set[int]:
+    """Indexes of items whose headline another page of the site also carries: a banner or a site-wide
+    og:title read as the article's own title (three drivenergi.no articles all came out "Farget diesel er
+    blå"), or one post published twice ("/smarte-hjem" and "/smarte-hjem-2"). The page whose slug
+    spells the title keeps it; when none does, none is published."""
+    groups: dict[str, list[int]] = {}
+    for i, item in enumerate(items):
+        groups.setdefault(" ".join(item.title.lower().split()), []).append(i)
+    out: set[int] = set()
+    for idx in groups.values():
+        if len({_norm_url(items[i].url) if items[i].url else i for i in idx}) < 2:
+            continue
+        ranked = sorted(idx, key=lambda i: (-_slug_match(items[i]), len(items[i].url or ""), items[i].url or ""))
+        keep = ranked[0] if _slug_match(items[ranked[0]]) >= 0.5 else None
+        out.update(i for i in idx if i != keep)
+    return out
+
+
 def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None, checked: list[str] | None = None, refused: dict[str, str] | None = None, failed: list[str] | None = None) -> list[NewsItem]:
     dropped: dict[str, int] = {}
     for why in (refused or {}).values():
         dropped[why] = dropped.get(why, 0) + 1
     burst = copy_bursts(items)
+    shared = shared_titles(items)
     kept: list[NewsItem] = []
     for index, item in enumerate(items):
-        why = "a copy or import date shared by 3+ posts within 10 minutes" if index in burst else "title cut short on the listing card" if truncated_title(item.title, item.url) else None
+        why = ("a copy or import date shared by 3+ posts within 10 minutes" if index in burst else "title cut short on the listing card" if truncated_title(item.title, item.url)
+               else "the same title on another page of the site" if index in shared else None)
         if why:
             dropped[why] = dropped.get(why, 0) + 1
         else:
