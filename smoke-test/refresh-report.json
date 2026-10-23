@@ -5,10 +5,10 @@
     "run_id": "smoke-100-b",
     "agent": "kildespor",
     "agent_version": "1.0.0",
-    "started_at": "2026-10-17T19:59:11Z",
-    "completed_at": "2026-10-17T20:00:20Z",
+    "started_at": "2026-10-23T07:17:53Z",
+    "completed_at": "2026-10-23T07:19:00Z",
     "terminal_status": "completed",
-    "time_budget_s": 900.0,
+    "time_budget_s": 1500.0,
     "input_count": 100,
     "max_requests": 1900
   },
@@ -59,11 +59,11 @@
       }
     },
     "workplaces": {
-      "available": 70,
-      "share_available": 0.7,
+      "available": 71,
+      "share_available": 0.71,
       "states": {
-        "available": 70,
-        "not_available": 30
+        "available": 71,
+        "not_available": 29
       }
     },
     "official_website": {
@@ -93,11 +93,10 @@
       }
     },
     "hiring": {
-      "available": 2,
-      "share_available": 0.02,
+      "available": 0,
+      "share_available": 0.0,
       "states": {
-        "not_available": 98,
-        "available": 2
+        "not_available": 100
       }
     },
     "public_activity": {
@@ -108,9 +107,8 @@
       }
     }
   },
-  "available_claims": 7040,
+  "available_claims": 7039,
   "claims_by_field": {
-    "careers_page": 2,
     "company_news": 29,
     "financial.annual_result": 283,
     "financial.audit_opt_out": 283,
@@ -145,7 +143,7 @@
     "registered_business_address": 100,
     "registered_date": 100,
     "registered_employees": 15,
-    "registered_workplace": 72,
+    "registered_workplace": 73,
     "registry_phone": 29,
     "registry_role_change": 261,
     "registry_status": 100,
@@ -163,26 +161,26 @@
   "evidence_records": 7061,
   "changes_detected": 0,
   "operations": {
-    "requests": 1009,
-    "bytes": 73362379,
-    "p50_ms": 452,
-    "p95_ms": 1993,
+    "requests": 1010,
+    "bytes": 71632505,
+    "p50_ms": 454,
+    "p95_ms": 1905,
     "max_requests": 1900,
     "budget_refusals": 0,
     "rate_limited_responses": 1,
     "dns_timeouts": 0,
-    "wall_clock_s": 68.7,
+    "wall_clock_s": 67.6,
     "per_company_runtime_ms": {
-      "p50": 6487,
-      "p95": 36268
+      "p50": 6328,
+      "p95": 32063
     },
     "third_party_cost_usd": 0.0,
     "language_model_calls": 0
   },
   "nav_feed": {
     "days": 45,
-    "pages": 91,
-    "active_ads": 9366,
+    "pages": 92,
+    "active_ads": 9198,
     "error": null,
     "loaded": true
   }
