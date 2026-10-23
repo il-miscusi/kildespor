@@ -199,6 +199,10 @@ class GateTests(unittest.TestCase):
         good = {"title": "Fjordbygg vinner kontrakt for ny skole på Voss", "url": "https://www.fjordbygg.no/nyheter/kontrakt-skole-voss/", "method": "wordpress_posts_api",
                 "categories": ["nyheter"], "lead": "Fjordbygg har signert kontrakt med Voss kommune om bygging av ny barneskole.", "own": ["fjordbygg"], "published": f"{RECENT}T10:00:00+02:00"}
         self.assertEqual(model.score(good), model.score(dict(good)))
+        self.assertGreaterEqual(model.score(good), model.threshold)
+        guide = {"title": "Hvordan velge riktig varmepumpe? 5 tips", "url": "https://www.fjordbygg.no/blogg/hvordan-velge-varmepumpe/", "method": "wordpress_posts_api",
+                 "categories": ["blogg"], "lead": "Her er våre beste tips til deg som skal velge varmepumpe.", "own": ["fjordbygg"], "published": f"{RECENT}T10:00:00+02:00"}
+        self.assertLess(model.score(guide), model.threshold)
 
 
 class UnreadSourceTests(unittest.TestCase):

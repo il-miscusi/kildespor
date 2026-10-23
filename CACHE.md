@@ -143,6 +143,27 @@ company).
 A row whose domain several companies print as their own (`domain_orgnrs` > 1: a
 shared platform such as `styret.com`, a group site, a franchise) also goes last.
 
+## The news gate model (`kildespor/models/newsgate.json`)
+
+Not a cache of facts: a fitted page-type classifier the agent applies to news
+candidates it found live on the company's own site. It holds no company,
+URL or text, only 65,536 hashed feature weights (int8, zlib, base64), a scale,
+a bias and a threshold; `kildespor/newsgate.py` reads it.
+
+| field | value |
+|---|---|
+| model | logistic regression (liblinear, C 0.03) over hashed binary features: title words and bigrams, URL path words, lead words and bigrams (first 600 characters), WordPress/feed categories, word-group flags (event, guide, product, case, opinion), date source, method, og:type, JSON-LD types, `article:published_time`, price/cart/booking flags, company name in the title or lead |
+| target | "company_event": a dated post about this company (news, press release, launch, contract, appointment, event it held, notice to its customers) |
+| training data | 2,742 rule-passed candidates from 340 hosts, collected by the agent's opt-in corpus dump (`KILDESPOR_NEWS_DUMP`) on Kaggle over 5,000 universe companies drawn for this purpose (seeds 20261023/24); 2,614 labels set by hand, the rest by an open-weight LLM (Qwen3-14B) on Kaggle |
+| held out | every host of the gold100, seed100, dev400 and pop1000 batches |
+| threshold | 0.60: host-held-out precision 0.88 at recall 0.57 on hand labels (36 of the 42 held-out companies with a correct candidate keep one); on Builderr-sample items labelled in the 23 October audit, 109 correct kept and 3 wrong left of 297 (rules alone: 232 and 65) |
+| size, hash | 43 KB; the spec's own `sha256` field is checked by `tests/test_newsgate.py` |
+| rebuild | `python3 tools/news_train.py --items <teacher_items> --labels <teacher_labels> --audit <audit_labels.tsv> --holdout-orgs <batches> --threshold 0.60` |
+
+`KILDESPOR_NEWSGATE=0` switches the gate off (the rules decide alone);
+`KILDESPOR_NEWSGATE_THRESHOLD` moves the operating point for measurement.
+Delete the file and every item is judged by the rules alone.
+
 ## Rebuilding
 
 The scripts in `tools/` need Python 3.10+; `build_overture.py` also needs

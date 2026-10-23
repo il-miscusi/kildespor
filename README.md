@@ -137,6 +137,24 @@ in the claims it cites (or be arithmetic on two of them), or the sentence is
 dropped. The template is deterministic and uses no model.
 `docs/DATA_SCHEMA.md` describes the fields.
 
+### Dated news: the news gate
+
+Builderr's rule for a news item is "a real, dated post about the company.
+Menu labels and product pages aren't news, and a feed's 'updated' date isn't
+a publish date." The harvest's rules refuse page parts, templates, job ads,
+guides, group stories and copy dates. Whatever they let through is then
+scored by a small learned model, `kildespor/models/newsgate.json` (declared in
+[CACHE.md](CACHE.md)): a logistic regression over the item's title, URL path,
+lead text and categories plus page signals (Article JSON-LD,
+`article:published_time`, a price or a cart, the company's name in the
+title). Only items above its threshold are published, at most ten per
+company. Inference is pure Python and deterministic; the model refuses
+items, it never adds one or decides whose they are. When nothing passes on
+the evidence of a feed or post API, the two closest refusals get their own
+page read before giving up. A news source that could not be read (timeout,
+5xx, 401/403, the request allowance) makes the dated-news row `failed`, not
+`not_available`.
+
 See [`docs/AGENT.md`](docs/AGENT.md) for the research and abstention policy,
 [`docs/SOURCES.md`](docs/SOURCES.md) for source rights, secrets and the
 outbound URL policy, [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) for the
