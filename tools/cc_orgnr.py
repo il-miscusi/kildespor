@@ -292,11 +292,11 @@ def http_get(url, rng=None, tries=7, timeout=120):
             r = urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=timeout)
             return r.read(), r.headers.get("Content-Range")
         except urllib.error.HTTPError as e:
-            err = e
-            if e.code not in (429, 500, 502, 503, 504):
-                raise
+            err = f"HTTP {e.code}"
+            if e.code not in (403, 429, 500, 502, 503, 504):
+                raise IOError(f"{url}: HTTP {e.code}") from None
         except Exception as e:  # noqa: BLE001
-            err = e
+            err = f"{type(e).__name__}: {e}"
         time.sleep(min(60, 2 ** i) + random.random())
     raise IOError(f"{url}: {err}")
 
@@ -403,6 +403,15 @@ KIND_HOME, KIND_LEGAL, KIND_OTHER = 0, 1, 2
 
 
 def _read_group(job):
+    """_read_group_once, with any failure returned as a picklable marker instead of raised."""
+    try:
+        return _read_group_once(job)
+    except Exception as e:  # noqa: BLE001
+        crawl, path, size, g, mode = job
+        return crawl, path, g, mode, f"ERR {type(e).__name__}: {str(e)[:300]}", 0, 0
+
+
+def _read_group_once(job):
     """Rows worth fetching from one index row group, already reduced per host.
 
     Returns {host: {"home": row, "legal": {path: row}, "fb": row}} where a row is the tuple
@@ -527,18 +536,32 @@ def select(releases, lang_releases, workers, max_groups=0, part_filter=""):
     hosts = {}
     done = 0
     sel_rows = collections.Counter()
+    failed = []
+    by_key = {(j[0], j[1], j[3], j[4]): j for j in jobs}
     with concurrent.futures.ProcessPoolExecutor(workers, mp_context=mp_context()) as ex:
-        for crawl, path, g, mode, hs, nbytes, n in ex.map(_read_group, jobs, chunksize=1):
-            done += 1
-            stats["index_bytes"] += nbytes
-            sel_rows[f"{crawl}:{mode}"] += n
-            for h, src in hs.items():
-                if h in hosts:
-                    merge_host(hosts[h], src)
-                else:
-                    hosts[h] = src
-            if done % 50 == 0 or done == len(jobs):
-                log(f"select {done}/{len(jobs)} rowgroups, {stats['index_bytes'] / 1e6:.0f} MB read, hosts {len(hosts)}")
+        for attempt in (0, 1):
+            todo = jobs if attempt == 0 else failed
+            failed = []
+            if attempt and todo:
+                log(f"select: retrying {len(todo)} failed row groups after a pause")
+                time.sleep(120)
+            for crawl, path, g, mode, hs, nbytes, n in ex.map(_read_group, todo, chunksize=1):
+                done += 1
+                if isinstance(hs, str):
+                    failed.append(by_key[(crawl, path, g, mode)])
+                    log("select error", crawl, path[-40:], g, mode, hs[:200])
+                    continue
+                stats["index_bytes"] += nbytes
+                sel_rows[f"{crawl}:{mode}"] += n
+                for h, src in hs.items():
+                    if h in hosts:
+                        merge_host(hosts[h], src)
+                    else:
+                        hosts[h] = src
+                if done % 50 == 0:
+                    log(f"select {done} rowgroups done of {len(jobs)}, {stats['index_bytes'] / 1e6:.0f} MB read, hosts {len(hosts)}")
+    stats["rowgroups_failed"] = [f"{j[0]}:{j[1].rsplit('/', 1)[-1][:10]}:{j[3]}:{j[4]}" for j in failed]
+    log(f"select done: {len(jobs)} row groups, {len(failed)} failed twice, {stats['index_bytes'] / 1e6:.0f} MB read, hosts {len(hosts)}")
     stats["selected_rows"] = dict(sel_rows)
     stats["hosts"] = len(hosts)
     return hosts, stats
@@ -599,7 +622,7 @@ async def fetch_all(items, pool, conc, out, deadline):
                     await asyncio.sleep(wait)
                 try:
                     async with s.get(CC + fn, headers={"Range": rng}) as r:
-                        if r.status in (429, 500, 502, 503, 504):
+                        if r.status in (403, 429, 500, 502, 503, 504):
                             st[f"http{r.status}"] += 1
                             back = min(60, 2 ** attempt) + random.random()
                             slow["until"] = max(slow["until"], time.time() + back / 4)
