@@ -9,7 +9,9 @@ snapshot twice produces the same ids and no duplicate records.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +27,65 @@ SNAPSHOT_LABEL = "snapshots"
 
 
 PERSONAL_KEYS = {"fodselsdato"}
+
+# Evidence whose span describes an inference rather than quoting the source ("domain x spells the
+# name y", "homepage reached: <url>"), so there is nothing to find in the body.
+COMPOSED_SPAN_METHODS = {
+    "registry_listed_name_on_site", "registry_listed_name_in_metadata", "candidate_site_fetch",
+    "registry_listed_site_fetch", "wikidata_p2333_live_item",
+}
+_SPAN_PREFIX = re.compile(r"^(?:mailto link|tel link|e-mail on page|homepage reached|feedentry [\w-]+|byline):\s*", re.I)
+_QUOTED = re.compile(r'"([^"]{3,})"')
+_LOCATOR = re.compile(r'^[\w.<>/\[\] -]{1,60}? = "?(.+?)"?$', re.S)
+
+
+def _fold(text: str) -> str:
+    return " ".join(html.unescape(text).replace("\\/", "/").replace("\u00a0", " ").replace("\xa0", " ").split()).casefold()
+
+
+def _needles(span: str) -> list[str]:
+    """The parts of a span that must appear in the source: its quoted values, else the value of a
+    ``field = value`` locator, else its first `` | ``-separated segment (titles lead, dates follow)."""
+    span = _SPAN_PREFIX.sub("", span.strip())
+    quoted = _QUOTED.findall(span)
+    if quoted:
+        parts = quoted
+    else:
+        head = span.split(" | ")[0]
+        locator = _LOCATOR.match(head)
+        parts = [locator.group(1) if locator else head]
+    out = []
+    for part in parts:
+        part = part.strip().removesuffix("...").strip().strip('"')
+        if len(part) >= 3:
+            out.append(_fold(part))
+    return out
+
+
+def span_found(span: str | None, snap: Snapshot) -> bool | None:
+    """Whether the span's quoted text is in the fetched body (None when there is nothing to check)."""
+    needles = _needles(span or "")
+    if not needles or not snap.body:
+        return None
+    raw = snap.text()
+    hay = [_fold(raw), _fold(re.sub(r"<[^>]+>", " ", raw))]
+    if "json" in (snap.content_type or "").lower() or raw.lstrip()[:1] in "[{":
+        try:
+            values: list[str] = []
+            stack = [json.loads(raw)]
+            while stack:
+                item = stack.pop()
+                if isinstance(item, dict):
+                    stack.extend(item.values())
+                elif isinstance(item, list):
+                    stack.extend(item)
+                elif item is not None:
+                    values.append(str(item))
+            joined = "\n".join(values)
+            hay += [_fold(joined), _fold(re.sub(r"<[^>]+>", " ", joined))]
+        except ValueError:
+            pass
+    return all(any(n in h for h in hay) for n in needles)
 
 
 def _redact(value: Any) -> Any:
@@ -132,6 +193,10 @@ class CompanyRecord:
         if access_policy:
             record["access_policy"] = access_policy
         if snapshot is not None:
+            if source_class != "official_registry" and extraction_method not in COMPOSED_SPAN_METHODS:
+                found = span_found(span, snapshot)
+                if found is not None:
+                    record["span_check"] = "verbatim" if found else "not_found"
             record["http_status"] = snapshot.status
             stored = store_body(snapshot)
             if stored:

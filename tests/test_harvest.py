@@ -310,7 +310,8 @@ class CareersTests(unittest.TestCase):
         self.assertIsNone(f("https://www.narvikgolf.no/bli-medlem", "Bli medlem", "narvikgolf.no"))
         self.assertEqual(f("https://www.fjordbygg.no/page/42", "Ledige stillinger", self.SITE), 2)
         self.assertEqual(f("https://fjordbygg.teamtailor.com/jobs", "Se stillinger", self.SITE), 1)
-        self.assertEqual(f("https://www.finn.no/job/fulltime/ad.html?finnkode=123456", "", self.SITE), 1)
+        # finn.no's terms forbid automated access: its ads are never followed.
+        self.assertIsNone(f("https://www.finn.no/job/fulltime/ad.html?finnkode=123456", "", self.SITE))
         # A blog post that mentions work is not a careers page (spedify-lanserer-reparasjonstjenester).
         self.assertIsNone(f("https://spedify.no/spedify-lanserer-reparasjonstjenester", "Spedify lanserer reparasjonstjenester - nå jobber vi med", "spedify.no"))
         self.assertIsNone(f("https://www.fjordbygg.no/nyheter/vi-jobber-med-baerekraft", "Slik jobber vi med bærekraft", self.SITE))

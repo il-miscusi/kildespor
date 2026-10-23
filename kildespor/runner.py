@@ -20,11 +20,12 @@ import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import __version__, brreg, jobs, model, website
 from .contract import canonical_social, publish
 from .envelope import build_envelope, placeholder_envelope
-from .http import Fetcher, utc_now
+from .http import Fetcher, terms_forbid, utc_now
 from .model import FAMILIES, STATES, CompanyRecord
 from .refresh import diff, load_previous
 from .synthesis import build_synthesis
@@ -215,6 +216,38 @@ def merge_duplicate_profiles(snap: CompanyRecord) -> None:
     snap.claims = out
 
 
+def _unsupported(claim: dict[str, Any], evidence: dict[str, dict[str, Any]]) -> bool:
+    """Every evidence record behind the claim was checked and its span is not in the source.
+    Register evidence is a field locator, not a quote, and is never checked this way."""
+    if claim.get("availability") != "available":
+        return False
+    records = [evidence.get(e) or {} for e in claim.get("evidence_ids", [])]
+    return bool(records) and all(r.get("span_check") == "not_found" for r in records)
+
+
+def _forbidden_source(claim: dict[str, Any], evidence: dict[str, dict[str, Any]]) -> bool:
+    value = claim.get("value")
+    urls = [str(value.get("url") or "") if isinstance(value, dict) else str(value or "")]
+    urls += [str((evidence.get(e) or {}).get(k) or "") for e in claim.get("evidence_ids", []) for k in ("source_url", "final_url")]
+    return any(u.startswith("http") and terms_forbid(urlsplit(u).hostname or "") for u in urls)
+
+
+def drop_unsupported(snap: CompanyRecord) -> None:
+    """Withhold a claim whose quoted span is absent from every source it cites, or which cites a
+    source whose terms forbid automated use: either would publish a fact no receipt supports."""
+    dropped = [c for c in snap.claims if _unsupported(c, snap.evidence) or _forbidden_source(c, snap.evidence)]
+    if not dropped:
+        return
+    snap.claims = [c for c in snap.claims if not any(c is d for d in dropped)]
+    for claim in dropped:
+        why = "cites a source whose terms forbid automated use" if _forbidden_source(claim, snap.evidence) else "its span was not found in the cited source"
+        snap.error(claim["family"], f"withheld {claim['field']} {str(claim.get('value'))[:120]}: {why}")
+    for family in {c["family"] for c in dropped}:
+        state = snap.family_state.get(family) or {}
+        if state.get("state") == "available" and not snap.claims_for(family):
+            snap.family_state[family] = {"state": "failed", "reason": "every item found was withheld because its source did not support it", "checked_sources": state.get("checked_sources", []), "decided_at": utc_now()}
+
+
 def withhold_shared_profiles(snap: CompanyRecord, shared: set[str]) -> None:
     dropped = [c for c in snap.claims if _profile_key(c) in shared]
     if not dropped:
@@ -238,6 +271,7 @@ def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str
             merge_duplicate_profiles(snap)
             jobs.merge_duplicate_ads(snap)
             withhold_shared_profiles(snap, shared)
+            drop_unsupported(snap)
             if final:
                 snap.finalize_states()
             else:
@@ -285,6 +319,13 @@ def validate(envelopes: list[dict[str, Any]], orgs: list[str]) -> dict[str, Any]
         for ev in c.get("evidence_ids", [])
         if ev not in ids
     ]
+    unsupported = [
+        (e["organisation_number"], c.get("field"), str(c.get("value"))[:80])
+        for e in envelopes
+        for ev in [{x["id"]: x for x in e.get("evidence", [])}]
+        for c in e["claims"]
+        if _unsupported(c, ev)
+    ]
     checks = {
         "exact_expected_count": len(envelopes) == len(orgs),
         "same_order_and_membership": got == orgs,
@@ -292,8 +333,9 @@ def validate(envelopes: list[dict[str, Any]], orgs: list[str]) -> dict[str, Any]
         "all_states_terminal": not bad_states and all(e["state"] in STATES for e in envelopes),
         "every_available_claim_has_evidence": all(c.get("evidence_ids") for e in envelopes for c in e["claims"] if c.get("availability") == "available"),
         "every_evidence_id_resolves": not dangling,
+        "every_external_claim_span_in_source": not unsupported,
     }
-    return {"passed": all(checks.values()), "checks": checks, "invalid_states": bad_states[:20], "dangling_evidence": dangling[:20]}
+    return {"passed": all(checks.values()), "checks": checks, "invalid_states": bad_states[:20], "dangling_evidence": dangling[:20], "unsupported_claims": unsupported[:20]}
 
 
 def run_report(envelopes: list[dict[str, Any]], orgs: list[str], run: dict[str, Any], fetcher: Fetcher, started: float, recs: dict[str, CompanyRecord]) -> dict[str, Any]:
@@ -336,11 +378,36 @@ def run_report(envelopes: list[dict[str, Any]], orgs: list[str], run: dict[str, 
 
 
 # -- main -----------------------------------------------------------------------------------
+def write_root_index(out_dir: Path, site_dir: Path) -> None:
+    """``index.html`` beside the envelopes, opening the viewer, so it is found where a checker looks first."""
+    try:
+        rel = os.path.relpath(site_dir / "index.html", out_dir).replace(os.sep, "/")
+    except ValueError:
+        return
+    if rel == "index.html":
+        return
+    page = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'<meta http-equiv="refresh" content="0; url={rel}"><title>Kildespor company profiles</title></head>'
+        f'<body><p><a href="{rel}">Open the Kildespor company viewer</a></p></body></html>\n'
+    )
+    (out_dir / "index.html").write_text(page, encoding="utf-8")
+
+
+def default_budget(companies: int) -> float:
+    """Wall-clock budget when none is given: 900 s plus 0.6 s per company, at most 2,700 s.
+
+    1,000 companies get 1,500 s and 3,000 or more get 2,700 s, the 45 minutes Builderr once
+    published for a daily run. A fixed 900 s would end research after about 2,000 companies on
+    the larger retest set."""
+    return min(2700.0, 900.0 + 0.6 * max(0, companies))
+
+
 def run_batch(args: Any) -> int:
     started = time.monotonic()
-    budget = float(args.time_budget)
-    deadline = started + budget
     orgs = read_inputs(args.input)
+    budget = float(args.time_budget) if args.time_budget is not None else default_budget(len(orgs))
+    deadline = started + budget
     if not orgs:
         log("no organisation numbers in the input")
     run_id = args.run_id or f"kildespor-{utc_now().replace(':', '').replace('-', '')}"
@@ -458,6 +525,7 @@ def run_batch(args: Any) -> int:
             site_dir = Path(args.site) if args.site else output.parent / "site"
             build_site(envelopes, site_dir, report)
             log(f"site written to {site_dir}/index.html")
+            write_root_index(output.parent, site_dir)
         except Exception as exc:
             log(f"site build failed (envelopes unaffected): {type(exc).__name__}: {exc}")
     try:

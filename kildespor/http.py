@@ -47,6 +47,21 @@ class RobotsDisallowed(RuntimeError):
     pass
 
 
+class TermsForbidden(RobotsDisallowed):
+    """A host whose terms forbid automated access; refused before any request, like robots.txt."""
+
+
+# Hosts whose terms forbid automated access without written consent (Builderr's source policy
+# judges a source by its terms). FINN.no: "Crawling FINN.no is prohibited unless you have written
+# permission".
+TERMS_FORBID_HOSTS = ("finn.no",)
+
+
+def terms_forbid(host: str) -> bool:
+    host = (host or "").lower().rstrip(".")
+    return any(host == h or host.endswith("." + h) for h in TERMS_FORBID_HOSTS)
+
+
 class RequestBudgetExhausted(RuntimeError):
     pass
 
@@ -407,6 +422,8 @@ class Fetcher:
         for _hop in range(MAX_REDIRECTS + 1):
             self._charge()
             host = check_url(current)
+            if terms_forbid(host):
+                raise TermsForbidden(current)
             if check_robots and not self.robots_allows(current):
                 raise RobotsDisallowed(current)
             pause = self._cooldown.get(host, 0.0) - time.monotonic()

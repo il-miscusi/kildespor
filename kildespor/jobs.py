@@ -106,6 +106,10 @@ class NavFeed:
                         self.active.pop(uuid, None)
                 next_url = body.get("next_url")
                 url = FEED + next_url if next_url else None
+            if url and self.error is None:
+                # Stopped at the page cap with pages left: the active set is incomplete, and an
+                # empty lookup against it cannot establish that a company has no ad.
+                self.error = f"feed read stopped at the {MAX_PAGES}-page cap with more pages left"
             for uuid, entry in self.active.items():
                 key = name_key(entry["business"])
                 if key:
@@ -245,6 +249,9 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
         rec.checked_fields.add("job_posting")
     if published:
         record_nav_hiring(rec, "available", f"{published} active job ad(s) in NAV's vacancy feed verified to this organisation number", checked)
+    elif feed.error:
+        # A partly read feed keeps the ads it found, but its silence proves nothing.
+        record_nav_hiring(rec, "failed", f"NAV's vacancy feed was read only in part ({feed.error}), so no ad is not the same as no vacancy", checked)
     else:
         record_nav_hiring(
             rec,

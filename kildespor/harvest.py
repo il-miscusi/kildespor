@@ -1041,7 +1041,7 @@ ATS_DOMAINS = {
     "smartrecruiters.com": "smartrecruiters", "myworkdayjobs.com": "workday", "lever.co": "lever", "greenhouse.io": "greenhouse",
     "cvpartner.com": "cvpartner", "talentech.com": "talentech", "emply.com": "emply", "emply.net": "emply",
     "workable.com": "workable", "recruitee.com": "recruitee", "homerun.co": "homerun", "personio.de": "personio",
-    "personio.com": "personio", "ashbyhq.com": "ashby", "breezy.hr": "breezy", "finn.no": "finn",
+    "personio.com": "personio", "ashbyhq.com": "ashby", "breezy.hr": "breezy",
 }
 _ATS_NOT_PUBLIC = re.compile(r"/(?:dashboard|admin|login|logon|sign[_-]?in|sign[_-]?up|auth|account|settings|embed|widget|assets|static|cdn|api)(?:/|$|\?)|\.(?:js|css|png|jpe?g|svg|gif|webp|ico|woff2?)$", re.I)
 _ATS_GENERIC_LABELS = {
@@ -2966,7 +2966,7 @@ def _brand_and_contacts(rec: CompanyRecord, home: Snapshot, pages: list[tuple[Sn
             if href.lower().startswith("tel:"):
                 phone = normalise_phone(href[4:])
                 if phone:
-                    phones.setdefault(phone, (snap, f"tel link: {href[:40]} {label[:40]}"))
+                    phones.setdefault(phone, (snap, f"tel link: {href[:40]}"))
             elif href.lower().startswith("mailto:"):
                 address = unquote(href[7:].split("?")[0]).strip().lower()
                 if EMAIL.match(address) and not address.endswith((".png", ".jpg")):
@@ -3175,7 +3175,9 @@ def copy_bursts(items: list[NewsItem]) -> set[int]:
         end = max(end, start)
         while end + 1 < len(timed) and (timed[end + 1][0] - timed[start][0]).total_seconds() <= COPY_BURST_SECONDS:
             end += 1
-        if end - start + 1 >= COPY_BURST_ITEMS:
+        # An import stamps posts one after another (seconds apart); posts released together at one
+        # scheduled instant share it exactly, so identical instants count once.
+        if len({when for when, _ in timed[start:end + 1]}) >= COPY_BURST_ITEMS:
             out.update(i for _, i in timed[start:end + 1])
     return out
 

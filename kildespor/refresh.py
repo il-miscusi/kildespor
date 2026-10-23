@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .http import utc_now
 from .contract import internal
@@ -45,6 +46,13 @@ CHANGE_NAMES = {
     "registry_role_change": ("new_role_change", "removed_role_change"),
     "group_relationship": ("new_group_link", "ended_group_link"),
 }
+
+
+def news_checked_key(url: str) -> str:
+    """``checked_fields`` marker for a news post whose own URL was revisited and found gone."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    return f"company_news:{host}{parts.path.rstrip('/')}".lower()
 
 
 def load_previous(path: str | None) -> dict[str, dict[str, Any]]:
@@ -106,6 +114,11 @@ def diff(rec: CompanyRecord, previous: dict[str, Any] | None, run_id: str) -> tu
             if from_nav:
                 return bool({"job_posting", "job_posting:nav"} & rec.checked_fields)
             return "job_posting:site" in rec.checked_fields
+        if claim["field"] == "company_news":
+            # A news listing or feed shows the latest items only, so an older post missing from it
+            # was not deleted; only a revisit of that post's own URL can report it gone.
+            value = claim.get("value") if isinstance(claim.get("value"), dict) else {}
+            return bool(value.get("url")) and news_checked_key(str(value["url"])) in rec.checked_fields
         if claim["field"] in FIELD_CHECKED:
             return claim["field"] in rec.checked_fields
         return bool(family_ok.get(claim["family"]))

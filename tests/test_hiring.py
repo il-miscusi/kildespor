@@ -231,11 +231,13 @@ class AdPageRefusals(unittest.TestCase):
         ld = f'<html><head><script type="application/ld+json">{{"@type":"JobPosting","title":"Snekker","validThrough":"2020-01-01"}}</script></head><body><h1>Snekker</h1></body></html>'
         self.assertIn("validThrough", read(url, ld, self.NAMES).refused)
 
-    def test_stale_finn_ad_with_snarest(self) -> None:
-        stale = f"<html><body><h1>Dørmontør</h1><dl><dt>Søknadsfrist</dt><dd>Snarest</dd></dl><p>Sist endret {LONG_AGO}</p></body></html>"
-        self.assertIn("snarest", read("https://www.finn.no/job/ad/460758926", stale, ["NORDIC DOOR AS"]).refused)
-        fresh = stale.replace(LONG_AGO, TODAY.strftime("%d.%m.%Y"))
-        self.assertIsNone(read("https://www.finn.no/job/ad/460758926", fresh, ["NORDIC DOOR AS"]).refused)
+    def test_finn_is_never_fetched(self) -> None:
+        # finn.no's terms forbid automated access; the fetcher refuses it before any request.
+        from kildespor.http import Fetcher, TermsForbidden
+
+        with self.assertRaises(TermsForbidden):
+            Fetcher().get("https://www.finn.no/job/ad/460758926")
+        self.assertIsNone(harvest.ats_of("https://www.finn.no/job/ad/460758926"))
 
     def test_open_applications_are_not_vacancies(self) -> None:
         """Leirvik's webcruiter "Open søknad innan produksjon", published by v1 as "Operatørar"."""
