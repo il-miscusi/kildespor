@@ -466,10 +466,61 @@ IDENTITY_STOP = {_alnum(w) for w in GENERIC_NAME_WORDS} | {
 }
 
 
-def identity_tokens(names: list[str], site_url: str) -> tuple[set[str], set[str]]:
-    """(substring tokens, prefix tokens) an account name for this company may contain or start with."""
+# Words a page title or site name uses for the page rather than the company ("Hjem - Fjordbygg",
+# "Forside", "Nettbutikk"): dropped from a brand name before it is tokenised.
+PAGE_WORDS = {
+    "hjem", "hjemmeside", "forside", "forsiden", "startside", "home", "homepage", "front", "frontpage", "page", "velkommen",
+    "welcome", "nettbutikk", "nettbutikken", "webshop", "index",
+}
+
+
+def _domain_label(site_url: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", registered_domain(urlsplit(site_url if "://" in site_url else f"https://{site_url}").hostname or "").split(".")[0])
+
+
+def identity_brands(brands: list[str], names: list[str], site_url: str) -> list[str]:
+    """The site's brand names (JSON-LD name, og:site_name, <title>) that may name the company in an
+    account: page words removed, and only a brand that shares a distinctive word of 4+ characters
+    with the legal or subunit names, or with the domain label. A title is often a slogan or a place
+    ("Bruktbilforhandler i Mosjøen", "Utleiemegler Oslo"), and its words would let any account that
+    contains them pass."""
+    label = _domain_label(site_url) if site_url else ""
+    words: set[str] = set()
+    joined: set[str] = {label} if len(label) >= 4 else set()
+    for name in names:
+        for fold in (_fold_a, _fold_b):
+            ws = [w for w in (re.sub(r"[^a-z0-9]", "", fold(t)) for t in name_tokens(name or "")) if w]
+            words |= {w for w in ws if len(w) >= 4}
+            if len("".join(ws)) >= 4:
+                joined.add("".join(ws))
+    out: list[str] = []
+    for brand in brands:
+        clean = " ".join(w for w in re.findall(r"[^\W_]+", brand or "") if _alnum(w) not in PAGE_WORDS)
+        if not clean or clean in out:
+            continue
+        for fold in (_fold_a, _fold_b):
+            ws = [w for w in (re.sub(r"[^a-z0-9]", "", fold(t)) for t in name_tokens(clean)) if w]
+            distinct = {w for w in ws if len(w) >= 4 and w not in IDENTITY_STOP and w not in PLACE_WORDS}
+            whole = "".join(ws)
+            if distinct & words or any(w in j for w in distinct for j in joined) or (
+                len(whole) >= 4 and any(whole in j or j in whole for j in joined)
+            ):
+                out.append(clean)
+                break
+    return out
+
+
+def identity_tokens(names: list[str], site_url: str, brands: list[str] | None = None, *, place_tokens: bool = True) -> tuple[set[str], set[str]]:
+    """(substring tokens, prefix tokens) an account name for this company may contain or start with.
+
+    ``names`` are the legal and subunit names; ``brands`` are the site's brand names, used only as far
+    as ``identity_brands`` admits them. With ``place_tokens=False`` (profiles) a place word (Oslo,
+    Trondheim, Norge) is never a token by itself: it names a town account or a local agency as often
+    as the company."""
     contains: set[str] = set()
     prefixes: set[str] = set()
+    places = set() if place_tokens else PLACE_WORDS
+    names = list(names) + (identity_brands(brands, names, site_url) if brands else [])
     for name in names:
         words = name_tokens(name or "")
         for fold in (_fold_a, _fold_b):
@@ -478,13 +529,13 @@ def identity_tokens(names: list[str], site_url: str) -> tuple[set[str], set[str]
             if not ws:
                 continue
             joined = "".join(ws)
-            if len(joined) >= 4:
+            if len(joined) >= 4 and joined not in places:
                 contains.add(joined)
             core = [w for w in ws if w not in ("og", "and", "the")]
-            if core and "".join(core) != joined and len("".join(core)) >= 4:
+            if core and "".join(core) != joined and len("".join(core)) >= 4 and "".join(core) not in places:
                 contains.add("".join(core))
             for w in core:
-                if w in IDENTITY_STOP:
+                if w in IDENTITY_STOP or w in places:
                     continue
                 if len(w) >= 5 or (len(w) == 4 and len(core) <= 2):
                     contains.add(w)
@@ -494,10 +545,10 @@ def identity_tokens(names: list[str], site_url: str) -> tuple[set[str], set[str]
                 acronym = "".join(w[0] for w in core)
                 if len(acronym) >= 3:
                     prefixes.add(acronym)
-    label = re.sub(r"[^a-z0-9]", "", registered_domain(urlsplit(site_url if "://" in site_url else f"https://{site_url}").hostname or "").split(".")[0])
-    if len(label) >= 4:
+    label = _domain_label(site_url) if site_url else ""
+    if len(label) >= 4 and label not in places:
         contains.add(label)
-    if len(label) >= 3:
+    if len(label) >= 3 and label not in places:
         prefixes.add(label)
     return contains, prefixes
 
@@ -590,6 +641,11 @@ ALLOWED_AFFIXES = {
     "trondelag", "vestfold", "telemark", "ostfold", "akershus", "sunnmore", "romerike", "hordaland", "sorlandet", "vestlandet",
     "ostlandet", "nordnorge", "midtnorge",
 }
+# The place half of ALLOWED_AFFIXES plus the country words: never an identity token on their own.
+PLACE_WORDS = ALLOWED_AFFIXES - {
+    "as", "asa", "ab", "da", "ans", "sa", "ks", "ba", "no", "nor", "official", "offisiell", "offisielt", "hq", "go", "the", "team",
+    "tv", "film", "films", "media", "inc", "ltd",
+}
 
 
 # Words that name a separate legal entity beside the company's own name (Fjordbygg Eiendom AS,
@@ -656,6 +712,129 @@ def _in_site_chrome(node: Any) -> bool:
     return False
 
 
+# Phrases beside a block of social icons that say whose icons they are when it is not the company:
+# the group the site says it belongs to ("Del av Consto-gruppen", "part of Hexagon"). Bare "group",
+# "gruppen", "konsern" and "partner" are not read at this reach: a footer heading such as "Kitron
+# Group" or "Consto konsern" over the company's own icons names the company itself.
+BLOCK_RELATION = re.compile(
+    r"\bdel av\b|\bpart of\b|\bmember of\b|\bmedlem av\b|\beid av\b|\bowned by\b|soster(?:selskap|bedrift|firma)|morselskap|"
+    r"datterselskap|sister[- ]?compan|parent[- ]?compan|subsidiar",
+    re.I,
+)
+THEME_CREDIT = re.compile(r"theme by|tema av|template by|wordpress theme", re.I)
+
+
+def _social_href(href: str) -> bool:
+    try:
+        host = (urlsplit(href.strip()).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in SOCIAL_HOSTS)
+
+
+def _carries_profile_link(node: Any) -> bool:
+    if getattr(node, "name", None) == "a" and _social_href(str(node.get("href") or "")):
+        return True
+    return hasattr(node, "find_all") and any(_social_href(str(a.get("href") or "")) for a in node.find_all("a", href=True))
+
+
+def _block_text(parent: Any, came_from: Any) -> str:
+    """The parent's own words beside the child we came from: its direct text and the text of the
+    children that link to no social platform (a heading, a credit line linking the agency's site).
+    A child carrying its own profile link (another icon, an agency's icon with its credit) speaks
+    for that link only."""
+    parts: list[str] = []
+    for child in parent.children:
+        if child is came_from:
+            continue
+        if getattr(child, "name", None) is None:
+            if type(child).__name__ == "NavigableString":
+                parts.append(str(child).strip())
+            continue
+        if child.name in ("script", "style", "noscript", "template") or _carries_profile_link(child):
+            continue
+        parts.append(child.get_text(" ", strip=True))
+    return " ".join(p for p in parts if p)
+
+
+def _icon_block(node: Any) -> tuple[str, str]:
+    """What the block of icons a profile link sits in, and a short heading just before that block,
+    say about whose icons they are: ("credit", "") for a web agency or theme credit, ("related",
+    <name>) for a group the site says it is part of, else ("", "").
+
+    Unlike _credit_link and _related_link this climbs past the footer element and past 3 links, as
+    long as the block is still an icon row: at most 200 characters of text and at most one link that
+    is not to a social platform (the agency's or the parent's own site). Text that belongs to another
+    profile link (an agency's icon in its own credit line) is not read for this one."""
+    texts: list[str] = []
+    current = node
+    for _ in range(6):
+        parent = current.parent
+        if parent is None or getattr(parent, "name", None) in (None, "[document]", "html", "body", "main"):
+            break
+        others = {
+            str(a.get("href") or "").strip() for a in parent.find_all("a", href=True)
+            if not _social_href(str(a.get("href") or "")) and not str(a.get("href") or "").strip().lower().startswith(("#", "mailto:", "tel:", "javascript:"))
+        }
+        if len(others) > 1 or len(parent.get_text(" ", strip=True)) > 200:
+            heading = current.find_previous_sibling()
+            if heading is not None and not _carries_profile_link(heading) and len(heading.find_all("a", href=True)) <= 1:
+                heading_text = heading.get_text(" ", strip=True)
+                if len(heading_text) <= 80:
+                    texts.append(heading_text)
+            break
+        texts.append(_block_text(parent, current))
+        current = parent
+    raw = " ".join(t for t in texts if t)
+    if CREDIT_WORDS.search(raw) or THEME_CREDIT.search(raw):
+        return "credit", ""
+    folded = " " + _fold_a(raw) + " "
+    match = BLOCK_RELATION.search(folded)
+    if match:
+        rest = re.split(r"[.,;:|•·()\[\]!?]", folded[match.end():].lstrip(" :-–—"))[0]
+        return "related", " ".join(rest.split()[:5])
+    return "", ""
+
+
+def _names_company(node: Any, contains: set[str]) -> bool:
+    """The link's own text, title or aria-label (or its icon's alt text) names the company."""
+    parts = [node.get_text(" ", strip=True), str(node.get("title") or ""), str(node.get("aria-label") or "")]
+    parts += [f'{img.get("alt") or ""} {img.get("title") or ""}' for img in node.find_all("img")]
+    label = _alnum(" ".join(parts))
+    return any(len(t) >= 4 and t in label for t in contains)
+
+
+def _admin_link(url: str) -> bool:
+    """A LinkedIn page's admin URL (/company/<id>/admin/...): whoever edits the site manages the page."""
+    return bool(re.search(r"linkedin\.[a-z.]+/company/[^/?#]+/admin(?:/|$|\?)", url, re.I))
+
+
+def _parent_names(rec: CompanyRecord) -> list[str]:
+    """The Brreg parent and ultimate parent names recorded for this company."""
+    return [
+        str(c["value"]["name"]) for c in rec.claims
+        if c.get("field") == "group_relationship" and isinstance(c.get("value"), dict)
+        and c["value"].get("relationship") in ("parent", "ultimate_parent") and c["value"].get("name")
+    ]
+
+
+def parent_account(account: str, contains: set[str], others: list[str]) -> bool:
+    """The account is a related company's (the Brreg parent, or the group a footer says the site is
+    part of), not this one's: it resembles that name, and this company's names carry a token the
+    other name lacks (its own legal word, verified brand or domain label) that the account does not.
+    A company named like its parent and nothing more (Consto AS under Consto Holding AS) has no such
+    token, so its group-named accounts (Constokonsern) stay; Consto Anlegg Nord AS's site does not
+    publish linkedin.com/company/consto-as."""
+    for other in others:
+        theirs, _ = identity_tokens([other], "", place_tokens=False)
+        if not theirs or not resembles(account, theirs, set()):
+            continue
+        marks = {t for t in contains if len(t) >= 4 and not any(t in o for o in theirs)}
+        if marks and not any(m in account for m in marks):
+            return True
+    return False
+
+
 @dataclass
 class Found:
     platform: str
@@ -676,19 +855,30 @@ def profiles_on_page(
     own_text: str = "",
     own_names: list[str] | None = None,
     own_words: set[str] | None = None,
+    parent_names: list[str] | None = None,
 ) -> list[Found]:
     """Company profiles a page of the company's own site links, in page order.
 
-    A named account must resemble the company and carry no other company's name; an account
-    known only by an id must sit in the site's header/footer social block or in the sameAs of
-    the site's own Organization; a link labelled as a sister, parent, partner or customer
-    company's is never the company's."""
+    A named account must resemble the company, carry no other company's name, and not be the
+    parent group's (``parent_names``: Brreg's parent and ultimate parent, read from ``rec`` when not
+    given). An account known only by an id is compared with nothing, so it needs other evidence: a
+    label naming the company, a LinkedIn admin URL, the sameAs of the site's own Organization, or,
+    for a link in the site's header/footer/social block, a named profile that passed on the same
+    page. Sitting in the footer or the menu is not evidence by itself. A link labelled as a sister,
+    parent, partner or customer company's is never the company's, and an icon block credited to a
+    web agency or theme, or headed by a group the site is part of, publishes no id-only account and
+    no account that names only that group."""
     base = snap.final_url
-    found: list[Found] = []
     own_names = own_names or []
     own_words = own_words or set()
+    if parent_names is None:
+        parent_names = _parent_names(rec) if rec is not None else []
+    taken: list[tuple[Found, bool]] = []  # (profile, kept only if a named profile passed on this page)
 
-    def take(raw: str, via: str, *, allow_id: bool = True, span: str | None = None) -> None:
+    def take(raw: str, via: str, *, ids: str = "none", span: str | None = None, related: str = "") -> None:
+        """``ids`` says how an id-only account may pass from here: "ok" (the label names the company,
+        or the site's own Organization sameAs), "sibling" (site chrome: if a named profile passes on
+        this page), "none" (only with a LinkedIn admin URL) or "never" (a credited or group block)."""
         if not raw or raw.startswith(("#", "mailto:", "tel:", "javascript:")):
             return
         try:
@@ -699,21 +889,40 @@ def profiles_on_page(
         if profile is None:
             return
         platform, canonical, handle = profile
-        if not owned_profile(handle, contains, prefixes, allow_id=allow_id, own_text=own_text):
-            return
+        item = Found(platform, canonical, handle, snap, span or raw.strip()[:300], via)
         account = account_name(handle)
-        if account and not id_like(handle) and names_other_company(account, contains, prefixes, own_words):
+        if id_like(handle) or not account:
+            if ids == "ok" or (ids != "never" and _admin_link(url)):
+                taken.append((item, False))
+            elif ids == "sibling":
+                taken.append((item, True))
             return
-        found.append(Found(platform, canonical, handle, snap, span or raw.strip()[:300], via))
+        if not owned_profile(handle, contains, prefixes, own_text=own_text):
+            return
+        if names_other_company(account, contains, prefixes, own_words):
+            return
+        if parent_account(account, contains, parent_names + ([related] if related else [])):
+            return
+        taken.append((item, False))
+
+    def route(node: Any) -> tuple[str, str]:
+        kind, related = _icon_block(node)
+        if kind:
+            return "never", related
+        if _names_company(node, contains):
+            return "ok", ""
+        return ("sibling" if _in_site_chrome(node) else "none"), ""
 
     for anchor in soup.find_all("a", href=True):
-        if _credit_link(anchor) or _related_link(anchor, own_names):
+        if not _social_href(str(anchor["href"])) or _credit_link(anchor) or _related_link(anchor, own_names):
             continue
-        take(anchor["href"], "anchor", allow_id=_in_site_chrome(anchor))
+        ids, related = route(anchor)
+        take(anchor["href"], "anchor", ids=ids, related=related)
     for node in soup.find_all(attrs={"data-href": True}):
-        if _related_link(node, own_names):
+        if not _social_href(str(node.get("data-href") or "")) or _related_link(node, own_names):
             continue
-        take(str(node.get("data-href") or ""), "data_href", allow_id=_in_site_chrome(node))
+        ids, related = route(node)
+        take(str(node.get("data-href") or ""), "data_href", ids=ids, related=related)
     for frame in soup.find_all("iframe", src=True):
         if _related_link(frame, own_names):
             continue
@@ -722,9 +931,10 @@ def profiles_on_page(
             params = parse_qs(urlsplit(urljoin(base, src)).query)
         except ValueError:
             continue
+        ids, related = route(frame) if any(params.get(k) for k in ("href", "u", "url")) else ("none", "")
         for key in ("href", "u", "url"):
             for value in params.get(key, [])[:1]:
-                take(value, "embed_iframe", span=src[:300], allow_id=_in_site_chrome(frame))
+                take(value, "embed_iframe", span=src[:300], ids=ids, related=related)
     for item in json_ld_items(soup):
         if _types(item) & {"Person", "Product", "Event", "Offer", "JobPosting", "Review"}:
             continue
@@ -733,14 +943,15 @@ def profiles_on_page(
         same_as = item.get("sameAs")
         for url in same_as if isinstance(same_as, list) else [same_as] if same_as else []:
             if isinstance(url, str):
-                take(url, "json_ld_sameAs", allow_id=bool(_types(item) & ORG_TYPES))
+                take(url, "json_ld_sameAs", ids="ok" if _types(item) & ORG_TYPES else "none")
     for script in soup.find_all("script"):
         if "ld+json" in (script.get("type") or "").lower():
             continue
         text = script.string or script.get_text() or ""
         for m in _SCRIPT_PROFILE_RE.finditer(text):
-            take(m.group(0).replace("\\/", "/"), "script_data", allow_id=False, span=m.group(0)[:300])
-    return found
+            take(m.group(0).replace("\\/", "/"), "script_data", ids="none", span=m.group(0)[:300])
+    named = any(account_name(f.handle) and not id_like(f.handle) for f, _ in taken)
+    return [f for f, needs_named in taken if named or not needs_named]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1808,8 +2019,10 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # -- social profiles from every page of the site that was read --------------------------------
     profiles: dict[str, Found] = {}
     per_platform: dict[str, int] = {}
+    p_contains, p_prefixes, p_text, p_names, p_words = _profile_identity(rec, brand_names, home.final_url)
+    parents = [] if company_label == "group_site" else _parent_names(rec)
     for snap, soup, _ in own_pages():
-        for found in profiles_on_page(snap, soup, snap.text(), contains, prefixes, rec, own_text, own_names, own_words):
+        for found in profiles_on_page(snap, soup, snap.text(), p_contains, p_prefixes, rec, p_text, p_names, p_words, parents):
             key = found.url.lower()
             if key in profiles or per_platform.get(found.platform, 0) >= MAX_PROFILES_PER_PLATFORM:
                 continue
@@ -2174,6 +2387,24 @@ def _brand_and_contacts(rec: CompanyRecord, home: Snapshot, pages: list[tuple[Sn
     elif not contacts_only:
         rec.set_state("contact_channels", "not_available", "no phone or e-mail in the register or on the verified website")
     return brands
+
+
+def _profile_identity(rec: CompanyRecord, brand_names: list[str], site_url: str) -> tuple[set[str], set[str], str, list[str], set[str]]:
+    """(contains, prefixes, own_text, own_names, own_words) for judging the site's profile links.
+
+    The legal and subunit names always count; the site's brand names (the published public brand,
+    JSON-LD name, og:site_name, <title>) count only as far as ``identity_brands`` admits them, so a
+    title such as "Hjem" or "Utleiemegler Oslo" adds no token. Former names never count."""
+    entity = rec.context.get("entity") or {}
+    legal = [n for n in [entity.get("navn") or ""] + [s.get("name") or "" for s in rec.context.get("subunits") or []] if n]
+    published = [c["value"] for c in rec.claims if c["field"] == "public_brand_name" and isinstance(c["value"], str)]
+    brands = list(dict.fromkeys(published + list(brand_names)))
+    names = legal + identity_brands(brands, legal, site_url)
+    contains, prefixes = identity_tokens(names, site_url, place_tokens=False)
+    own_text = " ".join(_fold_a(n) for n in names) + " " + " ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)) for n in names)
+    own_names = sorted({" ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)).split()) for n in names} | {" ".join(_fold_a(t) for t in name_tokens(n)) for n in names}, key=len, reverse=True)
+    own_words = {re.sub(r"[^a-z0-9]", "", f(w)) for n in names for w in name_tokens(n) for f in (_fold_a, _fold_b)} | set(re.split(r"[^a-z0-9]+", _site(site_url).split(".")[0]))
+    return contains, prefixes, own_text, own_names, own_words
 
 
 def _publish_profiles(rec: CompanyRecord, profiles: list[Found], exact: bool, company_label: str | None, pages: list[tuple[Snapshot, BeautifulSoup, str]]) -> None:

@@ -143,18 +143,132 @@ class SocialTests(unittest.TestCase):
 
     def test_id_only_accounts_need_the_site_social_block(self) -> None:
         """Codex review rc1 finding 4: a numeric Facebook/YouTube account in body content is not
-        published; in the footer social block or the site's own Organization sameAs it is."""
+        published; in the footer social block beside a named profile, or in the site's own
+        Organization sameAs, it is."""
         html = """<html><head><script type="application/ld+json">{"@type":"Organization","name":"Fjordbygg AS","sameAs":["https://www.linkedin.com/company/7654321/"]}</script>
         <script type="application/ld+json">{"@type":"WebPage","name":"Fjordbygg AS","sameAs":["https://www.facebook.com/profile.php?id=100099999999999"]}</script></head>
         <body><article><p>Les om prosjektet <a href="https://www.facebook.com/profile.php?id=100012345678901">her</a> og
         <a href="https://www.youtube.com/channel/UCbodybodybodybodybody12">se videoen</a>.</p></article>
-        <div class="social-icons"><a href="https://www.facebook.com/profile.php?id=100055555555555">Facebook</a></div></body></html>"""
+        <div class="social-icons"><a href="https://www.facebook.com/profile.php?id=100055555555555">Facebook</a>
+        <a href="https://www.instagram.com/fjordbygg/">Instagram</a></div></body></html>"""
         found = self._profiles(html)
         self.assertIn("https://facebook.com/profile.php?id=100055555555555", found)
+        self.assertIn("https://instagram.com/fjordbygg", found)
         self.assertIn("https://linkedin.com/company/7654321", found)
         self.assertNotIn("https://facebook.com/profile.php?id=100012345678901", found)
         self.assertNotIn("https://youtube.com/channel/UCbodybodybodybodybody12", found)
         self.assertNotIn("https://facebook.com/profile.php?id=100099999999999", found)
+
+    def test_id_only_account_in_site_chrome_needs_evidence(self) -> None:
+        """Audit 23 Oct R2 (HIPAQ): an id-only link is compared with no name, so sitting in the nav or
+        footer is not enough. It needs a named profile that passed on the same page, a label naming
+        the company, a LinkedIn admin URL, or the site's own Organization sameAs."""
+        alone = """<html><body><nav><ul class="sf-menu"><li class="menu-item"><a href="https://www.linkedin.com/company/11362983/">LinkedIn</a></li></ul></nav>
+        <footer><div class="social"><a href="https://www.facebook.com/profile.php?id=61565700511472">Facebook</a>
+        <a href="https://twitter.com/">Twitter</a><a href="https://instagram.com/">Instagram</a></div></footer></body></html>"""
+        self.assertEqual(self._profiles(alone), {})
+        labelled = """<html><body><footer><a aria-label="Fjordbygg på Facebook" href="https://www.facebook.com/profile.php?id=100055555555555"><i class="fa-facebook"></i></a>
+        <a href="https://www.linkedin.com/company/17993528/admin/feed/posts/">LinkedIn</a></footer>
+        <main><p>Se <a href="https://www.youtube.com/channel/UCbodybodybodybodybody12">YouTube</a></p></main></body></html>"""
+        self.assertEqual(set(self._profiles(labelled)), {"https://facebook.com/profile.php?id=100055555555555", "https://linkedin.com/company/17993528"})
+        # A named account elsewhere on the page does not admit an id-only link in body text.
+        body = """<html><body><footer><a href="https://www.facebook.com/fjordbygg">Facebook</a></footer>
+        <article><a href="https://www.youtube.com/channel/UCbodybodybodybodybody12">video</a></article></body></html>"""
+        self.assertEqual(list(self._profiles(body)), ["https://facebook.com/fjordbygg"])
+
+    def test_page_title_words_are_not_identity_tokens(self) -> None:
+        """Audit 23 Oct R1: a brand from the <title> or og:site_name counts only when it shares a word
+        with the legal name or the domain, and page words (Hjem, Forside, Home, Nettbutikk) never do."""
+        ib = harvest.identity_brands
+        self.assertEqual(ib(["Hjem", "Forside", "Home page", "Nettbutikk"], ["NORDIC SUPPLY PARTNER AS"], "https://nsp.no/"), [])
+        self.assertEqual(ib(["Utleiemegler Oslo"], ["ENKLERE UTLEIE AS"], "https://enklereutleie.no/"), [])
+        self.assertEqual(ib(["Bruktbilforhandler i Mosjøen"], ["AUTONEXT AS"], "https://www.auto-next.no/"), [])
+        self.assertEqual(ib(["Hexagon Ragasco"], ["RAGASCO AS"], "https://www.ragasco.com/"), ["Hexagon Ragasco"])
+        self.assertEqual(ib(["Kviltorp Camping"], ["NAF CAMP MOLDE AS"], "https://kviltorpcamping.no/"), ["Kviltorp Camping"])
+        self.assertEqual(ib(["Hjem | Blomsterdekor"], ["BLOMSTERDEKOR BERGEN AS"], "https://blomsterdekor.no/"), ["Blomsterdekor"])
+        contains, prefixes = harvest.identity_tokens(["NORDIC SUPPLY PARTNER AS"], "https://nsp.no/", brands=["Hjem"])
+        self.assertFalse(harvest.resembles("hjemmesideproffen", contains, prefixes))
+        home_html = """<html><head><title>Hjem - Blomsterdekor Bergen</title></head><body><footer>
+        <a href="https://www.facebook.com/blomsterdekortaarnplass">Facebook</a><a href="https://www.facebook.com/hjemmesideproffen">Facebook</a>
+        </footer></body></html>"""
+        rec = record("BLOMSTERDEKOR BERGEN AS")
+        visit = SiteVisit(FakeFetcher({}, robots="User-agent: *\\nAllow: /\\n"), rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.blomsterdekor.no/", home_html)
+        soup, _html, text = parse(home)
+        visit.pages.append((home, soup, text))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+        self.assertEqual([c["value"]["url"] for c in rec.claims if c["field"] == "social_profile"], ["https://facebook.com/blomsterdekortaarnplass"])
+
+    def test_place_word_alone_is_not_a_match(self) -> None:
+        """Audit 23 Oct R5: Klinikk Trondheim's "trondheim" must not admit visittrondheim or a
+        Trondheim web agency; EiehjelpenOslo passed for Enklere Utleie only on "oslo"."""
+        contains, prefixes = harvest.identity_tokens(["KLINIKK TRONDHEIM AS"], "https://klinikktrondheim.no/", place_tokens=False)
+        self.assertNotIn("trondheim", contains)
+        self.assertFalse(harvest.resembles("visittrondheim", contains, prefixes))
+        self.assertFalse(harvest.resembles("trondheimwebbyra", contains, prefixes))
+        self.assertTrue(harvest.resembles("klinikktrondheim", contains, prefixes))
+        contains, prefixes = harvest.identity_tokens(["ENKLERE UTLEIE AS"], "https://enklereutleie.no/", brands=["Utleiemegler Oslo", "Oslo"], place_tokens=False)
+        self.assertFalse(harvest.owned_profile("EiehjelpenOslo", contains, prefixes))
+        contains, prefixes = harvest.identity_tokens(["SPORTSPROFIL NORGE AS"], "https://sportsprofil.no/", place_tokens=False)
+        self.assertTrue(harvest.resembles("sportsprofil", contains, prefixes))
+        self.assertFalse(harvest.resembles("visitnorge", contains, prefixes))
+
+    def _group_rec(self, name: str, parent: str) -> CompanyRecord:
+        rec = record(name)
+        rec.add_claim(family="legal_identity", field_name="group_relationship", value={"relationship": "parent", "organisation_number": "995754606", "name": parent},
+                      key=["parent", "995754606"], evidence_ids=["ev-test"], method="official_register")
+        return rec
+
+    def test_parent_group_account_on_subsidiary_site(self) -> None:
+        """Audit 23 Oct R10: on Consto Anlegg Nord AS's own site, linkedin.com/company/consto-as is the
+        parent's (Brreg parent CONSTO AS). Consto AS itself, under Consto Holding AS, keeps its group
+        page facebook.com/Constokonsern: its name carries nothing the parent's lacks."""
+        html = """<html><body><footer><a href="https://www.linkedin.com/company/consto-as/">LinkedIn</a>
+        <a href="https://www.facebook.com/constoanleggnord">Facebook</a></footer></body></html>"""
+        rec = self._group_rec("CONSTO ANLEGG NORD AS", "CONSTO AS")
+        page = snap("https://www.constoanleggnord.no/", html)
+        contains, prefixes = harvest.identity_tokens(["CONSTO ANLEGG NORD AS"], page.final_url)
+        found = [f.url for f in harvest.profiles_on_page(page, soup_of(html), html, contains, prefixes, rec)]
+        self.assertEqual(found, ["https://facebook.com/constoanleggnord"])
+        html = """<html><body><footer><a href="https://www.linkedin.com/company/consto-as/">LinkedIn</a>
+        <a href="https://www.facebook.com/Constokonsern">Facebook</a></footer></body></html>"""
+        rec = self._group_rec("CONSTO AS", "CONSTO HOLDING AS")
+        page = snap("https://consto.no/", html)
+        contains, prefixes = harvest.identity_tokens(["CONSTO AS"], page.final_url)
+        found = [f.url for f in harvest.profiles_on_page(page, soup_of(html), html, contains, prefixes, rec)]
+        self.assertEqual(found, ["https://linkedin.com/company/consto-as", "https://facebook.com/Constokonsern"])
+        # A subsidiary's own brand account that also carries the parent's name stays (HexagonRagasco).
+        contains, _ = harvest.identity_tokens(["RAGASCO AS"], "https://www.ragasco.com/", brands=["Hexagon Ragasco"])
+        self.assertFalse(harvest.parent_account("hexagonragasco", contains, ["HEXAGON COMPOSITES ASA"]))
+        self.assertTrue(harvest.parent_account("hexagoncomposites", contains, ["HEXAGON COMPOSITES ASA"]))
+
+    def test_footer_group_heading_and_agency_icon_row(self) -> None:
+        """Audit 23 Oct (footer chrome, R11): a "Del av X-gruppen" heading over a footer icon row
+        refuses the ids in it and the accounts that name only X; an agency credit with its own icon
+        row refuses its ids even past three links. The company's own named icons stay, and a
+        "Consto konsern" heading over Consto AS's own icons is not a relation."""
+        html = """<html><body><footer><div class="col"><p>Fjellvegen 1, 9000 Tromsø. Telefon 77 00 00 00. E-post post@constoanleggnord.no.
+        Åpningstider mandag til fredag 07-15, lørdag stengt, søndag stengt. Org.nr 999 999 999.</p>
+        <h4>Del av <a href="https://consto.no/">Consto-gruppen</a></h4><ul class="social">
+        <li><a href="https://www.linkedin.com/company/consto-as/">LinkedIn</a></li>
+        <li><a href="https://www.facebook.com/profile.php?id=100012121212121">Facebook</a></li>
+        <li><a href="https://www.instagram.com/constoanleggnord/">Instagram</a></li>
+        <li><a href="https://www.youtube.com/channel/UCconstoconstoconsto12">YouTube</a></li></ul></div>
+        <div class="credit">Nettside levert av Webbyrå <a href="https://www.facebook.com/profile.php?id=100034343434343">f</a>
+        <a href="https://www.instagram.com/webbyraa/">i</a><a href="https://www.linkedin.com/company/99887766/">l</a></div></footer></body></html>"""
+        page = snap("https://www.constoanleggnord.no/", html)
+        contains, prefixes = harvest.identity_tokens(["CONSTO ANLEGG NORD AS"], page.final_url)
+        found = [f.url for f in harvest.profiles_on_page(page, soup_of(html), html, contains, prefixes, record("CONSTO ANLEGG NORD AS"))]
+        self.assertEqual(found, ["https://instagram.com/constoanleggnord"])
+        own = """<html><body><footer><div class="social"><h4>Følg Consto konsern</h4>
+        <a href="https://www.facebook.com/Constokonsern">Facebook</a><a href="https://www.linkedin.com/company/consto-as/">LinkedIn</a>
+        <a href="https://www.youtube.com/channel/UCconstoconstoconsto12">YouTube</a><a href="https://www.instagram.com/consto_as/">Instagram</a></div>
+        <p>© Kitron Group</p></footer></body></html>"""
+        page = snap("https://consto.no/", own)
+        contains, prefixes = harvest.identity_tokens(["CONSTO AS"], page.final_url)
+        found = [f.url for f in harvest.profiles_on_page(page, soup_of(own), own, contains, prefixes, record("CONSTO AS"))]
+        self.assertEqual(found, ["https://facebook.com/Constokonsern", "https://linkedin.com/company/consto-as",
+                                 "https://youtube.com/channel/UCconstoconstoconsto12", "https://instagram.com/consto_as"])
 
     def test_own_regional_and_group_accounts_stay(self) -> None:
         contains, prefixes = harvest.identity_tokens(["CONSTO AS"], "https://consto.no/")
