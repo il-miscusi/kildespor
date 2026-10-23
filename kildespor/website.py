@@ -1153,6 +1153,7 @@ class _Evidence:
         self.numbers: dict[str, tuple[str, str, Snapshot]] = {}
         self.contacts: dict[str, tuple[str, Snapshot]] = {}
         self.texts: list[str] = []
+        self.by_snap: list[tuple[Snapshot, str]] = []
 
     def add(self, sig: RegisterSignals, org: str, snap: Snapshot, soup: BeautifulSoup, text: str) -> None:
         rank = {"owner": 3, "bare": 2, "mention": 1, "credit": 0}
@@ -1168,6 +1169,10 @@ class _Evidence:
         for key, span in contact_signals(sig, text, html, soup).items():
             self.contacts.setdefault(key, (span, snap))
         self.texts.append(text)
+        self.by_snap.append((snap, text))
+
+    def text_of(self, snap: Snapshot) -> str:
+        return next((text for s, text in self.by_snap if s is snap), "")
 
     def own(self, org: str) -> tuple[str, str, Snapshot] | None:
         return self.numbers.get(org)
@@ -1451,6 +1456,15 @@ def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig
                 rec.context["website_ambiguous"] = snap.final_url
                 rec.context["website_ambiguous_reason"] = (f"{snap.final_url} prints organisation number {home_owners[0]} as its own; "
                                                            f"this one appears only on {own[2].final_url}")
+                return None
+            proof_text = ev.text_of(own[2]) if own[2] is not snap else ""
+            listed = sorted(n for n, (kind, _) in number_contexts(proof_text).items() if kind == "owner" and n not in related)
+            if listed:
+                # "Dør & Vindu Halden AS org.nr ... Dør & Vindu Moss AS org.nr ...": a deeper page that lists several
+                # companies as owners belongs to all of them (a shared chain or group site), not to this one alone.
+                rec.context["website_ambiguous"] = snap.final_url
+                rec.context["website_ambiguous_reason"] = (f"{own[2].final_url} prints this organisation number beside another company's "
+                                                           f"({listed[0]}); the site is shared")
                 return None
             other = _number_named_for_another(own[1], org, sig)
             if other:

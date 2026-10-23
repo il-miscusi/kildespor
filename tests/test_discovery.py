@@ -765,6 +765,16 @@ class ChainStorePages(unittest.TestCase):
         self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
         self.assertIn("as its own", rec.context.get("website_ambiguous_reason", ""))
 
+    def test_terms_page_listing_two_sister_shops_is_ambiguous(self) -> None:
+        cache = FakeCaches(social=[{"url": "https://dorogvindu.no/salgsbetingelser", "kind": "website", "platform": None, "source": "overture",
+                                    "match_rule": "overture_name_postcode", "source_record": "https://dorogvindu.no/salgsbetingelser"}])
+        rec = make_rec(name="DØR & VINDU HALDEN AS", phone=None)
+        pages = {"https://dorogvindu.no/": html("Dør & Vindu", "<a href='/salgsbetingelser'>Salgsbetingelser</a>"),
+                 "https://dorogvindu.no/salgsbetingelser": html("Salgsbetingelser", f"Dør & Vindu Halden AS Peder Ankers gate 19 1771 Halden Org. Nr.: {ORG[:3]} {ORG[3:6]} {ORG[6:]} "
+                                                                    f"Dør & Vindu Moss AS Årvollskogen 1 1529 Moss Org. Nr.: {OTHER}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
+        self.assertIn("shared", rec.context.get("website_ambiguous_reason", ""))
+
     def test_number_on_the_contact_page_of_a_site_without_another_owner_still_verifies(self) -> None:
         cache = FakeCaches(social=[{"url": "https://berg.no/kontakt", "kind": "website", "platform": None, "source": "noindex",
                                     "match_rule": "single", "source_record": "https://berg.no/kontakt"}])
