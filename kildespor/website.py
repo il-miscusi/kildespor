@@ -101,6 +101,7 @@ PARKED_MARKERS = (
     "sedo domain", "dan.com", "afternic", "parkingcrew", "bodis", "this domain may be for sale", "domenet er registrert",
     "domain has been registered", "webhotell", "uniweb", "webhuset", "default page", "it works!", "welcome to nginx",
     "plesk", "cpanel", "index of /", "account suspended", "site not found", "under oppbygging",
+    "my wordpress blog", "just another wordpress site", "welcome to wordpress. this is your first post", "velkommen til wordpress",
 )
 CONTACT_HINTS = re.compile(
     r"kontakt|contact|om-oss|om_oss|omoss|om oss|about|personvern|privacy|vilk[aå]r|terms|impressum|informasjonskapsler|cookie|"
@@ -1380,8 +1381,22 @@ def _name_domain_rule(fetcher: Fetcher | None, rec: CompanyRecord, sig: Register
     legal_name = sig.names[0]
     if not _stem_matches_name(site_domain, [legal_name], min_len=5):
         return None
-    name_hit = next(((label, part) for label, part in parts if label in ("title", "og:site_name", "h1", "copyright", "JSON-LD name", "JSON-LD legalName")
-                     and name_in_part(legal_name, part)), None)
+    # The identity text gives the legal name as registered, legal form included ("Setesdal Brannservice AS",
+    # "Procona as"): the site claims the one entity of that name. A brand without its form does not
+    # (fbproductions.no is a photographer's "FB Productions", not FB PRODUCTIONS AS, a vehicle rental firm).
+    tokens = [t for t in core_tokens(legal_name) if t not in ("og", "and")]
+    folded_name = " ".join(_fold(t) for t in name_tokens(legal_name))
+    registered_words = re.findall(r"[a-z0-9æøåäöüé]+", legal_name.lower().replace("&", " og "))
+    form = registered_words[-1] if registered_words and registered_words[-1] in LEGAL_SUFFIXES else ""
+    phrases = {" ".join(tokens), "".join(tokens), folded_name, folded_name.replace(" ", "")}
+    name_hit = None
+    for label, part in parts:
+        if label not in ("title", "og:site_name", "h1", "copyright", "JSON-LD name", "JSON-LD legalName"):
+            continue
+        norm = " " + " ".join(_norm_part(part).replace("|", " ").split()) + " "
+        if any(f" {ph} {form} " in norm if form else (f" {ph} " in norm and name_in_part(legal_name, part)) for ph in phrases if ph):
+            name_hit = (label, part)
+            break
     if not name_hit:
         return None
     our_cores = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
@@ -1392,15 +1407,9 @@ def _name_domain_rule(fetcher: Fetcher | None, rec: CompanyRecord, sig: Register
         return None
     if SERVICE_PROVIDER_WORDS.search(" ".join(part for _, part in parts)) and not SERVICE_PROVIDER_WORDS.search(legal_name):
         return None
-    tokens = [t for t in core_tokens(legal_name) if t not in ("og", "and")]
     folded = " ".join(_norm_part(t) for t in ev.texts).replace("|", " ")
     if re.search(rf"(?:^| ){re.escape(' '.join(tokens))} (?:{FOREIGN_FORMS.lower()})(?= |$)", folded):
         return None
-    if len(tokens) == 1:
-        # a one-word name ("Addvia") must stand with its own legal form somewhere on the pages ("Addvia AS")
-        form = re.escape(getattr(sig, "form", "") or "") or "as|asa"
-        if not re.search(rf"(?:^| ){re.escape(tokens[0])} (?:{form})(?= |$)", folded):
-            return None
     namesakes, search = _register_namesakes(fetcher, rec, sig)
     if namesakes is None or namesakes:
         if namesakes:

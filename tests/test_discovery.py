@@ -913,36 +913,55 @@ class PoolVerifiedIdentity(unittest.TestCase):
     def silent_sea(self):
         return make_rec(name="SILENT SEA AS", phone=None, street="Ukjent vei 9")
 
-    def test_no_domain_spelling_the_name_with_the_name_in_its_title_and_no_namesake(self) -> None:
-        pages = {"https://silentsea.no/": html("Silent Sea", "Elektrisk fremdrift gjør båtlivet bedre")}
+    def test_no_domain_spelling_the_name_with_the_legal_name_in_its_title_and_no_namesake(self) -> None:
+        pages = {"https://silentsea.no/": html("Silent Sea AS", "Elektrisk fremdrift gjør båtlivet bedre")}
         self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"]), [("name_and_domain_spells_name", "https://silentsea.no/")])
 
+    def test_the_brand_without_its_legal_form_is_not_enough(self) -> None:
+        # fbproductions.no: a photographer's "FB Productions", while FB PRODUCTIONS AS rents out vehicles
+        rec = make_rec(name="FB PRODUCTIONS AS", phone=None, street="Ukjent vei 9")
+        pages = {"https://www.fbproductions.no/": html("FB Productions – Reklamefilm. Eventfilm. Foto", "Om meg")}
+        self.assertEqual(self.run_with_search(rec, pages, ["fbproductions.no"]), [])
+
+    def test_a_name_without_a_legal_form_stands_as_registered(self) -> None:
+        rec = make_rec(name="ALVDAL BADSTUELAUG", phone=None, street="Ukjent vei 9", form="FLI")
+        pages = {"https://alvdalbadstuelaug.no/": html("Alvdal Badstuelaug", "Badstua foran iskalde Kvennbekken")}
+        self.assertEqual([m for m, _ in self.run_with_search(rec, pages, ["alvdalbadstuelaug.no"])], ["name_and_domain_spells_name"])
+
+    def test_default_wordpress_install_is_parked(self) -> None:
+        rec = make_rec(name="PRS GRUPPEN AS", phone=None, street="Ukjent vei 9")
+        pages = {"https://prsgruppen.no/": html("prsgruppen – My WordPress Blog – prsgruppen AS", "Hello world! Welcome to WordPress. This is your first post.")}
+        self.assertEqual(self.run_with_search(rec, pages, ["prsgruppen.no"]), [])
+
     def test_a_namesake_in_the_register_refuses(self) -> None:
-        pages = {"https://silentsea.no/": html("Silent Sea", "Elektrisk fremdrift")}
+        pages = {"https://silentsea.no/": html("Silent Sea AS", "Elektrisk fremdrift")}
         rec = self.silent_sea()
         self.assertEqual(self.run_with_search(rec, pages, ["silentsea.no"], namesakes=["SILENT SEA HOLDING AS (911111111)"]), [])
         self.assertIn("other entities", rec.context["website_ambiguous_reason"])
 
     def test_a_failed_register_search_refuses(self) -> None:
-        pages = {"https://silentsea.no/": html("Silent Sea", "Elektrisk fremdrift")}
+        pages = {"https://silentsea.no/": html("Silent Sea AS", "Elektrisk fremdrift")}
         self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"], namesakes=None), [])
 
     def test_a_com_namesake_never_passes(self) -> None:
         # estrella.com is a home builder in Arizona, not ESTRELLA AS
         rec = make_rec(name="ESTRELLA AS", phone=None, street="Ukjent vei 9")
-        pages = {"https://estrella.com/": html("New Homes in Goodyear AZ | Estrella", "Estrella AS")}
+        pages = {"https://estrella.com/": html("Estrella AS | New Homes in Goodyear AZ", "Estrella AS")}
         self.assertEqual(self.run_with_search(rec, pages, ["estrella.com"]), [])
 
-    def test_a_one_word_name_needs_its_legal_form_on_the_page(self) -> None:
+    def test_a_one_word_name_needs_its_legal_form_in_the_identity_text(self) -> None:
         rec = make_rec(name="ADDVIA AS", phone=None, street="Ukjent vei 9")
-        self.assertEqual(self.run_with_search(rec, {"https://addvia.no/": html("Addvia", "Rådgivning")}, ["addvia.no"]), [])
+        self.assertEqual(self.run_with_search(rec, {"https://addvia.no/": html("Addvia", "Addvia AS")}, ["addvia.no"]), [])
         self.assertEqual([m for m, _ in self.run_with_search(rec, {"https://addvia.no/": html("Addvia AS", "Rådgivning")}, ["addvia.no"])],
+                         ["name_and_domain_spells_name"])
+        rec = make_rec(name="TP ELECTRONICS AS", phone=None, street="Ukjent vei 9")
+        self.assertEqual([m for m, _ in self.run_with_search(rec, {"https://tpelectronics.no/": html("TPelectronics AS", "Utvikling")}, ["tpelectronics.no"])],
                          ["name_and_domain_spells_name"])
 
     def test_holding_company_or_another_number_never_passes(self) -> None:
         rec = make_rec(name="NORDLYS HOLDING AS", phone=None, street="Ukjent vei 9")
-        self.assertEqual(self.run_with_search(rec, {"https://nordlysholding.no/": html("Nordlys Holding", "Eiendom")}, ["nordlysholding.no"]), [])
-        pages = {"https://silentsea.no/": html("Silent Sea", f"Levert av Båtfirma AS org.nr {OTHER}")}
+        self.assertEqual(self.run_with_search(rec, {"https://nordlysholding.no/": html("Nordlys Holding AS", "Eiendom")}, ["nordlysholding.no"]), [])
+        pages = {"https://silentsea.no/": html("Silent Sea AS", f"Levert av Båtfirma AS org.nr {OTHER}")}
         self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"]), [])
 
     def test_own_name_run_together_or_misspelt_is_not_another_entity(self) -> None:
