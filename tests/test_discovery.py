@@ -775,6 +775,29 @@ class ChainStorePages(unittest.TestCase):
         self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
         self.assertIn("shared", rec.context.get("website_ambiguous_reason", ""))
 
+    def test_terms_page_listing_register_linked_stores_is_ambiguous(self) -> None:
+        # dorogvindu.no: nine stores, each with its own "Org. Nr.", all linked to one parent in the register. The
+        # group link must not make their numbers "related": the site is the chain's, not the Halden store's.
+        cache = FakeCaches(social=[{"url": "https://dorogvindu.no/salgsbetingelser", "kind": "website", "platform": None, "source": "overture",
+                                    "match_rule": "overture_name_postcode", "source_record": "https://dorogvindu.no/salgsbetingelser"}])
+        rec = make_rec(name="DØR & VINDU HALDEN AS", phone=None)
+        rec.context["group_orgs"] = {ORG, OTHER, OTHER2, OTHER3}
+        pages = {"https://dorogvindu.no/": html("Dør & Vindu", "<a href='/salgsbetingelser'>Salgsbetingelser</a> Kopirett 2026 © Dør & Vindu Gruppen AS"),
+                 "https://dorogvindu.no/salgsbetingelser": html("Salgsbetingelser", f"Dør & Vindu Halden AS Halden Org. Nr.: {ORG[:3]} {ORG[3:6]} {ORG[6:]} "
+                                                                    f"Dør & Vindu Moss AS Moss Org. Nr.: {OTHER} Dør & Vindu Skien AS Skien Org. Nr.: {OTHER2}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
+        self.assertIn("shared", rec.context.get("website_ambiguous_reason", ""))
+
+    def test_group_parent_listing_its_subsidiaries_still_verifies(self) -> None:
+        cache = FakeCaches(social=[{"url": "https://konsern.no/kontakt", "kind": "website", "platform": None, "source": "noindex",
+                                    "match_rule": "single", "source_record": "https://konsern.no/kontakt"}])
+        rec = make_rec(name="KONSERN AS", phone=None)
+        rec.context["group_orgs"] = {ORG, OTHER, OTHER2}
+        rec.context["group_root"] = ORG
+        pages = {"https://konsern.no/": html("Konsern", "Vi eier selskaper"),
+                 "https://konsern.no/kontakt": html("Kontakt", f"Konsern AS org.nr {ORG} Datter A AS org.nr {OTHER} Datter B AS org.nr {OTHER2}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [("organisation_number_on_site", "https://konsern.no/")])
+
     def test_number_on_the_contact_page_of_a_site_without_another_owner_still_verifies(self) -> None:
         cache = FakeCaches(social=[{"url": "https://berg.no/kontakt", "kind": "website", "platform": None, "source": "noindex",
                                     "match_rule": "single", "source_record": "https://berg.no/kontakt"}])

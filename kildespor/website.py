@@ -1604,8 +1604,11 @@ def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig
                                                            f"this one appears only on {own[2].final_url}")
                 return None
             proof_text = ev.text_of(own[2]) if own[2] is not snap else ""
-            listed = sorted(n for n, (kind, _) in number_contexts(proof_text).items() if kind == "owner" and n not in related)
-            if listed:
+            owners_listed = sorted(n for n, (kind, _) in number_contexts(proof_text).items() if kind == "owner" and n not in own_numbers)
+            # The register's group (parent and sister companies) is no excuse here: nine stores of a chain, each with its
+            # own "Org. Nr.", are all register-linked, and the page still belongs to the chain, not to one of them.
+            listed = [n for n in owners_listed if n not in related] or (owners_listed if len(owners_listed) >= 2 else [])
+            if listed and rec.context.get("group_root") != org:
                 # "Dør & Vindu Halden AS org.nr ... Dør & Vindu Moss AS org.nr ...": a deeper page that lists several
                 # companies as owners belongs to all of them (a shared chain or group site), not to this one alone.
                 rec.context["website_ambiguous"] = snap.final_url
