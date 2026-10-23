@@ -1,6 +1,6 @@
 # 100-company smoke test
 
-Code commit: `9d1b1fd3f8f2eb5c166e8702fc88a2afab79433e` (this folder was added in the following commit; it changes no code).
+Code commit: `48551ac296578b5566e4787b64f3bff1dd74bb1a` (this folder was added in the following commit; it changes no code).
 
 Run on a Kaggle CPU machine: the repository at that commit in a fresh directory, an empty
 virtualenv, `pip install -r requirements.txt`, the unit tests, then the documented run command
@@ -16,9 +16,9 @@ companies return exactly what the full files return.
 - Inputs: 100; envelopes emitted: 100; validation: **passed**
 - Checks: exact_expected_count = True, same_order_and_membership = True, unique_organisation_numbers = True, all_states_terminal = True, every_available_claim_has_evidence = True, every_evidence_id_resolves = True, every_external_claim_span_in_source = True
 - Envelope states: {'available': 100}
-- Wall clock: 60.6 s; requests: 1008 (10.1 per company); request latency p50 230 ms, p95 1420 ms
+- Wall clock: 73.3 s; requests: 1010 (10.1 per company); request latency p50 854 ms, p95 3718 ms
 - Third-party cost: $0.00; language-model calls: 0
-- Evidence-backed claims: 7039; evidence records: 7061
+- Evidence-backed claims: 7040; evidence records: 7062
 
 ## Coverage (companies with at least one evidence-backed fact)
 
@@ -53,4 +53,4 @@ companies return exactly what the full files return.
 
 - `envelopes.jsonl`: one terminal envelope per input
 - `run-report.json`, `refresh-report.json`: machine-readable run reports
-- `site/`: the viewer for this run (open `site/index.html` in a browser; routes `#/research`, `#/companies/<org>`, `#/compare?orgs=a,b`, `#/refresh`)
+- `index.html` and `site/`: the viewer for this run. Open `index.html` (the research page) in a browser, or serve the folder with `python -m kildespor.serve --dir smoke-test`; pages sit at `site/research/`, `site/companies/<org>/`, `site/compare/?orgs=a,b` and `site/refresh/` (the old `#/` routes still work)
