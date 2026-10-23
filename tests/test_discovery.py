@@ -738,6 +738,22 @@ class LegalPageDepth(unittest.TestCase):
                                    "https://fjellglimtrehab.no/om-oss", "https://fjellglimtrehab.no/personvern"])
 
 
+class WiderNameGuesses(unittest.TestCase):
+    def test_type_words_dash_heads_and_initials(self) -> None:
+        self.assertIn("bryggeparken.no", website.guess_domains("HOTEL BRYGGEPARKEN AS", limit=11))
+        self.assertIn("olaskjeret.no", website.guess_domains("OLASKJERET - AUSTEVOLL OPPLEVINGSSENTER AS", limit=11))
+        self.assertNotIn("gpc.no", website.guess_domains("GARDERMOEN PERISHABLE CENTER AS", limit=11))
+        self.assertIn("gpc.no", website.guess_domains("GARDERMOEN PERISHABLE CENTER AS", limit=11, initials=True))
+        # the full name is still guessed first
+        self.assertEqual(website.guess_domains("HOTEL BRYGGEPARKEN AS", limit=11)[0], "hotelbryggeparken.no")
+
+    def test_initials_only_for_firms_with_ten_or_more_employees(self) -> None:
+        rec = make_rec(name="GARDERMOEN PERISHABLE CENTER AS")
+        self.assertNotIn("https://gpc.no/", [u for u, _ in website.website_candidates(rec)])
+        rec.context["entity"]["antallAnsatte"] = 140
+        self.assertIn("https://gpc.no/", [u for u, _ in website.website_candidates(rec)])
+
+
 class ChainStorePages(unittest.TestCase):
     def test_number_only_on_a_store_page_of_a_chain_domain_is_ambiguous(self) -> None:
         # The index found our number on kjede.no/butikker/majorstuen; kjede.no's homepage prints the chain's own number.

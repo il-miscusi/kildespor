@@ -713,9 +713,12 @@ def _ascii_variants(token: str) -> list[str]:
 
 
 GEO_SUFFIXES = {"norge", "norway", "nordic", "norden", "scandinavia", "skandinavia"}
+# What the business is, written before or after its name: dropped for one more, shorter guess.
+TYPE_WORDS = {"hotel", "hotell", "restaurant", "kafe", "kafé", "cafe", "café", "barnehage", "barnehagen", "apotek", "apoteket",
+              "bakeri", "kro", "pub", "bar", "frisør", "frisor", "salong", "klinikk", "tannlege", "legesenter", "butikk"}
 
 
-def guess_domains(legal_name: str, limit: int = 8) -> list[str]:
+def guess_domains(legal_name: str, limit: int = 8, initials: bool = False) -> list[str]:
     """Candidate domains derived from a legal name, most likely first.
 
     The whole name comes first (joined, hyphenated, both æøå folds, IDN, .com, -as.no); then
@@ -780,6 +783,25 @@ def guess_domains(legal_name: str, limit: int = 8) -> list[str]:
             add("".join(alt_short) + ".no")
     if len(without_og) >= 3:
         add("".join(fold(without_og[:2], 0)) + ".no")
+    # Business-type words that open or close a name ("HOTEL BRYGGEPARKEN" -> bryggeparken.no, "SPIKKESTAD APOTEK"
+    # -> spikkestad.no), the part before a dash ("OLASKJERET - AUSTEVOLL OPPLEVINGSSENTER" -> olaskjeret.no), and
+    # the initials of a three- or four-word name ("GARDERMOEN PERISHABLE CENTER" -> gpc.no; only when asked:
+    # most three-letter domains are someone else's) come last.
+    core = [t for t in without_og if t not in STRIP_GUESS_WORDS and t not in GEO_SUFFIXES]
+    trimmed = list(core)
+    while len(trimmed) > 1 and trimmed[0] in TYPE_WORDS:
+        trimmed.pop(0)
+    while len(trimmed) > 1 and trimmed[-1] in TYPE_WORDS:
+        trimmed.pop()
+    if trimmed != core and len("".join(trimmed)) >= 5:
+        add("".join(fold(trimmed, 0)) + ".no")
+    head = re.split(r"\s[-–:]\s|\s*\|\s*", legal_name.strip(), maxsplit=1)
+    if len(head) == 2:
+        head_tokens = [t for t in name_tokens(head[0]) if t not in ("og", "and")]
+        if head_tokens and len("".join(head_tokens)) >= 5:
+            add("".join(fold(head_tokens, 0)) + ".no")
+    if initials and 3 <= len(without_og) <= 4 and all(t.isalpha() for t in without_og):
+        add("".join(t[0] for t in fold(without_og, 0)) + ".no")
     return out[:limit]
 
 
@@ -1041,12 +1063,16 @@ def website_candidates(rec: CompanyRecord, only_nav: bool = False) -> list[tuple
                     add(site, f"cache_{item.get('source') or 'unknown'}")
     guesses: list[str] = []
 
-    def guess(name: str, limit: int) -> None:
-        for domain in guess_domains(name, limit=limit):
+    def guess(name: str, limit: int, initials: bool = False) -> None:
+        for domain in guess_domains(name, limit=limit, initials=initials):
             if domain not in guesses:
                 guesses.append(domain)
 
-    guess(legal_name, 9)
+    try:
+        employees = int(entity.get("antallAnsatte") or 0)
+    except (TypeError, ValueError):
+        employees = 0
+    guess(legal_name, 11, initials=employees >= 10)  # firms with ten or more employees often use a short brand domain
     names_by_origin: list[tuple[str, str]] = [(d, "name_derived_domain") for d in guesses]
     former = sorted(entity.get("historiskeNavn") or [], key=lambda h: str(h.get("tilDato") or ""), reverse=True)
     for item in former[:2]:
