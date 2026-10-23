@@ -704,7 +704,7 @@ class OrganiserGroupSites(unittest.TestCase):
         raw = body.encode()
         home = Snapshot(requested, final, 200, "2026-10-17T00:00:00Z", hashlib.sha256(raw).hexdigest(), "text/html", raw)
         root = urlunsplit_root(final)
-        fixtures = {root: page(root, root_body)}
+        fixtures = {root: page(root, root_body)} if root_body else {}
         visit = website.SiteVisit(None, rec, time.monotonic() + 30)
 
         def fetch(self_, url):
@@ -725,6 +725,19 @@ class OrganiserGroupSites(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(rec.claims_for("official_website"), [])
         self.assertIn("root belongs to", rec.context["website_ambiguous_reason"])
+
+    def test_listed_domain_redirecting_into_another_domains_section_is_refused_unread_root(self) -> None:
+        ok, rec = self.publish("https://www.fonn.io/", "https://www.theaccessgroup.com/en-gb/construction/products/fonn/",
+                               html("Access Fonn", "Access Fonn"), None, "registry_listed", "registry_listed_name_in_metadata", name="FONN AS")
+        self.assertFalse(ok)
+
+    def test_section_that_prints_its_own_number_is_still_published_labelled(self) -> None:
+        ok, rec = self.publish("https://www.grimen.com/kainka", "https://www.grimen.com/kainka",
+                               html("Kainka", f"Kainka AS, 5419 FITJAR Org.nr: NO {ORG[:3]} {ORG[3:6]} {ORG[6:]}. © 2026 - Grimen Trading"),
+                               html("Grimen matpoteter", f"Grimen Trading AS org.nr {OTHER}"), "name_derived_domain", "organisation_number_on_site",
+                               name="KAINKA AS")
+        self.assertTrue(ok)
+        self.assertEqual(rec.claims_for("official_website")[0]["relationship"], "group_site")
 
     def test_listed_domain_redirecting_into_an_acquirers_site_is_refused(self) -> None:
         ok, rec = self.publish("https://www.fonn.io/", "https://www.theaccessgroup.com/en-gb/construction/products/fonn/",
@@ -748,9 +761,11 @@ class OrganiserGroupSites(unittest.TestCase):
 
     def test_group_brand_naming_longer_namesakes_only_is_refused(self) -> None:
         rec = make_rec(name="DOF AS", phone=None, roles=[("LEDE", "Martin Lundberg")])
-        body = ("DOF Group ASA is the parent company for: DOF Subsea AS, DOF Rederi AS, DOF Management AS. "
-                "Board: Martin Lundberg")
-        pages = {"https://dof.com/": html("DOF | Global Subsea & Offshore Solutions", body)}
+        body = ("<a href='/contact'>Contact</a> DOF Group ASA is the parent company for: DOF Subsea AS, DOF Rederi AS, "
+                "DOF Management AS. Board: Martin Lundberg. DOF ASA (2005) annual report")
+        pages = {"https://dof.com/": html("DOF | Global Subsea & Offshore Solutions", body),
+                 # the contact page lists DOF AS among the group's offices; the homepage is the group's
+                 "https://dof.com/contact": html("Contact | DOF", "DOF AS Thormøhlens gate 53C 5006 Bergen DOF Denmark A/S")}
         self.assertEqual(run(rec, pages, guesses=["dof.com"]), [])
 
     def test_own_legal_name_beside_the_brand_still_verifies(self) -> None:

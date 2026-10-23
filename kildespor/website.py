@@ -533,6 +533,7 @@ class RegisterSignals:
         self.names = [n for n in _names_of(rec) if n]
         self.former = [h.get("navn") for h in entity.get("historiskeNavn") or [] if h.get("navn") and name_tokens(h["navn"]) != name_tokens(entity.get("navn") or "")]
         form = ((entity.get("organisasjonsform") or {}).get("kode") or "").upper()
+        self.form = form.lower()
         words = set(core_tokens(entity.get("navn") or ""))
         self.housing = form in HOUSING_FORMS or bool(words & HOUSING_WORDS)
         self.holding = bool(words & HOLDING_WORDS)
@@ -1254,14 +1255,15 @@ def _sister_companies(rec: CompanyRecord, sig: RegisterSignals, texts: list[str]
 
 
 def _longer_namesakes_only(sig: RegisterSignals, texts: list[str]) -> bool:
-    """The pages name two or more other legal entities that start with our whole name ("DOF Group ASA",
-    "DOF Subsea AS" for DOF AS) and never our own legal name with its form: our name is their brand."""
+    """The homepage names two or more other legal entities that start with our whole name ("DOF Group ASA",
+    "DOF Subsea AS" for DOF AS) and never our own name with our own legal form: our name is their brand."""
     ours = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
     if not ours:
         return False
     norm = " | ".join(_norm_part(t) for t in texts)
     head = " ".join(ours)
-    if re.search(rf"(?:^| ){re.escape(head)} (?:{ENTITY_FORM}|da|sa)(?= |$)", norm):
+    form = re.escape(getattr(sig, "form", "") or "") or f"{ENTITY_FORM}|da|sa"
+    if re.search(rf"(?:^| ){re.escape(head)} (?:{form})(?= |$)", norm):
         return False
     longer = {m.group(1) for m in re.finditer(rf"(?:^| )({re.escape(head)}(?: [a-z0-9]+){{1,3}}?) (?:{ENTITY_FORM})(?= |$)", norm)}
     return len(longer) >= 2
@@ -1317,7 +1319,7 @@ def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domai
         if (affinity or name_hit) and not (provider and not name_hit) and (not need_name or name_hit or stem_full):
             return "register_contact_on_site", contact_hit[0], contact_hit[1]
     # Rule 2: the whole legal name in the homepage's identity text, plus one register signal on the site.
-    if name_hit and _longer_namesakes_only(sig, ev.texts):
+    if name_hit and _longer_namesakes_only(sig, ev.texts[:1]):
         return None  # "DOF Group ASA", "DOF Subsea AS" ... but never "DOF AS": the brand is the group's
     if name_hit:
         legal_core = [t for t in core_tokens(sig.names[0] if sig.names else "") if t not in ("og", "and")]
@@ -1760,10 +1762,15 @@ def _publish_site(
         visit.section = site_url
         root_owner, root_brand = _root_names_another_entity(rec, visit, urlunsplit((parts.scheme, netloc, "/", "", "")))
     off_domain = registered_domain(requested.hostname or "") != registered_domain(parts.hostname or "")
-    if root_owner and (origin not in DECLARED_ORIGINS or off_domain):
+    if section and off_domain and origin in DECLARED_ORIGINS and not root_owner and not _name_like_domain(parts.hostname or "", RegisterSignals(rec)):
+        # fonn.io -> theaccessgroup.com/en-gb/construction/products/fonn/: the listed domain now forwards into a
+        # section of a domain that is not named after us, even when that domain's root could not be read.
+        root_owner = registered_domain(parts.hostname or "")
+    if root_owner and (origin not in DECLARED_ORIGINS or off_domain) and not identity.endswith("organisation_number_on_site"):
         # A page on a chain's, a platform's or an acquirer's domain (rorkjop.no/finn-rorlegger/..., a booking
         # vendor's /web/<clinic>/, fonn.io -> theaccessgroup.com/.../fonn/) is that domain owner's site. Only a
-        # section the company itself lists in the register, on the listed domain, is published (labelled).
+        # section the company itself lists in the register, on the listed domain, or a section that prints this
+        # organisation number as its own (grimen.com/kainka: "Org.nr: NO 921 211 139"), is published (labelled).
         visit.section = None
         how = f"the listed {registered_domain(requested.hostname or '')} redirects there" if origin in DECLARED_ORIGINS else f"found via {origin}"
         rec.context["website_ambiguous"] = site_url
