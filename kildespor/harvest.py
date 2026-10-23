@@ -466,10 +466,61 @@ IDENTITY_STOP = {_alnum(w) for w in GENERIC_NAME_WORDS} | {
 }
 
 
-def identity_tokens(names: list[str], site_url: str) -> tuple[set[str], set[str]]:
-    """(substring tokens, prefix tokens) an account name for this company may contain or start with."""
+# Words a page title or site name uses for the page rather than the company ("Hjem - Fjordbygg",
+# "Forside", "Nettbutikk"): dropped from a brand name before it is tokenised.
+PAGE_WORDS = {
+    "hjem", "hjemmeside", "forside", "forsiden", "startside", "home", "homepage", "front", "frontpage", "page", "velkommen",
+    "welcome", "nettbutikk", "nettbutikken", "webshop", "index",
+}
+
+
+def _domain_label(site_url: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", registered_domain(urlsplit(site_url if "://" in site_url else f"https://{site_url}").hostname or "").split(".")[0])
+
+
+def identity_brands(brands: list[str], names: list[str], site_url: str) -> list[str]:
+    """The site's brand names (JSON-LD name, og:site_name, <title>) that may name the company in an
+    account: page words removed, and only a brand that shares a distinctive word of 4+ characters
+    with the legal or subunit names, or with the domain label. A title is often a slogan or a place
+    ("Bruktbilforhandler i Mosjøen", "Utleiemegler Oslo"), and its words would let any account that
+    contains them pass."""
+    label = _domain_label(site_url) if site_url else ""
+    words: set[str] = set()
+    joined: set[str] = {label} if len(label) >= 4 else set()
+    for name in names:
+        for fold in (_fold_a, _fold_b):
+            ws = [w for w in (re.sub(r"[^a-z0-9]", "", fold(t)) for t in name_tokens(name or "")) if w]
+            words |= {w for w in ws if len(w) >= 4}
+            if len("".join(ws)) >= 4:
+                joined.add("".join(ws))
+    out: list[str] = []
+    for brand in brands:
+        clean = " ".join(w for w in re.findall(r"[^\W_]+", brand or "") if _alnum(w) not in PAGE_WORDS)
+        if not clean or clean in out:
+            continue
+        for fold in (_fold_a, _fold_b):
+            ws = [w for w in (re.sub(r"[^a-z0-9]", "", fold(t)) for t in name_tokens(clean)) if w]
+            distinct = {w for w in ws if len(w) >= 4 and w not in IDENTITY_STOP and w not in PLACE_WORDS}
+            whole = "".join(ws)
+            if distinct & words or any(w in j for w in distinct for j in joined) or (
+                len(whole) >= 4 and any(whole in j or j in whole for j in joined)
+            ):
+                out.append(clean)
+                break
+    return out
+
+
+def identity_tokens(names: list[str], site_url: str, brands: list[str] | None = None, *, place_tokens: bool = True) -> tuple[set[str], set[str]]:
+    """(substring tokens, prefix tokens) an account name for this company may contain or start with.
+
+    ``names`` are the legal and subunit names; ``brands`` are the site's brand names, used only as far
+    as ``identity_brands`` admits them. With ``place_tokens=False`` (profiles) a place word (Oslo,
+    Trondheim, Norge) is never a token by itself: it names a town account or a local agency as often
+    as the company."""
     contains: set[str] = set()
     prefixes: set[str] = set()
+    places = set() if place_tokens else PLACE_WORDS
+    names = list(names) + (identity_brands(brands, names, site_url) if brands else [])
     for name in names:
         words = name_tokens(name or "")
         for fold in (_fold_a, _fold_b):
@@ -478,13 +529,13 @@ def identity_tokens(names: list[str], site_url: str) -> tuple[set[str], set[str]
             if not ws:
                 continue
             joined = "".join(ws)
-            if len(joined) >= 4:
+            if len(joined) >= 4 and joined not in places:
                 contains.add(joined)
             core = [w for w in ws if w not in ("og", "and", "the")]
-            if core and "".join(core) != joined and len("".join(core)) >= 4:
+            if core and "".join(core) != joined and len("".join(core)) >= 4 and "".join(core) not in places:
                 contains.add("".join(core))
             for w in core:
-                if w in IDENTITY_STOP:
+                if w in IDENTITY_STOP or w in places:
                     continue
                 if len(w) >= 5 or (len(w) == 4 and len(core) <= 2):
                     contains.add(w)
@@ -494,10 +545,10 @@ def identity_tokens(names: list[str], site_url: str) -> tuple[set[str], set[str]
                 acronym = "".join(w[0] for w in core)
                 if len(acronym) >= 3:
                     prefixes.add(acronym)
-    label = re.sub(r"[^a-z0-9]", "", registered_domain(urlsplit(site_url if "://" in site_url else f"https://{site_url}").hostname or "").split(".")[0])
-    if len(label) >= 4:
+    label = _domain_label(site_url) if site_url else ""
+    if len(label) >= 4 and label not in places:
         contains.add(label)
-    if len(label) >= 3:
+    if len(label) >= 3 and label not in places:
         prefixes.add(label)
     return contains, prefixes
 
@@ -589,6 +640,11 @@ ALLOWED_AFFIXES = {
     "lillestrom", "jessheim", "ski", "viken", "vestland", "rogaland", "agder", "nordland", "troms", "finnmark", "innlandet",
     "trondelag", "vestfold", "telemark", "ostfold", "akershus", "sunnmore", "romerike", "hordaland", "sorlandet", "vestlandet",
     "ostlandet", "nordnorge", "midtnorge",
+}
+# The place half of ALLOWED_AFFIXES plus the country words: never an identity token on their own.
+PLACE_WORDS = ALLOWED_AFFIXES - {
+    "as", "asa", "ab", "da", "ans", "sa", "ks", "ba", "no", "nor", "official", "offisiell", "offisielt", "hq", "go", "the", "team",
+    "tv", "film", "films", "media", "inc", "ltd",
 }
 
 
@@ -1801,8 +1857,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # -- social profiles from every page of the site that was read --------------------------------
     profiles: dict[str, Found] = {}
     per_platform: dict[str, int] = {}
+    p_contains, p_prefixes, p_text, p_names, p_words = _profile_identity(rec, brand_names, home.final_url)
     for snap, soup, _ in own_pages():
-        for found in profiles_on_page(snap, soup, snap.text(), contains, prefixes, rec, own_text, own_names, own_words):
+        for found in profiles_on_page(snap, soup, snap.text(), p_contains, p_prefixes, rec, p_text, p_names, p_words):
             key = found.url.lower()
             if key in profiles or per_platform.get(found.platform, 0) >= MAX_PROFILES_PER_PLATFORM:
                 continue
@@ -2140,6 +2197,24 @@ def _brand_and_contacts(rec: CompanyRecord, home: Snapshot, pages: list[tuple[Sn
     elif not contacts_only:
         rec.set_state("contact_channels", "not_available", "no phone or e-mail in the register or on the verified website")
     return brands
+
+
+def _profile_identity(rec: CompanyRecord, brand_names: list[str], site_url: str) -> tuple[set[str], set[str], str, list[str], set[str]]:
+    """(contains, prefixes, own_text, own_names, own_words) for judging the site's profile links.
+
+    The legal and subunit names always count; the site's brand names (the published public brand,
+    JSON-LD name, og:site_name, <title>) count only as far as ``identity_brands`` admits them, so a
+    title such as "Hjem" or "Utleiemegler Oslo" adds no token. Former names never count."""
+    entity = rec.context.get("entity") or {}
+    legal = [n for n in [entity.get("navn") or ""] + [s.get("name") or "" for s in rec.context.get("subunits") or []] if n]
+    published = [c["value"] for c in rec.claims if c["field"] == "public_brand_name" and isinstance(c["value"], str)]
+    brands = list(dict.fromkeys(published + list(brand_names)))
+    names = legal + identity_brands(brands, legal, site_url)
+    contains, prefixes = identity_tokens(names, site_url, place_tokens=False)
+    own_text = " ".join(_fold_a(n) for n in names) + " " + " ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)) for n in names)
+    own_names = sorted({" ".join(re.sub(r"[^a-z0-9 ]", " ", _fold_a(n)).split()) for n in names} | {" ".join(_fold_a(t) for t in name_tokens(n)) for n in names}, key=len, reverse=True)
+    own_words = {re.sub(r"[^a-z0-9]", "", f(w)) for n in names for w in name_tokens(n) for f in (_fold_a, _fold_b)} | set(re.split(r"[^a-z0-9]+", _site(site_url).split(".")[0]))
+    return contains, prefixes, own_text, own_names, own_words
 
 
 def _publish_profiles(rec: CompanyRecord, profiles: list[Found], exact: bool, company_label: str | None, pages: list[tuple[Snapshot, BeautifulSoup, str]]) -> None:

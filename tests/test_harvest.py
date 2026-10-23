@@ -156,6 +156,43 @@ class SocialTests(unittest.TestCase):
         self.assertNotIn("https://youtube.com/channel/UCbodybodybodybodybody12", found)
         self.assertNotIn("https://facebook.com/profile.php?id=100099999999999", found)
 
+    def test_page_title_words_are_not_identity_tokens(self) -> None:
+        """Audit 23 Oct R1: a brand from the <title> or og:site_name counts only when it shares a word
+        with the legal name or the domain, and page words (Hjem, Forside, Home, Nettbutikk) never do."""
+        ib = harvest.identity_brands
+        self.assertEqual(ib(["Hjem", "Forside", "Home page", "Nettbutikk"], ["NORDIC SUPPLY PARTNER AS"], "https://nsp.no/"), [])
+        self.assertEqual(ib(["Utleiemegler Oslo"], ["ENKLERE UTLEIE AS"], "https://enklereutleie.no/"), [])
+        self.assertEqual(ib(["Bruktbilforhandler i Mosjøen"], ["AUTONEXT AS"], "https://www.auto-next.no/"), [])
+        self.assertEqual(ib(["Hexagon Ragasco"], ["RAGASCO AS"], "https://www.ragasco.com/"), ["Hexagon Ragasco"])
+        self.assertEqual(ib(["Kviltorp Camping"], ["NAF CAMP MOLDE AS"], "https://kviltorpcamping.no/"), ["Kviltorp Camping"])
+        self.assertEqual(ib(["Hjem | Blomsterdekor"], ["BLOMSTERDEKOR BERGEN AS"], "https://blomsterdekor.no/"), ["Blomsterdekor"])
+        contains, prefixes = harvest.identity_tokens(["NORDIC SUPPLY PARTNER AS"], "https://nsp.no/", brands=["Hjem"])
+        self.assertFalse(harvest.resembles("hjemmesideproffen", contains, prefixes))
+        home_html = """<html><head><title>Hjem - Blomsterdekor Bergen</title></head><body><footer>
+        <a href="https://www.facebook.com/blomsterdekortaarnplass">Facebook</a><a href="https://www.facebook.com/hjemmesideproffen">Facebook</a>
+        </footer></body></html>"""
+        rec = record("BLOMSTERDEKOR BERGEN AS")
+        visit = SiteVisit(FakeFetcher({}, robots="User-agent: *\\nAllow: /\\n"), rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        home = snap("https://www.blomsterdekor.no/", home_html)
+        soup, _html, text = parse(home)
+        visit.pages.append((home, soup, text))
+        harvest._extract_site_facts(rec, visit, home, True, None)
+        self.assertEqual([c["value"]["url"] for c in rec.claims if c["field"] == "social_profile"], ["https://facebook.com/blomsterdekortaarnplass"])
+
+    def test_place_word_alone_is_not_a_match(self) -> None:
+        """Audit 23 Oct R5: Klinikk Trondheim's "trondheim" must not admit visittrondheim or a
+        Trondheim web agency; EiehjelpenOslo passed for Enklere Utleie only on "oslo"."""
+        contains, prefixes = harvest.identity_tokens(["KLINIKK TRONDHEIM AS"], "https://klinikktrondheim.no/", place_tokens=False)
+        self.assertNotIn("trondheim", contains)
+        self.assertFalse(harvest.resembles("visittrondheim", contains, prefixes))
+        self.assertFalse(harvest.resembles("trondheimwebbyra", contains, prefixes))
+        self.assertTrue(harvest.resembles("klinikktrondheim", contains, prefixes))
+        contains, prefixes = harvest.identity_tokens(["ENKLERE UTLEIE AS"], "https://enklereutleie.no/", brands=["Utleiemegler Oslo", "Oslo"], place_tokens=False)
+        self.assertFalse(harvest.owned_profile("EiehjelpenOslo", contains, prefixes))
+        contains, prefixes = harvest.identity_tokens(["SPORTSPROFIL NORGE AS"], "https://sportsprofil.no/", place_tokens=False)
+        self.assertTrue(harvest.resembles("sportsprofil", contains, prefixes))
+        self.assertFalse(harvest.resembles("visitnorge", contains, prefixes))
+
     def test_own_regional_and_group_accounts_stay(self) -> None:
         contains, prefixes = harvest.identity_tokens(["CONSTO AS"], "https://consto.no/")
         self.assertFalse(harvest.names_other_company("constokonsern", contains, prefixes, {"consto"}))
