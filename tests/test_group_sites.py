@@ -295,5 +295,43 @@ class GroupSiteHarvest(unittest.TestCase):
         self.assertEqual(phone["relationship"], "group_site")
 
 
+class ContractBackstop(unittest.TestCase):
+    def test_group_labelled_profiles_news_and_jobs_never_reach_disk(self) -> None:
+        from kildespor.contract import publish
+
+        def claim(cid, family, field, value, relationship=None):
+            out = {"id": cid, "key": f"{field}:{cid}", "family": family, "field": field, "value": value,
+                   "availability": "available", "confidence": 0.9, "evidence_ids": ["ev-1"]}
+            if relationship:
+                out["relationship"] = relationship
+            return out
+
+        envelope = {
+            "organisation_number": ORG,
+            "sections": {},
+            "claims": [
+                claim("cl-1", "official_website", "official_website", {"url": "https://consto.no/", "domain": "consto.no", "identity_method": "registry_listed_name_on_site"}, "group_site"),
+                claim("cl-2", "company_profiles", "social_profile", {"platform": "facebook", "url": "https://www.facebook.com/Constokonsern"}, "group_site"),
+                claim("cl-3", "company_profiles", "social_profile", {"platform": "facebook", "url": "https://www.facebook.com/constoanleggnord"}),
+                claim("cl-4", "public_activity", "company_news", {"title": "Consto vinner kontrakt", "published": "2026-10-01"}, "group_site"),
+                claim("cl-5", "hiring", "careers_page", "https://consto.no/karriere/", "group_site"),
+                claim("cl-6", "hiring", "job_posting", {"title": "Anleggsleder", "url": "https://consto.no/karriere/1"}, "group_site"),
+                claim("cl-7", "contact_channels", "website_phone", "+47 77 60 12 34", "group_site"),
+            ],
+            "evidence": [{"id": "ev-1", "source_url": "https://consto.no/", "source_class": "company_owned_website", "content_sha256": "a" * 64, "retrieved_at": "t"}],
+        }
+        out = publish(envelope)
+        available = {(c["field"], c["value"]) for c in out["claims"] if c.get("availability") == "available"}
+        self.assertIn(("official_website", "https://consto.no/"), available)  # the site itself stays, labelled
+        self.assertIn(("social_profile", "https://facebook.com/constoanleggnord"), available)
+        self.assertIn(("website_phone", "+47 77 60 12 34"), available)
+        self.assertNotIn(("social_profile", "https://facebook.com/Constokonsern"), available)
+        self.assertFalse({f for f, _ in available} & {"dated_news", "hiring_signal"})
+        rows = {c["field"]: c["availability"] for c in out["claims"] if c.get("value") is None}
+        self.assertEqual(rows, {"dated_news": "not_available", "hiring_signal": "not_available"})
+        links = out["profile"]["evidence"]["website"]["value"]["social_links"]
+        self.assertEqual(links, [{"platform": "facebook", "url": "https://facebook.com/constoanleggnord"}])
+
+
 if __name__ == "__main__":
     unittest.main()
