@@ -379,19 +379,10 @@ def run_report(envelopes: list[dict[str, Any]], orgs: list[str], run: dict[str, 
 
 # -- main -----------------------------------------------------------------------------------
 def write_root_index(out_dir: Path, site_dir: Path) -> None:
-    """``index.html`` beside the envelopes, opening the viewer, so it is found where a checker looks first."""
-    try:
-        rel = os.path.relpath(site_dir / "index.html", out_dir).replace(os.sep, "/")
-    except ValueError:
-        return
-    if rel == "index.html":
-        return
-    page = (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-        f'<meta http-equiv="refresh" content="0; url={rel}"><title>Kildespor company profiles</title></head>'
-        f'<body><p><a href="{rel}">Open the Kildespor company viewer</a></p></body></html>\n'
-    )
-    (out_dir / "index.html").write_text(page, encoding="utf-8")
+    """``index.html`` beside the envelopes: the viewer's research page itself, so it is found where a checker looks first."""
+    from .site import write_root_page
+
+    write_root_page(out_dir, site_dir)
 
 
 def default_budget(companies: int) -> float:
