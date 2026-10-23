@@ -280,7 +280,7 @@ function answerCompany(r, q, cb) {
   loadCompany(r.o, function (d) {
     if (!d) return cb('<div class="unsupported">The profile of ' + esc(r.n) + ' could not be loaded.</div>');
     for (var u in UNSUPPORTED) if (l.indexOf(u) >= 0) return cb('<div class="unsupported"><h3>Not enough evidence</h3><p>' + esc(UNSUPPORTED[u]) + '. The run covers registry identity, accounts, roles, workplaces, the verified website, social profiles, single job ads and dated news.</p></div>');
-    var sec = function (k) { return (d.syn.sections || []).filter(function (s) { return s.key === k; })[0]; };
+    var sec = function (k) { var all = d.syn.sections || [], f = function (x) { return all.filter(function (s) { return s.key === x; })[0]; }; return f(k) || (k === "activity" || k === "hiring" ? f("signals") : null); };  /* "signals": briefs written before 24 Oct */
     var topic = topicOf(l), n = {n: 0}, h = "", heading = "", ok = true, used = [];
     if (topic === "brief" || !topic) { heading = "Company brief"; used = d.syn.summary || []; h = sentences(r.o, used, n); }
     else if (topic === "ceo") {
@@ -294,7 +294,7 @@ function answerCompany(r, q, cb) {
       var hs = sec("hiring"); used = hs ? hs.s : [];
       h = (hs ? sentences(r.o, hs.s, n) : "");
       if (jobs.length) h += '<ul>' + jobs.slice(0, 6).map(function (c) { n.n++; return '<li>' + link(c.v.url, c.v.title || c.v.url) + (c.v.published ? " (published " + esc(String(c.v.published).slice(0, 10)) + ")" : "") + " " + factChip(r.o, c, n.n) + '</li>'; }).join("") + '</ul>';
-      else ok = false;
+      else { ok = false; var fh = d.fam.hiring || {}; h += ' <span class="small">Single job ads: ' + stateBadge(fh.s === "available" ? "not_available" : fh.s || "not_available") + ' ' + esc(fh.r || "") + " " + chip(r.o, ++n.n, [], [], "absence", "Single job ads: " + (fh.r || ""), fh.k || []) + '</span>'; }
     } else if (sec(topic)) { heading = SECTION_TITLES[topic]; used = sec(topic).s; h = sentences(r.o, used, n); }
     else { ok = false; heading = "Not enough evidence"; h = "Nothing in this company's profile answers that."; }
     var src = firstSource(d, used);
@@ -372,7 +372,7 @@ function renderCompany(org, cb) {
     var id = d.id || {}, syn = d.syn || {}, cov = syn.coverage || {}, areas = cov.areas || [], n = {n: 0}, ind = id.industry || {}, form = id.legal_form || {};
     var lastChecked = (d.src || []).map(function (s) { return s.t || ""; }).sort().pop() || "";
     var sec = function (k) { return (syn.sections || []).filter(function (s) { return s.key === k; })[0]; };
-    var secText = function (k) { var s = sec(k); return s ? '<p>' + sentences(org, s.s, {n: 0}) + '</p>' : ""; };
+    var secText = function (k) { var s = sec(k) || (k === "activity" ? sec("signals") : null); return s ? '<p>' + sentences(org, s.s, {n: 0}) + '</p>' : ""; };
     var jobs = claimsOf(d, "job_posting").sort(function (a, b) { return String(b.v.published || "").localeCompare(String(a.v.published || "")); }), news = claimsOf(d, "company_news").sort(function (a, b) { return String(b.v.published || b.v.date || "").localeCompare(String(a.v.published || a.v.date || "")); }), soc = claimsOf(d, "social_profile"), site = claimsOf(d, "official_website")[0], roles = claimsOf(d, "role"), units = claimsOf(d, "registered_workplace"), groups = claimsOf(d, "group_relationship");
     var rev = latestFin(d, "revenue"), net = latestFin(d, "annual_result"), emp = claimsOf(d, "registered_employees")[0], tl = syn.timeline || [];
     var chips = [[!!rev, "Latest annual filing", "Annual filing not available"], [!!site, "Verified website", "Website not verified"], [soc.length, soc.length + " verified profile" + (soc.length === 1 ? "" : "s"), "No verified profiles"], [news.length, news.length + " dated news item" + (news.length === 1 ? "" : "s"), "No dated news found"], [jobs.length, jobs.length + " open role" + (jobs.length === 1 ? "" : "s") + " found", "No open roles found"]];
