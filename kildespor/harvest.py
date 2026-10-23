@@ -304,7 +304,7 @@ class Plan:
 
     def read(self, url: str, *, ad: bool = False) -> tuple[tuple[Snapshot, BeautifulSoup, str] | None, str]:
         """Like ``page``, but says why nothing came back: "ok", "budget", "blocked" (401/403 or
-        robots.txt), "missing" (404/410) or "error". Hiring needs the reason: a list behind a login
+        robots.txt), "missing" (404/410), "not_html" or "error". Hiring needs the reason: a list behind a login
         is not an empty list. Ad pages (``ad``) use their own allowance and are not added to the
         site's pages, so they never feed the profile or contact readers."""
         url = url.split("#")[0]
@@ -327,7 +327,7 @@ class Plan:
         if not snap.ok:
             return None, "missing" if snap.status in (404, 410) else "error"
         if "html" not in snap.content_type.lower() and not snap.body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
-            return None, "error"
+            return None, "not_html"
         soup, _html, text = parse(snap)
         page = (snap, soup, text)
         if not ad:
@@ -335,17 +335,39 @@ class Plan:
         return page, "ok"
 
     def raw(self, url: str, headers: dict[str, str] | None = None) -> Snapshot | None:
+        return self.raw_status(url, headers)[0]
+
+    def raw_status(self, url: str, headers: dict[str, str] | None = None, *, retry: bool = False) -> tuple[Snapshot | None, str]:
+        """A non-HTML source (sitemap, feed, post API) and why nothing came back: "ok", "missing"
+        (404/410), "blocked" (401/403/451, robots.txt), "error" (timeout, 5xx, network), "budget" or
+        "section" (outside the verified section). With ``retry``, a timeout or 5xx is tried once more
+        when the time allows: a single slow answer from a post API costs a company all its news."""
         # On a site verified as one section of a larger domain, domain-wide sources (root sitemap,
         # WordPress posts API, root feeds) describe the whole domain's owner, not this company.
         in_section = getattr(self.visit, "in_section", None)
-        if not self.can() or (in_section is not None and not in_section(url)):
-            return None
-        try:
-            snap = self.visit.fetcher.get(url, retries=0, timeout=(5.0, min(10.0, max(3.0, self.visit.time_left()))), headers=headers)
-        except Exception as exc:
-            self.rec.error("website", f"harvest fetch skipped: {type(exc).__name__}: {str(exc)[:120]}", url)
-            return None
-        return snap if snap.ok else None
+        if in_section is not None and not in_section(url):
+            return None, "section"
+        if not self.can():
+            return None, "budget"
+        for attempt in range(2 if retry else 1):
+            if attempt and not (self.can() and self.visit.time_left() > 16):
+                return None, "error"
+            try:
+                snap = self.visit.fetcher.get(url, retries=0, timeout=(5.0, min(10.0 + 5.0 * attempt, max(3.0, self.visit.time_left()))), headers=headers)
+            except RobotsDisallowed:
+                return None, "blocked"
+            except Exception as exc:
+                self.rec.error("website", f"harvest fetch skipped: {type(exc).__name__}: {str(exc)[:120]}", url)
+                if isinstance(exc, RequestBudgetExhausted) or "budget" in str(exc) or "cap reached" in str(exc):
+                    return None, "budget"
+                continue
+            if snap.ok:
+                return snap, "ok"
+            if snap.status in (401, 403, 407, 451):
+                return None, "blocked"
+            if snap.status in (404, 410) or (snap.status < 500 and snap.status != 429):
+                return None, "missing"
+        return None, "error"
 
 
 # ----------------------------------------------------------------------------------------------
@@ -2628,6 +2650,13 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 "home": home.final_url, "wordpress": wordpress, "group_site": group_site, "own": sorted(entity.own), "other": entity.other}
     gated: dict[str, str] = {}
     scores: dict[int, float | None] = {}
+    # News sources that could not be read (timeout, 5xx, a 401/403, the request allowance): when
+    # nothing is published, absence is then not established and the dated-news state is "failed".
+    news_failed: list[str] = []
+
+    def unread(what: str, why: str) -> None:
+        if why in ("error", "blocked", "budget"):
+            news_failed.append(f"{what} ({'timed out or server error' if why == 'error' else 'blocked' if why == 'blocked' else 'not read within the request allowance'})")
 
     def add_news(item: NewsItem) -> None:
         early = None
@@ -2692,9 +2721,12 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             if when and is_headline(entry.news_title):
                 add_news(NewsItem(entry.news_title, entry.loc, when[0], when[1], snap, f"{entry.news_title} | news:publication_date {entry.news_date}", "news_sitemap", "company_website", date_source="news_sitemap"))
     feeds = _declared_feeds(own_pages(), site_host)
-    if wordpress and plan.can(1, 6.0):
+    if wordpress and not plan.can(1, 6.0):
+        unread("the WordPress post API", "budget")
+    elif wordpress:
         api = _wordpress_api(home_soup, home.final_url)
-        snap = plan.raw(api + "wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list,excerpt", headers={"Accept": "application/json"})
+        snap, why = plan.raw_status(api + "wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list,excerpt", headers={"Accept": "application/json"}, retry=True)
+        unread("the WordPress post API", why)
         found = wordpress_items(snap, site_host) if snap is not None else []
         if snap is not None and snap.ok:
             news_checked.append(f"the WordPress post API ({len(found)} dated post(s))")
@@ -2708,8 +2740,11 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             add_news(item)
         if not found and not feeds:
             feeds = [urlunsplit((urlsplit(home.final_url).scheme, urlsplit(home.final_url).netloc, "/feed/", "", ""))]
-    if (len(news) < 3 or corpus) and feeds and plan.can(1, 6.0):
-        snap = plan.raw(feeds[0], headers={"Accept": "application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.5"})
+    if (len(news) < 3 or corpus) and feeds and not plan.can(1, 6.0):
+        unread(f"the feed {feeds[0]}", "budget")
+    elif (len(news) < 3 or corpus) and feeds:
+        snap, why = plan.raw_status(feeds[0], headers={"Accept": "application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.5"}, retry=True)
+        unread(f"the feed {feeds[0]}", why)
         found = feed_items(snap, site_host) if snap is not None else []
         if snap is not None and snap.ok:
             news_checked.append(f"the feed {feeds[0]} ({len(found)} dated item(s))")
@@ -2720,8 +2755,11 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     listing_links: list[str] = []  # article pages the news listing links (read when its cards carry no date)
     if len(news) < 3 or corpus:
         listing = _news_listing(anchors, sitemap, site_host, home.final_url)
-        if listing and plan.can(1, 6.0):
-            page = plan.page(listing)
+        if listing and not plan.can(1, 6.0):
+            unread(f"the news listing {listing}", "budget")
+        elif listing:
+            page, why = plan.read(listing)
+            unread(f"the news listing {listing}", why)
             if page is not None and _site(page[0].final_url) == site_host:
                 found = listing_items(page[0], page[1], site_host, require_news_path=False)
                 news_checked.append(f"the news listing {page[0].final_url} ({len(found)} dated item(s))")
@@ -2730,10 +2768,13 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 listing_links = _listing_articles(page[0], page[1], site_host)
 
     # Article pages: the headline and published datetime as the article itself states them.
-    for url in _articles_to_read(anchors, news, sitemap, site_host, listing_links)[: MAX_ARTICLE_FETCHES + (2 if corpus else 0)]:
+    to_read = _articles_to_read(anchors, news, sitemap, site_host, listing_links)[: MAX_ARTICLE_FETCHES + (2 if corpus else 0)]
+    for n_read, url in enumerate(to_read):
         if not plan.can(1, 6.0):
+            unread(f"{len(to_read) - n_read} article page(s)", "budget")
             break
-        page = plan.page(url)
+        page, why = plan.read(url)
+        unread(f"the article page {url}", why)
         if page is None or _site(page[0].final_url) != site_host:
             continue
         if len(listing_items(page[0], page[1], site_host, require_news_path=False)) >= 3:
@@ -2775,7 +2816,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if verified.unread and jobs_complete:
         jobs_complete = False  # a listed ad that was not read can be neither published nor closed
     _publish_hiring(rec, careers, verified.kept, company_label, site_host, complete=jobs_complete, notes=hiring_notes, verified=verified, parents_site=parents_site)
-    published = _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, {**gated, **refused})
+    published = _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, {**gated, **refused}, failed=news_failed)
     if corpus:
         keys = {_norm_url(i.url) if i.url else f"{i.title.lower()}|{i.date}" for i in published}
         rows = []
@@ -2803,7 +2844,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if jobs_complete:
         rec.checked_fields.add("job_posting:site")
     rec.checked_fields.update({"social_profile", "website_phone", "website_email", "public_brand_name", "self_description"})
-    if visit.time_left() > 5:
+    if visit.time_left() > 5 and not news_failed:
         rec.checked_fields.add("company_news")
     rec.context["harvest"] = {
         "requests": plan.used(), "ad_requests": plan.used() - plan.ad_start if plan.ad_start is not None else 0, "sitemap_entries": len(sitemap),
@@ -3329,7 +3370,7 @@ def copy_bursts(items: list[NewsItem]) -> set[int]:
     return out
 
 
-def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None, checked: list[str] | None = None, refused: dict[str, str] | None = None) -> list[NewsItem]:
+def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None, checked: list[str] | None = None, refused: dict[str, str] | None = None, failed: list[str] | None = None) -> list[NewsItem]:
     dropped: dict[str, int] = {}
     for why in (refused or {}).values():
         dropped[why] = dropped.get(why, 0) + 1
@@ -3362,7 +3403,10 @@ def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str 
     elif checked is not None:
         # Recorded even when register updates make the family available: the dated-news row reads it.
         reason = "no dated news about the company on its own website; checked " + ", ".join(checked)
+        if failed:
+            # A source that was not read leaves absence unproven: say so instead of "not available".
+            reason = f"{newsgate.NEWS_UNREAD}: could not read " + ", ".join(dict.fromkeys(failed)) + "; checked " + ", ".join(checked)
         if dropped:
             reason += "; dated items not published: " + ", ".join(f"{n} {why}" for why, n in sorted(dropped.items(), key=lambda kv: -kv[1]))
-        rec.set_state("public_activity", "not_available", reason[:600])
+        rec.set_state("public_activity", "failed" if failed else "not_available", reason[:600])
     return items

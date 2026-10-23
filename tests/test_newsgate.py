@@ -10,7 +10,10 @@ import tempfile
 import time
 import unittest
 
+import requests
+
 from kildespor import harvest, newsgate
+from kildespor.contract import publish
 from kildespor.model import CompanyRecord
 from kildespor.website import SiteVisit, parse
 
@@ -27,8 +30,23 @@ def post(title: str, slug: str, cats: list[str], when: str, excerpt: str = "") -
             "class_list": [f"category-{c}" for c in cats], "excerpt": {"rendered": f"<p>{excerpt} [&hellip;]</p>"}}
 
 
-def run_site(posts: list[dict]) -> CompanyRecord:
-    fetcher = FakeFetcher({API: (json.dumps(posts), "application/json"), "https://www.fjordbygg.no/feed/": ("<rss><channel></channel></rss>", "application/rss+xml")})
+class SlowApiFetcher(FakeFetcher):
+    """The post API times out ``timeouts`` times, then answers."""
+
+    def __init__(self, pages: dict[str, tuple[str, str]], timeouts: int) -> None:
+        super().__init__(pages)
+        self.timeouts = timeouts
+
+    def get(self, url: str, **kwargs) -> object:
+        if url == API and self.timeouts > 0:
+            self.timeouts -= 1
+            self.count += 1
+            raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=10.0)")
+        return super().get(url, **kwargs)
+
+
+def run_site(posts: list[dict], timeouts: int = 0) -> CompanyRecord:
+    fetcher = SlowApiFetcher({API: (json.dumps(posts), "application/json"), "https://www.fjordbygg.no/feed/": ("<rss><channel></channel></rss>", "application/rss+xml")}, timeouts)
     rec = CompanyRecord("923609016")
     rec.context["entity"] = {"navn": "FJORDBYGG AS"}
     visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
@@ -91,6 +109,33 @@ class FeatureTests(unittest.TestCase):
         self.assertEqual(model.weights[200], -127)
         p = model.score({"title": "x"})
         self.assertTrue(0.0 < p < 1.0)
+
+
+class UnreadSourceTests(unittest.TestCase):
+    """STRONGPOINT ASA, run-rev2d: the post API timed out and the company came out "not_available"."""
+
+    POSTS = [post("Fjordbygg vinner stor kontrakt i Bergen", "kontrakt", ["nyheter"], f"{RECENT}T10:00:00", "Fjordbygg skal bygge.")]
+
+    def test_one_timeout_is_retried(self) -> None:
+        rec = run_site(self.POSTS, timeouts=1)
+        self.assertEqual([c["value"]["title"] for c in rec.claims if c["field"] == "company_news"], ["Fjordbygg vinner stor kontrakt i Bergen"])
+
+    def test_unread_api_is_failed_not_absent(self) -> None:
+        rec = run_site(self.POSTS, timeouts=2)
+        state = rec.family_state["public_activity"]
+        self.assertEqual(state["state"], "failed")
+        self.assertTrue(state["reason"].startswith(newsgate.NEWS_UNREAD))
+        self.assertIn("the WordPress post API (timed out or server error)", state["reason"])
+        self.assertNotIn("company_news", rec.checked_fields)
+
+    def test_failed_row_survives_register_updates(self) -> None:
+        reason = f"{newsgate.NEWS_UNREAD}: could not read the WordPress post API (timed out or server error); checked the homepage"
+        env = {"organisation_number": "982769221", "claims": [
+            {"id": "cl-1", "key": "registry_update:z", "family": "public_activity", "field": "registry_update", "value": {"event": "x"}, "availability": "available", "evidence_ids": []}],
+            "evidence": [], "sections": {"activity": {"families": {"public_activity": {"state": "available", "reason": reason}}}}}
+        row = next(c for c in publish(env)["claims"] if c["field"] == "dated_news")
+        self.assertEqual(row["availability"], "failed")
+        self.assertEqual(row["reason"], reason)
 
 
 class DumpTests(unittest.TestCase):
