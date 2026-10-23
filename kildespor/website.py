@@ -101,7 +101,20 @@ PARKED_MARKERS = (
     "domain has been registered", "webhotell", "uniweb", "webhuset", "default page", "it works!", "welcome to nginx",
     "plesk", "cpanel", "index of /", "account suspended", "site not found", "under oppbygging",
 )
-CONTACT_HINTS = re.compile(r"kontakt|contact|om-oss|om_oss|omoss|about|personvern|privacy|vilk[aå]r|terms|impressum|informasjonskapsler|cookie|firma|selskap", re.I)
+CONTACT_HINTS = re.compile(
+    r"kontakt|contact|om-oss|om_oss|omoss|om oss|about|personvern|privacy|vilk[aå]r|terms|impressum|informasjonskapsler|cookie|"
+    r"betingelser|salgsbet|kj[oø]psbet|juridisk|firma|selskap",
+    re.I,
+)
+# Order in which a site's legal pages are read when the homepage does not print the organisation number:
+# contact, about, privacy (GDPR names the controller), then terms/conditions of sale (ehandelsloven § 8).
+CONTACT_PAGE_CLASSES = (
+    re.compile(r"kontakt|contact", re.I),
+    re.compile(r"om-oss|om_oss|omoss|om oss|about|hvem er vi|hvem-er-vi", re.I),
+    re.compile(r"personvern|privacy|gdpr|informasjonskapsler|cookie", re.I),
+    re.compile(r"vilk[aå]r|betingelser|salgsbet|kj[oø]psbet|terms|impressum|juridisk", re.I),
+)
+CONTACT_SKIP_EXT = re.compile(r"\.(?:pdf|jpe?g|png|gif|webp|svg|zip|docx?|xlsx?|mp4|mp3)$", re.I)
 CAREER_HINTS = re.compile(r"karriere|ledige[- ]stillinger|stillinger|jobb|career|jobs|work-with-us|bli-med", re.I)
 SOCIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("facebook", re.compile(r"^https?://(?:www\.|m\.|web\.)?facebook\.com/(?!sharer|share|dialog|plugins|tr\b|login|home\.php|groups/?$|events/?$|watch/?$|policy|privacy)([A-Za-z0-9.\-_/%]+?)/?(?:\?.*)?$", re.I)),
@@ -916,6 +929,7 @@ def _org_on_page(text: str, html: str, org: str) -> tuple[bool, str | None, dict
 
 
 DISCOVERY_REQUESTS = 15   # requests the search for a site may spend (DNS lookups are free)
+CONTACT_PAGES = 3         # legal/contact pages read for one candidate whose homepage does not prove it
 HARVEST_REQUESTS = 16     # further requests a verified site may draw for contact, sitemap, careers and news pages
 MAX_GUESSES = 14          # name-derived domains DNS-checked per company
 MAX_GUESS_FETCHES = 7     # of those, live candidates actually fetched
@@ -1066,17 +1080,27 @@ def _prefetch_dns(hosts: list[str], timeout: float = 7.0) -> None:
 
 
 def _contact_links(snap: Snapshot, soup: BeautifulSoup) -> list[str]:
-    host = urlsplit(snap.final_url).hostname
-    scored: list[tuple[int, str]] = []
-    for anchor in soup.find_all("a", href=True):
+    """Same-site links to the pages that usually print the organisation number, best first: one link of
+    each class (contact, about, privacy, terms/conditions of sale) in that order, then the rest."""
+    host = (urlsplit(snap.final_url).hostname or "").removeprefix("www.")
+    scored: list[tuple[int, int, str]] = []
+    for position, anchor in enumerate(soup.find_all("a", href=True)):
         href = urljoin(snap.final_url, anchor["href"]).split("#")[0]
         label = f'{anchor.get_text(" ", strip=True)} {anchor["href"]}'
-        if urlsplit(href).hostname != host or href == snap.final_url.split("#")[0] or not CONTACT_HINTS.search(label):
+        parts = urlsplit(href)
+        if parts.scheme not in ("http", "https") or (parts.hostname or "").removeprefix("www.") != host:
             continue
-        rank = 0 if re.search(r"kontakt|contact", label, re.I) else 1 if re.search(r"om-oss|om_oss|omoss|om oss|about", label, re.I) else 2
-        if all(href != h for _, h in scored):
-            scored.append((rank, href))
-    return [h for _, h in sorted(scored, key=lambda x: x[0])]
+        if href.rstrip("/") == snap.final_url.split("#")[0].rstrip("/") or not CONTACT_HINTS.search(label) or CONTACT_SKIP_EXT.search(parts.path):
+            continue
+        rank = next((k for k, pattern in enumerate(CONTACT_PAGE_CLASSES) if pattern.search(label)), len(CONTACT_PAGE_CLASSES))
+        if all(href != h for _, _, h in scored):
+            scored.append((rank, position, href))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    first, rest, seen = [], [], set()
+    for rank, _, href in scored:
+        (rest if rank in seen else first).append(href)
+        seen.add(rank)
+    return first + rest
 
 
 def _stem_matches_name(site_domain: str, names: list[str], min_len: int = 4) -> bool:
@@ -1357,13 +1381,18 @@ def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig
     # Worth reading the contact/about pages (where the org number usually is) only when the site
     # shows something of this company: its number, a register contact, or its name.
     hint = (rec.context.get("candidate_pages") or {}).get(site_domain)
-    plausible = declared or origin.startswith("cache_") or bool(ev.numbers.get(org)) or bool(ev.contacts) or bool(named)
+    plausible = declared or origin.startswith("cache_") or bool(ev.numbers.get(org)) or bool(ev.contacts) or bool(named) \
+        or _name_like_domain(final_host, sig)
     if plausible and not proven():
-        links = _contact_links(snap, soup)[: 3 if declared else 2]
+        # The legal pages a homepage links to (contact, about, privacy, terms) print the number when the
+        # footer does not; a cached page that printed it is read first. At most three, within the budget.
+        links = _contact_links(snap, soup)[:CONTACT_PAGES]
         if hint and hint.split("#")[0] != snap.final_url.split("#")[0]:
-            links = [hint] + [link for link in links if link != hint][:1]
+            links = [hint] + [link for link in links if link != hint][: CONTACT_PAGES - 1]
         for link in links:
             if visit.time_left() < 4:
+                break
+            if not declared and visit.fetcher is not None and visit.fetcher.company_used() >= DISCOVERY_REQUESTS:
                 break
             try:
                 extra = visit.fetch_page(link)
@@ -1388,6 +1417,14 @@ def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig
             if len(foreign_any) >= 3:
                 rec.error("website", "guessed site shows this organisation number among several others; treated as ambiguous", snap.final_url)
                 rec.context["website_ambiguous"] = snap.final_url
+                return None
+            home_owners = sorted(n for n, (kind, _) in number_contexts(text).items() if kind == "owner" and n not in related)
+            if own[2] is not snap and home_owners:
+                # The homepage prints another organisation number as its own and ours appears only on a
+                # deeper page (a chain's store page, a group's subsidiary page): the domain is not ours alone.
+                rec.context["website_ambiguous"] = snap.final_url
+                rec.context["website_ambiguous_reason"] = (f"{snap.final_url} prints organisation number {home_owners[0]} as its own; "
+                                                           f"this one appears only on {own[2].final_url}")
                 return None
             other = _number_named_for_another(own[1], org, sig)
             if other:
