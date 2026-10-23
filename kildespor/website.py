@@ -1483,6 +1483,12 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
         return
 
+    held_refused = None
+    if held is not None and declared_unread and not _name_like_domain(urlsplit(held[0].final_url).hostname or "", sig):
+        # The register lists a site we could not read (lundbeck.no: a TLS error). The index-found site
+        # prints our number but could be a product portal (hjernenett.no): it cannot stand in for it.
+        held_refused = f"the register-listed site could not be read, and {held[0].final_url}, found only in the crawl index, does not carry the company's name; it is not published in its place"
+        held = None
     if held is not None:
         snap, identity_snap, identity, origin, span, foreign, group_on_page = held
         _publish_site(rec, visit, snap, identity_snap, identity, origin, span, foreign, group_on_page)
@@ -1499,6 +1505,8 @@ def research_website(fetcher: Fetcher, rec: CompanyRecord, deadline: float, only
         rec.set_state("official_website", "failed", "request budget reached before the website could be verified", checked_sources=checked)
     elif blocked_reason and not rec.claims_for("official_website"):
         rec.set_state("official_website", "blocked", blocked_reason, checked_sources=checked)
+    elif held_refused and not rec.claims_for("official_website"):
+        rec.set_state("official_website", "failed", held_refused, checked_sources=checked)
     elif rec.context.get("website_ambiguous"):
         rec.set_state("official_website", "ambiguous", rec.context.get("website_ambiguous_reason") or "a candidate site shows this organisation number among several unrelated ones", checked_sources=checked)
     elif registry_site:

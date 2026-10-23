@@ -82,5 +82,25 @@ class ForeignGroupHost(unittest.TestCase):
         self.assertEqual([m for m, _ in run_fixtures(rec, fixtures)], ["registry_listed_name_on_site"])
 
 
+class HeldCacheSites(unittest.TestCase):
+    NOINDEX = [{"url": "https://hjernenett.no/", "kind": "website", "platform": None, "source": "noindex", "match_rule": "orgnr_on_own_pages", "source_record": "noindex:2026-10-17:hjernenett.no"}]
+    PORTAL = html("Hjernenett", f"Webinarer om migrene og depresjon. Hjernenett drives av H. Lundbeck AS, org.nr {ORG}")
+
+    def test_index_site_never_replaces_an_unread_register_site(self) -> None:
+        # H. LUNDBECK AS: lundbeck.no failed on TLS; the product portal hjernenett.no prints our number.
+        rec = make_rec(name="H. LUNDBECK AS", phone=None, hjemmeside="www.lundbeck.no")
+        out = run(rec, {"https://hjernenett.no/": self.PORTAL}, cache=FakeCaches(social=self.NOINDEX), guesses=[])
+        self.assertEqual(out, [])
+        self.assertEqual(rec.family_state["official_website"]["state"], "failed")
+        self.assertIn("could not be read", rec.family_state["official_website"]["reason"])
+        self.assertNotIn("official_website", rec.checked_fields)  # an unreachable site proves nothing
+
+    def test_index_site_is_still_published_when_the_register_site_was_read(self) -> None:
+        rec = make_rec(name="H. LUNDBECK AS", phone=None, hjemmeside="www.lundbeck.no")
+        pages = {"https://www.lundbeck.no/": html("Parkert", "Annen Bedrift AS, org.nr 911237814 MVA"), "https://hjernenett.no/": self.PORTAL}
+        out = run(rec, pages, cache=FakeCaches(social=self.NOINDEX), guesses=[])
+        self.assertEqual(out, [("organisation_number_on_site", "https://hjernenett.no/")])
+
+
 if __name__ == "__main__":
     unittest.main()
