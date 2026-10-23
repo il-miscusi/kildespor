@@ -434,6 +434,10 @@ class FakeFetcher:
     def begin_company(self, cap: int | None) -> None:
         self.cap, self.cap_start = cap, self.count
 
+    def raise_company_cap(self, extra: int) -> None:
+        if self.cap is not None:
+            self.cap = max(self.cap, self.count - self.cap_start + extra)
+
     def get(self, url: str, **_kwargs) -> Snapshot:
         if self.cap is not None and self.count - self.cap_start >= self.cap:
             raise RuntimeError("per-company request cap reached")
@@ -468,7 +472,14 @@ class EndToEndTests(unittest.TestCase):
         <li><a href="/nyheter/eldre-sak-om-hytter">Eldre sak om hytter på fjellet</a> <span>{OLDER[8:10]}.{OLDER[5:7]}.{OLDER[:4]}</span></li>
         <li><a href="/nyheter/veldig-gammel-sak">Veldig gammel sak fra arkivet</a> <span>{ANCIENT[8:10]}.{ANCIENT[5:7]}.{ANCIENT[:4]}</span></li></ul></body></html>"""
         contact_html = '<html><body><a href="https://www.youtube.com/@fjordbygg">YouTube</a><a href="mailto:post@fjordbygg.no">post@fjordbygg.no</a></body></html>'
+
+        def ad(title: str) -> str:
+            return f"<html><head><title>{title} - Fjordbygg</title></head><body><h1>{title}</h1><p>Vi søker en dyktig medarbeider.</p><h2>Om Fjordbygg</h2><p>Tømrer i Bergen.</p></body></html>"
+
         pages = {
+            "https://fjordbygg.teamtailor.com/jobs/123456-tomrer": (ad("Tømrer"), "text/html"),
+            "https://fjordbygg.teamtailor.com/jobs/123457-prosjektleder": (ad("Prosjektleder"), "text/html"),
+            "https://fjordbygg.teamtailor.com/jobs/123458-lærling": (ad("Lærling"), "text/html"),
             "https://www.fjordbygg.no/sitemap.xml": (sitemap, "application/xml"),
             "https://www.fjordbygg.no/karriere/": (careers_html, "text/html"),
             "https://fjordbygg.teamtailor.com/jobs": (ats_html, "text/html"),
@@ -485,11 +496,15 @@ class EndToEndTests(unittest.TestCase):
 
         socials = sorted(c["value"]["url"] for c in rec.claims if c["field"] == "social_profile")
         self.assertEqual(socials, ["https://facebook.com/fjordbygg", "https://instagram.com/fjordbygg.as", "https://linkedin.com/company/fjordbygg", "https://youtube.com/@fjordbygg"])
-        careers = [c["value"] for c in rec.claims if c["field"] == "careers_page"]
-        self.assertIn("https://www.fjordbygg.no/karriere/", careers)
-        self.assertNotIn("https://www.fjordbygg.no/nyheter/spedify-lanserer-reparasjonstjenester", careers)
+        self.assertFalse(any(c["field"] == "careers_page" for c in rec.claims))  # a careers page is never a claim
+        self.assertEqual(rec.context["career_pages"][0], "https://www.fjordbygg.no/karriere/")
+        self.assertNotIn("https://www.fjordbygg.no/nyheter/spedify-lanserer-reparasjonstjenester", rec.context["career_pages"])
         jobs = {c["value"]["title"]: c for c in rec.claims if c["field"] == "job_posting"}
         self.assertEqual(sorted(jobs), ["Lærling", "Prosjektleder", "Tømrer"])
+        # each ad cites its own page first, then the list that linked it
+        tomrer = jobs["Tømrer"]
+        self.assertEqual([rec.evidence[e]["extraction_method"] for e in tomrer["evidence_ids"]].count("ad_page_read"), 1)
+        self.assertEqual(tomrer["extraction_method"], "ad_page_read")
         news = {c["value"]["title"]: c["value"] for c in rec.claims if c["field"] == "company_news"}
         self.assertEqual(news["Fjordbygg vinner stor kontrakt i Bergen"]["published"], f"{RECENT}T09:15:00+02:00")
         self.assertIn("Eldre sak om hytter på fjellet", news)
@@ -497,9 +512,11 @@ class EndToEndTests(unittest.TestCase):
         article_claim = next(c for c in rec.claims if c["field"] == "company_news" and c["value"]["title"].startswith("Fjordbygg vinner"))
         self.assertEqual(rec.evidence[article_claim["evidence_ids"][0]]["source_url"], "https://www.fjordbygg.no/nyheter/fjordbygg-vinner-kontrakt")
         for claim in rec.claims:
-            self.assertEqual(len(claim["evidence_ids"]), 1, claim)
-        self.assertLessEqual(rec.context["harvest"]["requests"], harvest.HARVEST_REQUESTS)
+            self.assertEqual(len(claim["evidence_ids"]), 2 if claim["field"] == "job_posting" else 1, claim)
+        self.assertLessEqual(rec.context["harvest"]["requests"], harvest.HARVEST_REQUESTS + harvest.MAX_AD_FETCHES)
+        self.assertEqual(rec.context["harvest"]["ad_requests"], 3)  # one read per distinct ad link
         self.assertEqual(rec.family_state["hiring"]["state"], "available")
+        self.assertIn("https://www.fjordbygg.no/karriere/", rec.family_state["hiring"]["checked_sources"])
         self.assertIn("job_posting:site", rec.checked_fields)  # careers page and its ATS list were read
         if hasattr(rec, "pages_checked"):
             purposes = {p["url"]: p["purpose"] for p in rec.pages_checked}
@@ -524,7 +541,10 @@ class SiteJobsCheckedTests(unittest.TestCase):
         visit.pages.append((home, soup, text))
         harvest._extract_site_facts(rec, visit, home, True, None)
         self.assertNotIn("job_posting:site", rec.checked_fields)
-        self.assertEqual([c["value"] for c in rec.claims if c["field"] == "careers_page"], ["https://www.fjordbygg.no/karriere/"])
+        self.assertFalse(rec.claims_for("hiring"))
+        # the unread careers page is the reason absence is not established, never a hiring fact
+        self.assertEqual(rec.family_state["hiring"]["state"], "failed")
+        self.assertIn("https://www.fjordbygg.no/karriere/", rec.family_state["hiring"]["checked_sources"])
 
 
 class SitemapProvenanceTests(unittest.TestCase):
@@ -546,9 +566,11 @@ class SitemapProvenanceTests(unittest.TestCase):
         soup, _html, text = parse(home)
         visit.pages.append((home, soup, text))
         harvest._extract_site_facts(rec, visit, home, True, None)
-        sources = {c["field"]: rec.evidence[c["evidence_ids"][0]]["source_url"] for c in rec.claims if c["field"] in ("company_news", "careers_page")}
+        sources = {c["field"]: rec.evidence[c["evidence_ids"][0]]["source_url"] for c in rec.claims if c["field"] == "company_news"}
         self.assertEqual(sources["company_news"], "https://www.fjordbygg.no/news-sitemap.xml")
-        self.assertEqual(sources["careers_page"], "https://www.fjordbygg.no/page-sitemap.xml")
+        # the careers page found in the page sitemap is a checked source of the hiring verdict, not a claim
+        self.assertFalse(rec.claims_for("hiring"))
+        self.assertIn("https://www.fjordbygg.no/karriere/", rec.family_state["hiring"]["checked_sources"])
 
 
 class PublicationDateTests(unittest.TestCase):
@@ -678,7 +700,7 @@ class SectionSiteTests(unittest.TestCase):
 
 
 class RecruiterLinkTests(unittest.TestCase):
-    def test_unknown_recruiter_page_cites_the_company_page_and_is_not_fetched(self) -> None:
+    def test_unknown_recruiter_page_is_noted_and_not_fetched(self) -> None:
         home_html = """<html><head><title>Work System</title></head><body><nav><a href="https://talangpunkten.se/career/work-system/lang/no">Karriere</a></nav>
         <footer>Org.nr 913 170 296</footer></body></html>"""
         fetcher = FakeFetcher({}, robots="User-agent: *\nAllow: /\n")
@@ -688,8 +710,8 @@ class RecruiterLinkTests(unittest.TestCase):
         soup, _html, text = parse(home)
         visit.pages.append((home, soup, text))
         harvest._extract_site_facts(rec, visit, home, True, None)
-        claim = next(c for c in rec.claims if c["field"] == "careers_page")
-        self.assertEqual(claim["value"], "https://talangpunkten.se/career/work-system/lang/no")
-        self.assertEqual(rec.evidence[claim["evidence_ids"][0]]["source_url"], "https://www.worksystem.no/")
+        self.assertFalse(rec.claims_for("hiring"))  # a recruiter's landing page is not a job ad
+        self.assertEqual(rec.family_state["hiring"]["state"], "failed")
+        self.assertIn("https://talangpunkten.se/career/work-system/lang/no", rec.family_state["hiring"]["checked_sources"])
         self.assertFalse(any("talangpunkten" in u for u in fetcher.requested))
         self.assertNotIn("job_posting:site", rec.checked_fields)

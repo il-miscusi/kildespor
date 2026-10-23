@@ -147,16 +147,13 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
     entity = rec.context.get("entity") or {}
     legal_name = entity.get("navn") or ""
     if feed is None:
-        if not rec.claims_for("hiring"):
-            rec.set_state("hiring", "failed", "the job feed was not started")
+        record_nav_hiring(rec, "failed", "the job feed was not started")
         return
     if not feed.wait(deadline - 2):
-        if not rec.claims_for("hiring"):
-            rec.set_state("hiring", "failed", "the NAV vacancy feed had not finished loading within the time budget")
+        record_nav_hiring(rec, "failed", "the NAV vacancy feed had not finished loading within the time budget")
         return
     if feed.token is None or (feed.error and not feed.active):
-        if not rec.claims_for("hiring"):
-            rec.set_state("hiring", "failed", f"NAV vacancy feed unavailable: {feed.error}")
+        record_nav_hiring(rec, "failed", f"NAV vacancy feed unavailable: {feed.error}")
         return
     subunits = rec.context.get("subunits") or []
     names = search_names(rec)
@@ -200,8 +197,8 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
         if expires and expires < today:
             continue
         link = ad.get("link") or f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"
-        if not str(link).startswith("https://arbeidsplassen.nav.no/"):
-            link = f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"
+        if not re.fullmatch(r"https://arbeidsplassen\.nav\.no/stillinger/stilling/[\w-]{6,}/?", str(link)):
+            link = f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"  # the ad itself, never a search or list
         if str(link).rstrip("/") in listed:
             continue
         locations = ", ".join(dict.fromkeys(filter(None, [(loc or {}).get("city") or (loc or {}).get("municipal") for loc in ad.get("workLocations") or []]))) or None
@@ -247,12 +244,66 @@ def research_jobs(fetcher: Fetcher, rec: CompanyRecord, deadline: float, feed: N
     if complete and len(candidates) <= MAX_CANDIDATES * 3 and not feed.error:
         rec.checked_fields.add("job_posting")
     if published:
-        rec.set_state("hiring", "available", f"{published} active job ad(s) in NAV's vacancy feed verified to this organisation number", checked_sources=checked)
-    elif not rec.claims_for("hiring"):
-        rec.set_state(
-            "hiring",
+        record_nav_hiring(rec, "available", f"{published} active job ad(s) in NAV's vacancy feed verified to this organisation number", checked)
+    else:
+        record_nav_hiring(
+            rec,
             "not_available",
             f"no active ad in NAV's vacancy feed (last {feed.days} days) names this organisation number or its subunits as employer"
             + (f"; {len(candidates)} name match(es) belonged to other organisation numbers" if candidates else ""),
-            checked_sources=checked,
+            checked,
         )
+
+
+# -- one hiring verdict from two sources ---------------------------------------------------------
+# The website harvest and the NAV lookup run in separate tasks, in either order and sometimes at
+# once. Each records its own verdict here; the family state is recomputed from both, so the one
+# that finishes last cannot overwrite the other's ("blocked" on the site is not erased by an empty
+# NAV lookup, and a careers page alone never makes the family available).
+_SETTLE = threading.Lock()
+
+
+def record_site_hiring(rec: CompanyRecord, state: str, reason: str, sources: list[str], *, explicit: bool = False) -> None:
+    """The website's verdict: ``explicit`` when the careers page itself says there are no openings."""
+    with _SETTLE:
+        rec.context["site_hiring"] = {"state": state, "reason": reason, "sources": list(sources), "explicit": explicit}
+        _settle(rec)
+
+
+def record_nav_hiring(rec: CompanyRecord, state: str, reason: str, sources: list[str] | None = None) -> None:
+    with _SETTLE:
+        rec.context["nav_hiring"] = {"state": state, "reason": reason, "sources": list(sources or [])}
+        _settle(rec)
+
+
+def _settle(rec: CompanyRecord) -> None:
+    """``available`` needs a single ad from either source. Otherwise ``not_available`` needs both
+    sources to establish absence (the careers list read in full and NAV empty), or the careers page
+    saying so itself; a site list behind a login is ``blocked``, and anything not established is
+    ``failed``. Without a careers page the NAV verdict stands alone."""
+    site = rec.context.get("site_hiring")
+    nav = rec.context.get("nav_hiring")
+    parts = [x for x in (site, nav) if x]
+    if not parts:
+        return
+    sources = sorted({s for x in parts for s in x["sources"]})
+    available = [x for x in parts if x["state"] == "available"]
+    if available or rec.claims_for("hiring"):
+        reason = "; ".join(x["reason"] for x in available) or "evidence-backed job ads published"
+        rec.set_state("hiring", "available", reason, checked_sources=sources)
+        return
+    reason = "; ".join(x["reason"] for x in parts)
+    if site is None:
+        state = nav["state"]
+    elif site["state"] in ("blocked", "failed"):
+        state = site["state"]
+    elif site.get("explicit"):
+        state = "not_available"  # the company's own careers page says it has no openings
+    elif nav is None or nav["state"] != "not_available":
+        state = "failed"  # the careers list was empty, but NAV was not checked: absence not established
+        if nav is None:
+            reason += "; NAV's vacancy feed not checked yet"
+    else:
+        state = "not_available"
+    rec.set_state("hiring", state, reason, checked_sources=sources)
+

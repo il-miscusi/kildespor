@@ -137,8 +137,7 @@ def jobs_phase(fetcher: Fetcher, rec: CompanyRecord, deadline: float, request_ca
             jobs.research_jobs(fetcher, rec, deadline, feed)
         except Exception as exc:
             rec.error("hiring", f"{type(exc).__name__}: {exc}")
-            if not rec.claims_for("hiring"):
-                rec.set_state("hiring", "failed", f"job research stopped: {type(exc).__name__}: {str(exc)[:80]}")
+            jobs.record_nav_hiring(rec, "failed", f"job research stopped: {type(exc).__name__}: {str(exc)[:80]}")
         # A verified ad can name the employer's homepage: check it if no website was verified yet.
         if (rec.context.get("nav_employer") or {}).get("homepage") and rec.family_state.get("official_website", {}).get("state") != "available":
             fetcher.begin_company(8)
@@ -436,8 +435,7 @@ def run_batch(args: Any) -> int:
                 log(f"enrichment: {len(site_futures) + jobs_total - len(pending2)}/{len(site_futures) + jobs_total} tasks done")
         if not jobs_queued:
             for org in queue:
-                if not recs[org].claims_for("hiring"):
-                    recs[org].set_state("hiring", "failed", "NAV's vacancy feed had not loaded before the time budget ran out")
+                jobs.record_nav_hiring(recs[org], "failed", "NAV's vacancy feed had not loaded before the time budget ran out")
         if pending2:
             log(f"enrichment: {len(pending2)} tasks unfinished at the deadline; their open families are reported as failed")
         for org in queue:

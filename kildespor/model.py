@@ -252,6 +252,7 @@ class CompanyRecord:
         for family in FAMILIES:
             has_claims = any(claim["family"] == family for claim in self.claims)
             if has_claims:
-                self.set_state(family, "available", self.family_state.get(family, {}).get("reason") or "evidence-backed claims published")
+                current = self.family_state.get(family, {})
+                self.set_state(family, "available", current.get("reason") or "evidence-backed claims published", checked_sources=current.get("checked_sources"))
             elif family not in self.family_state:
                 self.set_state(family, "failed", "not attempted within the run's time budget")
