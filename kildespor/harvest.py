@@ -46,7 +46,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from . import ats
+from . import ats, newsgate
 from .http import RequestBudgetExhausted, RobotsDisallowed, Snapshot
 from .model import CompanyRecord
 from .website import (
@@ -84,8 +84,9 @@ HARVEST_REQUESTS = int(os.environ.get("KILDESPOR_HARVEST_REQUESTS", "12"))
 # most of them its units') reach the few ads that name the parent itself; companies with fewer
 # role links spend only what they list.
 MAX_AD_FETCHES = int(os.environ.get("KILDESPOR_AD_FETCHES", "20"))
-NEWS_MAX_AGE_DAYS = 730
-MAX_NEWS = 30
+NEWS_MAX_AGE_DAYS = int(os.environ.get("KILDESPOR_NEWS_MAX_AGE_DAYS", "730"))
+# One correct item per company is the first goal; ten is the cap (review B, WP-C). Env override for corpus runs.
+MAX_NEWS = int(os.environ.get("KILDESPOR_MAX_NEWS", "10"))
 MAX_JOBS = 25
 MAX_ARTICLE_FETCHES = 3
 MAX_PROFILES_PER_PLATFORM = 3
@@ -305,7 +306,7 @@ class Plan:
 
     def read(self, url: str, *, ad: bool = False) -> tuple[tuple[Snapshot, BeautifulSoup, str] | None, str]:
         """Like ``page``, but says why nothing came back: "ok", "budget", "blocked" (401/403 or
-        robots.txt), "missing" (404/410) or "error". Hiring needs the reason: a list behind a login
+        robots.txt), "missing" (404/410), "not_html" or "error". Hiring needs the reason: a list behind a login
         is not an empty list. Ad pages (``ad``) use their own allowance and are not added to the
         site's pages, so they never feed the profile or contact readers."""
         url = url.split("#")[0]
@@ -328,7 +329,7 @@ class Plan:
         if not snap.ok:
             return None, "missing" if snap.status in (404, 410) else "error"
         if "html" not in snap.content_type.lower() and not snap.body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
-            return None, "error"
+            return None, "not_html"
         soup, _html, text = parse(snap)
         page = (snap, soup, text)
         if not ad:
@@ -336,17 +337,39 @@ class Plan:
         return page, "ok"
 
     def raw(self, url: str, headers: dict[str, str] | None = None) -> Snapshot | None:
+        return self.raw_status(url, headers)[0]
+
+    def raw_status(self, url: str, headers: dict[str, str] | None = None, *, retry: bool = False) -> tuple[Snapshot | None, str]:
+        """A non-HTML source (sitemap, feed, post API) and why nothing came back: "ok", "missing"
+        (404/410), "blocked" (401/403/451, robots.txt), "error" (timeout, 5xx, network), "budget" or
+        "section" (outside the verified section). With ``retry``, a timeout or 5xx is tried once more
+        when the time allows: a single slow answer from a post API costs a company all its news."""
         # On a site verified as one section of a larger domain, domain-wide sources (root sitemap,
         # WordPress posts API, root feeds) describe the whole domain's owner, not this company.
         in_section = getattr(self.visit, "in_section", None)
-        if not self.can() or (in_section is not None and not in_section(url)):
-            return None
-        try:
-            snap = self.visit.fetcher.get(url, retries=0, timeout=(5.0, min(10.0, max(3.0, self.visit.time_left()))), headers=headers)
-        except Exception as exc:
-            self.rec.error("website", f"harvest fetch skipped: {type(exc).__name__}: {str(exc)[:120]}", url)
-            return None
-        return snap if snap.ok else None
+        if in_section is not None and not in_section(url):
+            return None, "section"
+        if not self.can():
+            return None, "budget"
+        for attempt in range(2 if retry else 1):
+            if attempt and not (self.can() and self.visit.time_left() > 16):
+                return None, "error"
+            try:
+                snap = self.visit.fetcher.get(url, retries=0, timeout=(5.0, min(10.0 + 5.0 * attempt, max(3.0, self.visit.time_left()))), headers=headers)
+            except RobotsDisallowed:
+                return None, "blocked"
+            except Exception as exc:
+                self.rec.error("website", f"harvest fetch skipped: {type(exc).__name__}: {str(exc)[:120]}", url)
+                if isinstance(exc, RequestBudgetExhausted) or "budget" in str(exc) or "cap reached" in str(exc):
+                    return None, "budget"
+                continue
+            if snap.ok:
+                return snap, "ok"
+            if snap.status in (401, 403, 407, 451):
+                return None, "blocked"
+            if snap.status in (404, 410) or (snap.status < 500 and snap.status != 429):
+                return None, "missing"
+        return None, "error"
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1918,9 +1941,14 @@ NOT_NEWS_PATH = re.compile(
 NOT_ARTICLE_SEGMENT = re.compile(r"^(?:kategori|category|categories|tag|tags|emne|author|forfatter|page|side|arkiv|archive|feed|rss|search|sok)$", re.I)
 NOT_HEADLINE = re.compile(
     r"^(?:les\s+mer|read\s+more|se\s+alle|vis\s+alle|view\s+all|all\s+news|alle\s+nyheter|nyheter|aktuelt|news|presse|press(?:\s*room)?|"
-    r"blogg?|siste\s+nytt|latest\s+news|more|mer|neste|forrige|next|previous|hello\s+world!?|hei\s*,?\s+verden!?)$",
+    r"blogg?|siste\s+nytt|latest\s+news|more|mer|neste|forrige|next|previous|hello\s+world!?|hei\s*,?\s+verden!?|"
+    r"les\s+(?:hele\s+)?(?:nyheten|nyhet|saken|sak|artikkelen|artikkel|innlegget|innlegg|mer\s+her)|read\s+(?:the\s+)?(?:article|story|post|full\s+story)|"
+    r"se\s+mer|vis\s+mer|last\s+ned|download|continue\s+reading|fortsett\s+å\s+lese|nyhet|news\s+item)$",
     re.I,
 )
+# A card label around the headline ("News New CEO News - 03. November 2022", "Siste nytt 19.08.2026").
+_CARD_LABEL = re.compile(r"^(?:(?:siste\s+)?nytt|nyheter|nyhet|news|aktuelt|pressemelding|press\s+release|event|arrangement|blogg?|artikkel|article)\b[\s:|\-–—]*|"
+                         r"[\s:|\-–—]*\b(?:nyheter|nyhet|news|aktuelt|pressemelding|press\s+release|event|blogg?)$", re.I)
 CARD_CLASS = re.compile(r"news|nyhet|post|article|artikkel|card|teaser|entry|story|blog|item|aktuelt|press", re.I)
 # A theme's slider, test or cloned post ("HeroSliderPost ( Cloned )", "TestPostMobil"): a page element, never news.
 TEMPLATE_TITLE = re.compile(r"slider|test\s?post|lorem|ipsum|dummy|placeholder|\(\s*cloned\s*\)|\bcopy\b|\bkopi\b|untitled|uten\s+tittel|hello\s+world", re.I)
@@ -1966,8 +1994,24 @@ GENERIC_CATEGORY = re.compile(r"^(?:uncategori[sz]ed|ukategorisert|okategorisera
 TOPIC_LIBRARY_CATEGORIES = 4
 
 
+def _bare_title(title: str) -> str:
+    """The title without a date written into it, its card labels and edge punctuation: what is left
+    when "Siste nytt 19.08.2026" or "Read more>" are not headlines."""
+    text = _D_MONTH_Y_RE.sub(" ", _DMY_RE.sub(" ", _ISO_RE.sub(" ", title)))
+    text = re.sub(r"^[\W_]+|[\W_]+$", "", " ".join(text.split()))
+    for _ in range(3):
+        stripped = re.sub(r"^[\W_]+|[\W_]+$", "", _CARD_LABEL.sub("", text).strip())
+        if stripped == text:
+            break
+        text = stripped
+    return text
+
+
 def is_headline(title: str) -> bool:
     if not title or NOT_HEADLINE.match(title.strip()) or TEMPLATE_TITLE.search(title):
+        return False
+    bare = _bare_title(title)
+    if not bare or NOT_HEADLINE.match(bare) or NOT_HEADLINE.match(re.sub(r"^[\W_]+|[\W_]+$", "", title.strip())):
         return False
     letters = re.sub(r"[^A-Za-zÆØÅæøåÄÖäöÜüÉé]", "", title)
     return len(letters) >= 8 and 8 <= len(title) <= 250 and text_date(title) != title.strip()
@@ -2112,6 +2156,16 @@ class NewsItem:
     source: str
     source_class: str = "company_owned_website"
     categories: tuple[str, ...] = ()  # WordPress category slugs (class_list "category-<slug>")
+    # What the news gate reads (kildespor/newsgate.py): the item's own text (a WordPress excerpt, a
+    # feed description, a card teaser, the article's opening), where its date was read, and the
+    # article page's own signals when that page was read.
+    lead: str = ""
+    date_source: str = ""
+    og_type: str = ""
+    ld_types: tuple[str, ...] = ()
+    article_time: bool = False
+    flags: tuple[str, ...] = ()
+    listing: str = ""
 
 
 def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, require_news_path: bool) -> list[NewsItem]:
@@ -2153,10 +2207,12 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
         times = [t for t in block.find_all("time") if not _update_date(t)]
         # A <time> marked as the publication date wins over the card's first <time>.
         time_tag = next((t for t in times if _PUBLISHED_MARK.search(_ident(t))), times[0] if times else None)
+        date_source = ""
         if time_tag is not None:
             raw_time = time_tag.get("datetime") or time_tag.get_text(" ", strip=True)
             published = stamp(time_tag.get("datetime")) or stamp(time_tag.get_text(" ", strip=True))
             dated_by = f'<time datetime="{raw_time}">' if time_tag.get("datetime") else f"<time>{raw_time}</time>"
+            date_source = "time_datetime" if time_tag.get("datetime") else "time_text"
         if published is None:
             # A dateline beside the item's own title ("14.10.2026", "Publisert 14. oktober 2026"),
             # never a date inside a sentence of the teaser, never an update date.
@@ -2165,6 +2221,7 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
                 if 6 <= len(text) <= 40 and string.parent is not None and not _update_date(string.parent) and (day := text_date(text)):
                     published = (day, day)
                     dated_by = text
+                    date_source = "card_text"
                     break
         if published is None:
             continue
@@ -2175,21 +2232,37 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
                 title = text
                 break
         if title is None:
+            # A card whose title is a styled <div> or <span> ("ItemListing__title"), not a heading.
+            for node in block.find_all(["div", "span", "p", "strong"], class_=_CARD_TITLE_CLASS):
+                text = node.get_text(" ", strip=True)
+                if is_headline(text) and len(text) <= 200:
+                    title = text
+                    break
+        if title is None:
             text = anchor.get_text(" ", strip=True)
             title = text if is_headline(text) else None
         if title is None:
             continue
+        if dated_by and text_date(title) and text_date(title) == text_date(dated_by):
+            # The heading carries the card's own date and labels ("News New CEO News - 03. November 2022").
+            bare = _bare_title(title)
+            title = bare if is_headline(bare) else title
         if truncated_title(title, url):
             # The card cut its title short: the link's own title or label often carries it in full.
             stem = _alnum(ELLIPSIS.sub("", title))
             full = next((t for t in (str(anchor.get("title") or ""), str(anchor.get("aria-label") or "")) if is_headline(t) and _alnum(t).startswith(stem) and len(_alnum(t)) > len(stem)), None)
             title = full or title
         seen.add(key)
-        items.append(NewsItem(_clean(title), url, published[0], published[1], snap, f"{title} | {dated_by}", "news_listing_item", "company_website"))
+        card = _clean(block.get_text(" ", strip=True))
+        lead = card.replace(_clean(title), " ", 1) if _clean(title) in card else card
+        lead = re.sub(r"\s+", " ", lead.replace(dated_by, " ")).strip()[: newsgate.LEAD_CHARS]
+        items.append(NewsItem(_clean(title), url, published[0], published[1], snap, f"{title} | {dated_by}", "news_listing_item", "company_website",
+                              lead=lead, date_source=date_source, flags=newsgate.text_signals(lead), listing=_strip_url(base)))
     return items
 
 
 _PUBLISHED_MARK = re.compile(r"publi|datepublished|post-?date|entry-?date", re.I)
+_CARD_TITLE_CLASS = re.compile(r"(?:^|[-_])(?:title|heading|headline|tittel|overskrift)(?:$|[-_])", re.I)
 # Site chrome a dated card can sit in without being news: menus, mega-menus, footers and sidebars.
 _CHROME_CLASS = re.compile(r"(?<![a-z])(?:menu|mega|dropdown|submenu|sub-menu|navbar|navigation)(?![a-z])|menu-item|mega-?menu", re.I)
 
@@ -2323,16 +2396,57 @@ def page_article(soup: BeautifulSoup, page_url: str) -> dict[str, Any] | None:
     return None
 
 
-def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> NewsItem | None:
+def page_lead(soup: BeautifulSoup, title: str = "") -> str:
+    """The opening of the page's own text (article, else main, else body), after its headline."""
+    scope = soup.find("article") or soup.find("main") or soup.body or soup
+    parts: list[str] = []
+    size = 0
+    for string in scope.find_all(string=True):
+        parent = string.parent
+        if parent is None or parent.name in ("script", "style", "noscript", "template", "svg", "nav", "button"):
+            continue
+        if any(getattr(a, "name", None) in ("nav", "header", "footer", "aside") for a in list(parent.parents)[:6]) and parent.name not in ("h1", "time"):
+            continue
+        text = str(string).strip()
+        if text:
+            parts.append(text)
+            size += len(text) + 1
+        if size > 3 * newsgate.LEAD_CHARS:
+            break
+    text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    if title:
+        at = text.find(title)
+        if 0 <= at < 400:
+            text = text[at + len(title):].strip()
+    if not text:
+        og = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
+        text = _clean(og.get("content")) if og is not None else ""
+    return text[: newsgate.LEAD_CHARS]
+
+
+def page_kind(soup: BeautifulSoup, html: str, text: str) -> tuple[str, tuple[str, ...], bool, tuple[str, ...]]:
+    """(og:type, JSON-LD types, has article:published_time, page flags) of a page."""
+    og = soup.find("meta", attrs={"property": "og:type"})
+    og_type = str(og.get("content") or "").strip().lower()[:30] if og is not None else ""
+    ld_types: set[str] = set()
+    for item in json_ld_items(soup):
+        ld_types |= _types(item)
+    article_time = soup.find("meta", attrs={"property": "article:published_time"}) is not None
+    return og_type, tuple(sorted(ld_types))[:12], article_time, newsgate.page_signals(html, text, ld_types)
+
+
+def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str], text: str = "") -> NewsItem | None:
     """Headline and published datetime read from an article page itself."""
     published = None
     span = None
+    date_source = ""
     for attr, name in _PUBLISHED_META:
         tag = soup.find("meta", attrs={attr: name})
         if tag is not None and tag.get("content"):
             published = stamp(tag["content"])
             if published:
                 span = f'{attr}="{name}" content="{tag["content"].strip()}"'
+                date_source = "meta_" + name.lower()
                 break
     if published is None:
         item = page_article(soup, snap.final_url)
@@ -2340,6 +2454,7 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> News
             published = stamp(item["datePublished"])
             if published:
                 span = f'JSON-LD datePublished "{item["datePublished"]}"'
+                date_source = "jsonld_" + (sorted(_types(item)) or ["?"])[0]
 
     if published is None:
         scope = soup.find("article") or soup.find("main") or soup
@@ -2347,10 +2462,12 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> News
         if time_tag is not None:
             published = stamp(time_tag["datetime"])
             span = f'<time datetime="{time_tag["datetime"]}">' if published else None
+            date_source = "time_byline"
         if published is None:
             dateline = _byline_text_date(scope)
             if dateline:
                 published, span = (dateline[0], dateline[0]), f"byline: {dateline[1]}"
+                date_source = "byline_text"
     # Never a date merely written near the headline: it may be an event, a deadline or a project year.
     if published is None or not _news_window(published[1]):
         return None
@@ -2370,7 +2487,9 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str]) -> News
     if title is None:
         return None
     title = _clean(title)
-    return NewsItem(title, _strip_url(snap.final_url), published[0], published[1], snap, f"{title} | {span}", "article_page_meta", "company_website")
+    og_type, ld_types, article_time, flags = page_kind(soup, snap.text(), text or soup.get_text(" ", strip=True))
+    return NewsItem(title, _strip_url(snap.final_url), published[0], published[1], snap, f"{title} | {span}", "article_page_meta", "company_website",
+                    lead=page_lead(soup, title), date_source=date_source, og_type=og_type, ld_types=ld_types, article_time=article_time, flags=flags)
 
 
 _FEED_ITEM = re.compile(r"<(item|entry)\b[^>]*>(.*?)</\1\s*>", re.S | re.I)
@@ -2379,6 +2498,7 @@ _FEED_LINK_TEXT = re.compile(r"<link\b[^>]*>\s*(?:<!\[CDATA\[)?\s*(https?://[^<\
 _FEED_LINK_HREF = re.compile(r"<link\b([^>]*?)/?>", re.S | re.I)
 _FEED_DATE = re.compile(r"<(pubDate|published|dc:date|updated|a10:updated)\b[^>]*>(.*?)</\1\s*>", re.S | re.I)
 _FEED_CATEGORY = re.compile(r"<category\b([^>]*?)(?:/>|>(.*?)</category\s*>)", re.S | re.I)
+_FEED_TEXT = re.compile(r"<(description|summary|content:encoded|content)\b[^>]*>(.*?)</\1\s*>", re.S | re.I)
 
 
 def _feed_categories(block: str) -> tuple[str, ...]:
@@ -2418,7 +2538,10 @@ def feed_items(snap: Snapshot, site_host: str) -> list[NewsItem]:
         if not published or not is_headline(title):
             continue
         link = safe_link(link, site_host) if link else None
-        items.append(NewsItem(title[:300], link, published[0], published[1], snap, f"{title[:200]} | {raw}", "rss_atom_feed", "company_feed", "company_owned_feed", categories=_feed_categories(block)))
+        texts = {m.group(1).lower(): m.group(2) for m in _FEED_TEXT.finditer(block)}
+        lead = _clean(texts.get("description") or texts.get("summary") or texts.get("content:encoded") or texts.get("content") or "")[: newsgate.LEAD_CHARS]
+        items.append(NewsItem(title[:300], link, published[0], published[1], snap, f"{title[:200]} | {raw}", "rss_atom_feed", "company_feed", "company_owned_feed", categories=_feed_categories(block),
+                              lead=lead, date_source="feed_pubdate" if dates.get("pubdate") else "feed_published", flags=newsgate.text_signals(lead)))
     return items
 
 
@@ -2454,7 +2577,11 @@ def wordpress_items(snap: Snapshot, site_host: str) -> list[NewsItem]:
         classes = list(classes.values()) if isinstance(classes, dict) else classes if isinstance(classes, list) else []
         categories = tuple(c[len("category-"):] for c in classes if isinstance(c, str) and c.startswith("category-"))
         span = f"{rendered} | date {local}" + (f" | category {', '.join(categories)}" if categories else "")
-        items.append(NewsItem(title[:300], link, published, local[:10], snap, span, "wordpress_posts_api", "company_website", categories=categories))
+        excerpt = post.get("excerpt")
+        lead = _clean(excerpt.get("rendered") if isinstance(excerpt, dict) else excerpt or "")
+        lead = re.sub(r"\s*(?:\[(?:…|&hellip;|\.\.\.)\]|Les mer.*|Read more.*|Continue reading.*)$", "", lead)[: newsgate.LEAD_CHARS]
+        items.append(NewsItem(title[:300], link, published, local[:10], snap, span, "wordpress_posts_api", "company_website", categories=categories,
+                              lead=lead, date_source="wp_date_gmt" if re.match(r"\d{4}-\d{2}-\d{2}T", gmt) else "wp_date", flags=newsgate.text_signals(lead)))
     return items
 
 
@@ -2777,9 +2904,38 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     refused: dict[str, str] = {}  # key -> why: a page refused once is not let back in by another route
     news_checked: list[str] = []  # what was read for news, named in the reason when nothing is published
     entity = entity_words(rec, brand_names, home.final_url)
+    # Every candidate with the rules' verdict, for the development corpus (newsgate.dump; off by default).
+    candidates: list[tuple[NewsItem, str | None]] = []
+    corpus = bool(newsgate.dump_dir())
+    # The learned content gate (newsgate.py) judges what the rules let through. Its refusals are kept
+    # apart from the rules': a richer copy of the same item (its article page) is judged again.
+    gate_ctx = {"org": rec.organisation_number, "legal_name": (rec.context.get("entity") or {}).get("navn") or "", "brands": brand_names, "host": site_host,
+                "home": home.final_url, "wordpress": wordpress, "group_site": group_site, "own": sorted(entity.own), "other": entity.other}
+    gated: dict[str, str] = {}
+    scores: dict[int, float | None] = {}
+    near_miss: dict[str, tuple[float, str]] = {}  # gated items' (score, url): read first when nothing passed
+    refused_by_gate: dict[str, tuple[float, NewsItem]] = {}  # the gate's refusals, latest copy of each item: the rescue below reads them
+    # News sources that could not be read (timeout, 5xx, a 401/403, the request allowance): when
+    # nothing is published, absence is then not established and the dated-news state is "failed".
+    news_failed: list[str] = []
+
+    def unread(what: str, why: str) -> None:
+        if why in ("error", "blocked", "budget"):
+            news_failed.append(f"{what} ({'timed out or server error' if why == 'error' else 'blocked' if why == 'blocked' else 'not read within the request allowance'})")
 
     def add_news(item: NewsItem) -> None:
-        if not item.title or not _news_window(item.date) or (item.url and (NOT_NEWS_PATH.search(urlsplit(item.url).path) or foreign_page(item.url, own_text))):
+        early = None
+        if not item.title:
+            early = "no title"
+        elif not _news_window(item.date):
+            early = "outside the news window"
+        elif item.url and NOT_NEWS_PATH.search(urlsplit(item.url).path):
+            early = "shop, catalogue, category or job path"
+        elif item.url and foreign_page(item.url, own_text):
+            early = "a foreign sibling's page"
+        if corpus:
+            candidates.append((item, early or refused.get(_norm_url(item.url) if item.url else f"{item.title.lower()}|{item.date}") or news_drop_reason(item, entity)))
+        if early:
             return
         key = _norm_url(item.url) if item.url else f"{item.title.lower()}|{item.date}"
         why = refused.get(key) or news_drop_reason(item, entity)
@@ -2787,6 +2943,23 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             refused[key] = why
             news.pop(key, None)
             return
+        keep, score = newsgate.verdict(newsgate.record(item, gate_ctx))
+        scores[id(item)] = score
+        if not keep:
+            if item.method == "article_page_meta" or key not in news:
+                # The article page is the fullest evidence there is: when it says no, an earlier copy goes too.
+                gated[key] = "below the news gate (product, service, guide, commentary or other entity)"
+                news.pop(key, None)
+            if score is not None:
+                refused_by_gate[key] = (score, item)
+            if item.method != "article_page_meta" and item.url and score is not None:
+                near_miss[key] = (score, item.url)
+            else:
+                near_miss.pop(key, None)
+            return
+        gated.pop(key, None)
+        near_miss.pop(key, None)
+        refused_by_gate.pop(key, None)
         current = news.get(key)
         if current is None:
             for other_key, other in news.items():
@@ -2809,7 +2982,9 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 else:
                     continue  # an embedded article with no address of its own dates nothing here
                 if when and is_headline(title):
-                    add_news(NewsItem(title, link, when[0], when[1], snap, f'JSON-LD "{title[:150]}" datePublished {item["datePublished"]}', "json_ld_article", "company_website"))
+                    lead = _clean(item.get("description") or item.get("abstract") or "")[: newsgate.LEAD_CHARS]
+                    add_news(NewsItem(title, link, when[0], when[1], snap, f'JSON-LD "{title[:150]}" datePublished {item["datePublished"]}', "json_ld_article", "company_website",
+                                      lead=lead, date_source="jsonld_" + sorted(_types(item))[0], ld_types=tuple(sorted(_types(item))), flags=newsgate.text_signals(lead)))
     for entry in sitemap:
         if entry.news_title and entry.news_date:
             when = stamp(entry.news_date)
@@ -2817,11 +2992,14 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             if snap is None:
                 continue
             if when and is_headline(entry.news_title):
-                add_news(NewsItem(entry.news_title, entry.loc, when[0], when[1], snap, f"{entry.news_title} | news:publication_date {entry.news_date}", "news_sitemap", "company_website"))
+                add_news(NewsItem(entry.news_title, entry.loc, when[0], when[1], snap, f"{entry.news_title} | news:publication_date {entry.news_date}", "news_sitemap", "company_website", date_source="news_sitemap"))
     feeds = _declared_feeds(own_pages(), site_host)
-    if wordpress and plan.can(1, 6.0):
+    if wordpress and not plan.can(1, 6.0):
+        unread("the WordPress post API", "budget")
+    elif wordpress:
         api = _wordpress_api(home_soup, home.final_url)
-        snap = plan.raw(api + "wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list", headers={"Accept": "application/json"})
+        snap, why = plan.raw_status(api + "wp/v2/posts?per_page=20&_fields=date,date_gmt,link,title,class_list,excerpt", headers={"Accept": "application/json"}, retry=True)
+        unread("the WordPress post API", why)
         found = wordpress_items(snap, site_host) if snap is not None else []
         if snap is not None and snap.ok:
             news_checked.append(f"the WordPress post API ({len(found)} dated post(s))")
@@ -2829,12 +3007,17 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         for item in found:
             if library and not news_path(item.url):
                 refused.setdefault(_norm_url(item.url) if item.url else item.title.lower(), "a post in a topic library (4+ topic categories, no news category)")
+                if corpus:
+                    candidates.append((item, "a post in a topic library (4+ topic categories, no news category)"))
                 continue
             add_news(item)
         if not found and not feeds:
             feeds = [urlunsplit((urlsplit(home.final_url).scheme, urlsplit(home.final_url).netloc, "/feed/", "", ""))]
-    if len(news) < 3 and feeds and plan.can(1, 6.0):
-        snap = plan.raw(feeds[0], headers={"Accept": "application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.5"})
+    if (len(news) < 3 or corpus) and feeds and not plan.can(1, 6.0):
+        unread(f"the feed {feeds[0]}", "budget")
+    elif (len(news) < 3 or corpus) and feeds:
+        snap, why = plan.raw_status(feeds[0], headers={"Accept": "application/rss+xml,application/atom+xml,application/xml;q=0.9,*/*;q=0.5"}, retry=True)
+        unread(f"the feed {feeds[0]}", why)
         found = feed_items(snap, site_host) if snap is not None else []
         if snap is not None and snap.ok:
             news_checked.append(f"the feed {feeds[0]} ({len(found)} dated item(s))")
@@ -2842,29 +3025,53 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             add_news(item)
     for item in listing_items(home, home_soup, site_host, require_news_path=True):
         add_news(item)
-    if len(news) < 3:
+    listing_links: list[str] = []  # article pages the news listing links (read when its cards carry no date)
+    if len(news) < 3 or corpus:
         listing = _news_listing(anchors, sitemap, site_host, home.final_url)
-        if listing and plan.can(1, 6.0):
-            page = plan.page(listing)
+        if listing and not plan.can(1, 6.0):
+            unread(f"the news listing {listing}", "budget")
+        elif listing:
+            page, why = plan.read(listing)
+            unread(f"the news listing {listing}", why)
             if page is not None and _site(page[0].final_url) == site_host:
                 found = listing_items(page[0], page[1], site_host, require_news_path=False)
                 news_checked.append(f"the news listing {page[0].final_url} ({len(found)} dated item(s))")
                 for item in found:
                     add_news(item)
+                listing_links = _listing_articles(page[0], page[1], site_host)
 
     # Article pages: the headline and published datetime as the article itself states them.
-    for url in _articles_to_read(anchors, news, sitemap, site_host)[: MAX_ARTICLE_FETCHES]:
+    to_read = _articles_to_read(anchors, news, sitemap, site_host, listing_links)
+    if not news and near_miss:
+        # Nothing passed the gate on the evidence of a feed, a post API or a card: the two closest
+        # refusals get their own page read first, whose type signals (og:type, Article JSON-LD,
+        # article:published_time, a price or a cart) settle what a title and an excerpt could not.
+        closest = [u for _s, u in sorted(((sc, u) for sc, u in near_miss.values() if _site(u) == site_host), key=lambda t: (-t[0], t[1]))[:2]]
+        to_read = closest + [u for u in to_read if _norm_url(u) not in {_norm_url(c) for c in closest}]
+    to_read = to_read[: MAX_ARTICLE_FETCHES + (2 if corpus else 0)]
+    for n_read, url in enumerate(to_read):
         if not plan.can(1, 6.0):
+            unread(f"{len(to_read) - n_read} article page(s)", "budget")
             break
-        page = plan.page(url)
+        page, why = plan.read(url)
+        unread(f"the article page {url}", why)
         if page is None or _site(page[0].final_url) != site_host:
             continue
         if len(listing_items(page[0], page[1], site_host, require_news_path=False)) >= 3:
             continue  # a listing, not an article
-        item = article_meta(page[0], page[1], brand_names + names)
+        item = article_meta(page[0], page[1], brand_names + names, page[2])
         news_checked.append(f"the article page {page[0].final_url}")
         if item is not None:
             add_news(item)
+
+    # A company whose every candidate the gate refused keeps its best-scoring ones (newsgate.rescue_limit):
+    # the model is a classifier of content, and on a thin blog its word alone should not turn "has posts"
+    # into "no news". Ties break on the URL, so the choice is the same on every run.
+    if not news and refused_by_gate and newsgate.rescue_limit():
+        best = sorted(((sc, key, it) for key, (sc, it) in refused_by_gate.items() if sc >= newsgate.rescue_floor()), key=lambda t: (-t[0], t[1]))[: newsgate.rescue_limit()]
+        for _sc, key, it in best:
+            news[key] = it
+            gated.pop(key, None)
 
     # -- social profiles from every page of the site that was read --------------------------------
     profiles: dict[str, Found] = {}
@@ -2901,7 +3108,19 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if verified.unread and jobs_complete:
         jobs_complete = False  # a listed ad that was not read can be neither published nor closed
     _publish_hiring(rec, careers, verified.kept, company_label, site_host, complete=jobs_complete, notes=hiring_notes, verified=verified, parents_site=parents_site)
-    _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, refused)
+    published = _publish_news(rec, list(news.values()), company_label, ["the homepage"] + news_checked, {**gated, **refused}, failed=news_failed)
+    if corpus:
+        keys = {_norm_url(i.url) if i.url else f"{i.title.lower()}|{i.date}" for i in published}
+        rows = []
+        for item, why in candidates:
+            row = newsgate.record(item, gate_ctx)
+            row["gate"] = scores.get(id(item))
+            key = _norm_url(item.url) if item.url else f"{item.title.lower()}|{item.date}"
+            row["rule"] = why or ""
+            row["published_ok"] = key in keys and not why
+            row["final_rule"] = "" if key in keys else (why or refused.get(key) or gated.get(key) or "not published (publish-stage rule, cap or group site)")
+            rows.append(row)
+        newsgate.dump(rows)
     if group_site:
         reason = (rec.context.get("website") or {}).get("group_reason") or "the verified site is a group site"
         rec.set_state("public_brand", "ambiguous", f"{reason}; its brand and self-description are the group's, not attributed to this entity")
@@ -2917,7 +3136,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if jobs_complete:
         rec.checked_fields.add("job_posting:site")
     rec.checked_fields.update({"social_profile", "website_phone", "website_email", "public_brand_name", "self_description"})
-    if visit.time_left() > 5:
+    if visit.time_left() > 5 and not news_failed:
         rec.checked_fields.add("company_news")
     rec.context["harvest"] = {
         "requests": plan.used(), "ad_requests": plan.used() - plan.ad_start if plan.ad_start is not None else 0, "sitemap_entries": len(sitemap),
@@ -3130,10 +3349,33 @@ def _info_links(anchors: list[tuple[str, str, Snapshot, str]], sitemap: list[Sit
     return [(kind, best[kind][1]) for kind in ("contact", "about") if kind in best]
 
 
-def _articles_to_read(anchors: list[tuple[str, str, Snapshot, str]], news: dict[str, NewsItem], sitemap: list[SitemapEntry], site_host: str) -> list[str]:
+def _listing_articles(snap: Snapshot, soup: BeautifulSoup, site_host: str) -> list[str]:
+    """Article pages a news listing links, in page order: under a news section, or one level below
+    the listing's own path (/nyheter -> /nyheter/<slug>). Menus, footers and sidebars are skipped."""
+    base = urlsplit(snap.final_url).path.rstrip("/")
+    out: list[str] = []
+    for anchor in soup.find_all("a", href=True):
+        raw = anchor["href"].strip()
+        if raw.startswith(("#", "mailto:", "tel:", "javascript:")) or _site_chrome_block(anchor):
+            continue
+        try:
+            url = urljoin(snap.final_url, raw).split("#")[0].split("?")[0]
+        except ValueError:
+            continue
+        path = urlsplit(url).path.rstrip("/")
+        below = bool(base) and path.startswith(base + "/") and path.count("/") == base.count("/") + 1
+        segs = _segments(url)
+        if _site(url) != site_host or not segs or any(NOT_ARTICLE_SEGMENT.match(s) for s in segs) or NEWS_SEGMENT.match(segs[-1]) or re.fullmatch(r"\d{1,4}", segs[-1]):
+            continue
+        if (is_article_url(url, site_host) or below) and url not in out:
+            out.append(url)
+    return out[:20]
+
+
+def _articles_to_read(anchors: list[tuple[str, str, Snapshot, str]], news: dict[str, NewsItem], sitemap: list[SitemapEntry], site_host: str, listing_links: list[str] | None = None) -> list[str]:
     """Article pages worth one request each: those the homepage links under a news section (what
-    Builderr's own crawler reads), then dated listing items without a time, then the newest
-    sitemap articles."""
+    Builderr's own crawler reads), then dated listing items without a time, then the articles the
+    news listing links (its cards may carry no date at all), then the newest sitemap articles."""
     done = {_norm_url(n.url) for n in news.values() if n.url and n.method == "article_page_meta"}
     timed = {_norm_url(n.url) for n in news.values() if n.url and "T" in n.published}
     out: list[str] = []
@@ -3153,6 +3395,10 @@ def _articles_to_read(anchors: list[tuple[str, str, Snapshot, str]], news: dict[
     for item in sorted(news.values(), key=lambda n: n.date, reverse=True):
         if item.url and _norm_url(item.url) not in timed and _site(item.url) == site_host:
             add(item.url)
+    known = {_norm_url(n.url) for n in news.values() if n.url}
+    for url in listing_links or []:
+        if _norm_url(url) not in known:
+            add(url)
     dated = [e for e in sitemap if is_article_url(e.loc, site_host) and e.lastmod and _news_window(e.lastmod[:10])]
     for entry in sorted(dated, key=lambda e: e.lastmod or "", reverse=True):
         if _norm_url(entry.loc) not in timed:
@@ -3421,14 +3667,41 @@ def copy_bursts(items: list[NewsItem]) -> set[int]:
     return out
 
 
-def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None, checked: list[str] | None = None, refused: dict[str, str] | None = None) -> None:
+def _slug_match(item: NewsItem) -> float:
+    """Share of the title's words that the article's own URL slug spells."""
+    words = [w for w in re.sub(r"[^a-z0-9]+", " ", _fold_a(item.title)).split() if len(w) >= 3]
+    slug = _alnum(_segments(item.url)[-1]) if item.url and _segments(item.url) else ""
+    return sum(1 for w in words if w in slug) / len(words) if words else 0.0
+
+
+def shared_titles(items: list[NewsItem]) -> set[int]:
+    """Indexes of items whose headline another page of the site also carries: a banner or a site-wide
+    og:title read as the article's own title (three drivenergi.no articles all came out "Farget diesel er
+    blå"), or one post published twice ("/smarte-hjem" and "/smarte-hjem-2"). The page whose slug
+    spells the title keeps it; when none does, none is published."""
+    groups: dict[str, list[int]] = {}
+    for i, item in enumerate(items):
+        groups.setdefault(" ".join(item.title.lower().split()), []).append(i)
+    out: set[int] = set()
+    for idx in groups.values():
+        if len({_norm_url(items[i].url) if items[i].url else i for i in idx}) < 2:
+            continue
+        ranked = sorted(idx, key=lambda i: (-_slug_match(items[i]), len(items[i].url or ""), items[i].url or ""))
+        keep = ranked[0] if _slug_match(items[ranked[0]]) >= 0.5 else None
+        out.update(i for i in idx if i != keep)
+    return out
+
+
+def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None, checked: list[str] | None = None, refused: dict[str, str] | None = None, failed: list[str] | None = None) -> list[NewsItem]:
     dropped: dict[str, int] = {}
     for why in (refused or {}).values():
         dropped[why] = dropped.get(why, 0) + 1
     burst = copy_bursts(items)
+    shared = shared_titles(items)
     kept: list[NewsItem] = []
     for index, item in enumerate(items):
-        why = "a copy or import date shared by 3+ posts within 10 minutes" if index in burst else "title cut short on the listing card" if truncated_title(item.title, item.url) else None
+        why = ("a copy or import date shared by 3+ posts within 10 minutes" if index in burst else "title cut short on the listing card" if truncated_title(item.title, item.url)
+               else "the same title on another page of the site" if index in shared else None)
         if why:
             dropped[why] = dropped.get(why, 0) + 1
         else:
@@ -3454,6 +3727,10 @@ def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str 
     elif checked is not None:
         # Recorded even when register updates make the family available: the dated-news row reads it.
         reason = "no dated news about the company on its own website; checked " + ", ".join(checked)
+        if failed:
+            # A source that was not read leaves absence unproven: say so instead of "not available".
+            reason = f"{newsgate.NEWS_UNREAD}: could not read " + ", ".join(dict.fromkeys(failed)) + "; checked " + ", ".join(checked)
         if dropped:
             reason += "; dated items not published: " + ", ".join(f"{n} {why}" for why, n in sorted(dropped.items(), key=lambda kv: -kv[1]))
-        rec.set_state("public_activity", "not_available", reason[:600])
+        rec.set_state("public_activity", "failed" if failed else "not_available", reason[:600])
+    return items
