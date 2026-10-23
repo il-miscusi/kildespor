@@ -343,45 +343,77 @@ class SynthesisTests(unittest.TestCase):
 
 
 class SiteTests(unittest.TestCase):
-    def build(self, shape: str) -> tuple[Path, list[dict]]:
-        from kildespor.site import build_site
+    def build(self, shape: str = "internal") -> tuple[Path, list[dict]]:
+        from kildespor.site import build_site, write_root_page
 
         envs = [envelope_of(rich_record()), envelope_of(bare_holding()), envelope_of(sole_proprietor())]
         if shape == "published":
             envs = [published(e) for e in envs]
         out = Path(tempfile.mkdtemp()) / "site"
         build_site(envs, out, {"run": {"run_id": "r1", "completed_at": "2026-10-17T07:00:00Z"}})
+        write_root_page(out.parent, out)
         return out, envs
 
-    def test_split_files_and_routes(self) -> None:
+    def index(self, out: Path) -> dict:
+        from kildespor.site import data_index
+
+        return data_index(out)
+
+    def test_routes_are_real_pages(self) -> None:
         for shape in ("internal", "published"):
             out, envs = self.build(shape)
-            html = (out / "index.html").read_text()
-            for route in ("#/research", "#/companies/", "#/compare", "#/refresh"):
-                self.assertIn(route, html)
-            self.assertNotIn("https://cdn", html)
-            self.assertIn('src="data/index.js"', html)
-            index = json.loads((out / "data" / "index.json").read_text())
+            orgs = [e["organisation_number"] for e in envs]
+            for page in ["index.html", "research/index.html", "refresh/index.html", "compare/index.html"] + [f"companies/{o}/index.html" for o in orgs]:
+                html = (out / page).read_text()
+                self.assertIn('role="search"', html, page)
+                self.assertIn('<label for="search">', html, page)
+                self.assertIn("assets/viewer.js", html)
+                self.assertIn("data/index.js", html)
+                self.assertNotIn("https://cdn", html)
+            company = (out / f"companies/{orgs[0]}/index.html").read_text()
+            self.assertIn('"route": "companies", "org": "938702675"', company)
+            self.assertIn('src="../../assets/viewer.js"', company)
+            self.assertIn("<h1>FJORD DATA AS</h1>", company)  # readable without the script
+            self.assertIn("Company brief", company)
+            self.assertNotIn("NORDMANN HOLDING AS", company)  # one company's page holds one company
+            root = (out.parent / "index.html").read_text()
+            self.assertIn('src="site/assets/viewer.js"', root)
+            self.assertIn('href="site/companies/938702675/index.html"', root)
+            self.assertNotIn("http-equiv", root)
+            self.assertTrue((out / "assets" / "viewer.css").exists())
+            self.assertFalse(list((out / "data" / "companies").glob("*.json")))  # one copy of each profile
+
+    def test_index_rows_and_company_data(self) -> None:
+        for shape in ("internal", "published"):
+            out, envs = self.build(shape)
+            index = self.index(out)
             self.assertEqual([r["o"] for r in index["rows"]], [e["organisation_number"] for e in envs])
             rich = index["rows"][0]
             self.assertEqual((rich["j"], rich["nw"], rich["cv"]), (1, 1, 5), shape)
-            self.assertNotIn("cp", rich)
             self.assertEqual(rich["w"], "https://fjorddata.no/")
             self.assertEqual(rich["so"], ["linkedin"])
             bare = index["rows"][1]
             self.assertEqual((bare["j"], bare["w"]), (0, None))
             for env in envs:
                 org = env["organisation_number"]
-                data = json.loads((out / "data" / "companies" / f"{org}.json").read_text())
                 js = (out / "data" / "companies" / f"{org}.js").read_text()
-                self.assertTrue(js.startswith('kildesporLoad("company",'))
+                self.assertTrue(js.startswith(f'kildesporLoad("company","{org}",'))
+                data = json.loads(js[js.index(",", js.index(",") + 1) + 1:].rstrip().rstrip(";").rstrip(")"))
                 self.assertEqual(data["org"], org)
-                # every evidence id a claim cites resolves to a source with URL, time and hash
                 for claim in data["cl"]:
                     for ev_id in claim["e"]:
                         source = data["src"][data["ev"][ev_id]["r"]]
                         self.assertTrue(source["u"] and source["t"] and source["h"])
                 self.assertTrue(data["syn"]["summary"])
+                self.assertEqual([s["key"] for s in data["syn"]["sections"]][:2], ["what", "money"])
+
+    def test_brand_in_index_is_never_a_page_title(self) -> None:
+        from kildespor.site import index_row
+
+        rec = rich_record()
+        site = next(c for c in rec.claims if c["field"] == "official_website")
+        rec.add_claim(family="public_brand", field_name="public_brand_name", value="Northern Europe's leading provider of IT solutions.", evidence_ids=site["evidence_ids"], method="t")
+        self.assertIsNone(index_row(envelope_of(rec))["b"])
 
     def test_placeholder_and_bad_input_envelopes(self) -> None:
         from kildespor.envelope import placeholder_envelope
@@ -390,26 +422,38 @@ class SiteTests(unittest.TestCase):
         envs = [placeholder_envelope("12345", {"run_id": "r1"}, "input is not a nine-digit Norwegian organisation number"), envelope_of(bare_holding())]
         out = Path(tempfile.mkdtemp()) / "site"
         build_site(envs, out, None)
-        rows = json.loads((out / "data" / "index.json").read_text())["rows"]
+        rows = self.index(out)["rows"]
         self.assertEqual([r["o"] for r in rows], ["12345", "919263601"])
-        data = json.loads((out / "data" / "companies" / "12345.json").read_text())
-        self.assertEqual(data["org"], "12345")
+        self.assertTrue((out / "companies" / "12345" / "index.html").exists())
+
+    def test_rebuilt_synthesis_option(self) -> None:
+        from kildespor.site import build_site
+
+        env = envelope_of(rich_record())
+        env["synthesis"] = dict(env["synthesis"], summary_sentences=[{"text": "OLD BRIEF", "claim_ids": [], "evidence_ids": [], "sources": []}])
+        out = Path(tempfile.mkdtemp()) / "site"
+        build_site([env], out, None)
+        self.assertIn("OLD BRIEF", (out / "companies/938702675/index.html").read_text())
+        build_site([env], out, None, rebuild_synthesis=True)
+        self.assertNotIn("OLD BRIEF", (out / "companies/938702675/index.html").read_text())
 
     def test_script_parses(self) -> None:
-        import re
         import shutil
         import subprocess
 
         node = shutil.which("node")
         if not node:
             self.skipTest("node not installed")
-        out, _ = self.build("internal")
-        html = (out / "index.html").read_text()
-        for i, script in enumerate(re.findall(r"<script>(.*?)</script>", html, flags=re.S)):
-            path = out / f"check{i}.js"
-            path.write_text(script)
-            result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr[:500])
+        out, _ = self.build()
+        result = subprocess.run([node, "--check", str(out / "assets" / "viewer.js")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr[:500])
+
+    def test_viewer_mirrors_builderrs_sample(self) -> None:
+        from kildespor.site import ASSET_DIR
+
+        js = (ASSET_DIR / "viewer.js").read_text()
+        for words in ("Company brief", "Latest financials", "Who runs it?", "Working here", "Recent activity", "Check the evidence", "Ask Signalpost", "Company directory", "All five areas", "View source", "Sources found", "What we could not establish"):
+            self.assertIn(words, js)
 
 
 class ExportTests(unittest.TestCase):
