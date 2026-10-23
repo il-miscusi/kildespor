@@ -163,3 +163,80 @@ and drops the crawl's page snippets.
 
 The shipped files were built on Kaggle CPU sessions that run these same
 scripts unchanged (the kernels embed `tools/` at push time).
+
+## The ATS tenant index (`ats-tenants.tsv.gz`)
+
+| file | source | build date | licence | rows | companies | size | build |
+|---|---|---|---|---|---|---|---|
+| `ats-tenants.tsv.gz` | Brreg bulk register (NLOD 2.0), public DNS, NAV's vacancy feed, and each tenant's public job list | 2026-10-23 | NLOD-2.0 for the register fields; the rest are facts we derived | 269 (154 Teamtailor and 3 Recruitee by DNS alias, 112 Teamtailor by NAV ad) | 257 | 15 KB | `python3 tools/build_ats.py` (Kaggle CPU, 56 min) |
+
+Columns: `orgnr platform list_url match_rule match_evidence names built_at`.
+
+A row says that one universe company has an applicant-tracking tenant whose
+open ads the agent can read in one keyless request (`kildespor/ats.py`). It
+is a pointer, never a fact: at run time the agent reads the list live, and
+an ad is published only when it names this entity exactly (legal, subunit or
+verified brand name) or, on a list that names no employer at all, when its
+workplace is in Norway. The list response is the claim's evidence, with the
+row's match rule in its access policy. A company the index does not name
+loses nothing: its website's careers page and NAV's feed are read as before.
+
+| `match_rule` | how the tenant was tied to the organisation number |
+|---|---|
+| `register_domain_cname` | a careers host on the company's own domain (`karriere.`, `jobb.`, `jobs.`, `career.`, `careers.`, `jobber.`) is a DNS alias of Teamtailor (`ext.teamtailor.com`) or Recruitee (`secure.recruitee.com`), and that domain is the company's Brreg `hjemmeside`, registered e-mail domain or a sub-unit's website, stated by no other register entity; a domain on which a random name also resolves (a wildcard) is skipped |
+| `nav_ad_employer_orgnr` | an active NAV ad names the company or one of its sub-units by `employer.orgnr` and applies through the tenant, and the tenant's own list names that employer (NAV's employer name or the legal name, exactly); 9 ties failed that check (agencies recruiting for clients) and were dropped |
+
+Inputs of the 23 Oct build: 42,559 universe companies with a domain of their
+own (45,108 domains, 270,648 DNS queries, 212 Teamtailor and 3 Recruitee
+aliases; SuccessFactors, Homerun, ReachMee and Emply aliases were found but
+have no keyless list); 10,683 active NAV ads read entry by entry (840 feed
+pages). 230 Teamtailor and 3 Recruitee lists answered; 59 Teamtailor hosts
+did not serve a feed and were left out. Coverage is small (257 companies,
+0.06% of the universe): most companies on a random draw have no ATS at all,
+and the index's job is the few whose website is not verified at run time or
+does not link its career site.
+
+### NAV employer names (`ats-nav-names.tsv.gz`)
+
+| file | source | build date | licence | rows | companies | size | build |
+|---|---|---|---|---|---|---|---|
+| `ats-nav-names.tsv.gz` | NAV's vacancy feed (`pam-stilling-feed.nav.no`, public token): every active ad's `businessName` and `employer.orgnr`, with sub-units mapped to their company by the Brreg bulk register | 2026-10-23 | facts we derived from NAV's redistributed ads | 1,474 | 620 | 22 KB | `python3 tools/build_ats.py --nav-names-only` (Kaggle CPU, 40 min) |
+
+Columns: `orgnr business_name ads name_ads built_at`.
+
+NAV's feed lists an ad only by the name the employer advertised under, and
+the agent opens a feed entry only when that name is one of the company's own
+(legal, sub-unit or verified brand). A row adds a name under which NAV listed
+an ad naming this company (or one of its sub-units) by `employer.orgnr` on
+23 October 2026: Norasondegruppen's ads name NORASONDE KARRIERE AS's Bergen
+sub-unit and were never opened. Kept only when the name is none of the
+company's legal or sub-unit names, and when the company's ads are at least half
+of the name's ads or the name has at most eight (76 shared chain names were
+dropped, so a chain's brand does not send every member to open dozens of
+entries). The names choose which live entries to open; an ad is published
+only on its live `employer.orgnr`. They are never used to match Jobbnorge or
+ATS employers.
+
+### Active NAV ads by company (`ats-nav-active.tsv.gz`)
+
+| file | source | build date | licence | rows | companies | size | build |
+|---|---|---|---|---|---|---|---|
+| `ats-nav-active.tsv.gz` | NAV's vacancy feed, read in full (840 pages) and every active entry fetched (10,970 ads); each ad's `employer.orgnr` mapped to its universe company through the Brreg bulk register's sub-units | 2026-10-23 | facts we derived from NAV's redistributed ads | 5,528 | 2,411 | 265 KB | same run as above (`--nav-names-only` writes both) |
+
+Columns: `orgnr uuid employer_orgnr business_name published expires changed built_at`.
+
+NAV's feed returns what changed in the window the agent reads (45 days), and a
+feed entry is opened only when its listed name is one of the company's own. An
+ad published in June and unchanged since, or listed under a department's name
+("Medisinsk avdeling Flekkefjord, Sørlandet sykehus HF"), was never seen: the
+pool missed Sørlandet Sykehus, Madsen og Brekke, B.A. Gruppen, Mercell, REMA
+Dusavik, Norlandia Eltonåsen and Flexibemanning for these two reasons. A row
+names one ad that was active on the build date and the company it was
+advertised for. At run time the agent fetches those entries live (at most 30 per
+company) unless the window has seen the ad close or its expiry has passed, and
+publishes an entry only when it is ACTIVE and names this entity or one of its
+sub-units by `employer.orgnr`. The live feed supplies what changed after the
+build: a snapshot plus the changes since is the whole active set, and an index
+older than the 45-day window widens the window to its age (at most 120 days).
+Ads whose employer is shown as "Anonym arbeidsgiver" are not published.
+

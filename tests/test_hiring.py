@@ -196,10 +196,11 @@ class AvailabilityStates(unittest.TestCase):
 
     def test_unread_ads_past_the_budget_are_not_published(self) -> None:
         home = '<html><body><nav><a href="/karriere/">Karriere</a></nav></body></html>'
-        links = "".join(f'<a href="/karriere/stilling/{100000 + i}-rolle">Rolle nummer {i}</a>' for i in range(14))
+        listed = harvest.MAX_AD_FETCHES + 4
+        links = "".join(f'<a href="/karriere/stilling/{100000 + i}-rolle">Rolle nummer {i}</a>' for i in range(listed))
         careers = f"<html><head><title>Karriere</title></head><body><h1>Ledige stillinger</h1>{links}</body></html>"
         pages = {"https://www.fjordbygg.no/karriere/": careers}
-        for i in range(14):
+        for i in range(listed):
             pages[f"https://www.fjordbygg.no/karriere/stilling/{100000 + i}-rolle"] = ad_html(f"Rolle nummer {i}", "Fjordbygg")
         rec = record()
         fetcher = harvest_site(rec, "https://www.fjordbygg.no/", home, pages)
@@ -518,6 +519,26 @@ class RefreshFromV1Baseline(unittest.TestCase):
         rec.finalize_states()
         diff(rec, internal(json.loads(json.dumps(self.v1()))), "r2")
         self.assertFalse(rec.claims_for("hiring"))  # job_posting:site not checked, still never carried
+
+
+class TeamtailorSameAdTwiceTest(unittest.TestCase):
+    def test_custom_domain_and_tenant_host_publish_one_ad(self) -> None:
+        def role(url: str, method: str = "ats_api_teamtailor_list") -> tuple[harvest.Role, None]:
+            return harvest.Role("Regnskapsfører", url, None, None, None, "teamtailor", "span", method), None
+
+        roles = [
+            role("https://karriere.okoraad.no/jobs/7401342-regnskapsforer"),
+            role("https://karriere.okoraad.no/jobs/5082339-helgeland"),
+            role("https://okorad.teamtailor.com/jobs/7401342-regnskapsforer"),
+            role("https://okorad.teamtailor.com/jobs/5082339-helgeland"),
+            role("https://example.no/jobs/7401342-other", "json_ld_jobposting"),
+        ]
+        kept = harvest._one_teamtailor_ad_per_job(roles)
+        self.assertEqual([r.url for r, _ in kept], [
+            "https://karriere.okoraad.no/jobs/7401342-regnskapsforer",
+            "https://karriere.okoraad.no/jobs/5082339-helgeland",
+            "https://example.no/jobs/7401342-other",
+        ])
 
 
 if __name__ == "__main__":

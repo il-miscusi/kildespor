@@ -1,0 +1,556 @@
+"""Offline tests for the ATS connectors, the tenant index and Jobbnorge (no network).
+
+Fixtures in ``tests/fixtures/ats/`` are live responses read on 23 Oct 2026, trimmed to a few
+entries (descriptions cut). Run with ``python -m pytest -q tests/test_ats.py``.
+"""
+from __future__ import annotations
+
+import gzip
+import re
+import hashlib
+import json
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+
+from kildespor import ats, harvest, jobs, model
+from kildespor.http import Snapshot
+from kildespor.model import CompanyRecord
+from kildespor.website import SiteVisit, parse
+
+FIX = Path(__file__).resolve().parent / "fixtures" / "ats"
+
+
+def fixture(name: str) -> str:
+    return (FIX / name).read_text(encoding="utf-8")
+
+
+def snap(url: str, body: str, status: int = 200, ctype: str = "application/json; charset=utf-8", final_url: str | None = None) -> Snapshot:
+    data = body.encode("utf-8")
+    return Snapshot(requested_url=url, final_url=final_url or url, status=status, retrieved_at="2026-10-23T00:00:00Z", sha256=hashlib.sha256(data).hexdigest(), content_type=ctype, body=data)
+
+
+def record(name: str, org: str = "986885358", **entity: object) -> CompanyRecord:
+    rec = CompanyRecord(org)
+    rec.context["entity"] = {"navn": name, **entity}
+    return rec
+
+
+class Fetcher:
+    """Fixture responses by URL: (body, content type). Unknown URLs are 404."""
+
+    def __init__(self, pages: dict[str, tuple[str, str] | str]) -> None:
+        self.pages = {k: (v, "text/html; charset=utf-8") if isinstance(v, str) else v for k, v in pages.items()}
+        self.count = 0
+        self.cap: int | None = None
+        self.cap_start = 0
+        self.requested: list[str] = []
+
+    def thread_requests(self) -> int:
+        return self.count
+
+    def begin_company(self, cap: int | None) -> None:
+        self.cap, self.cap_start = cap, self.count
+
+    def raise_company_cap(self, extra: int) -> None:
+        if self.cap is not None:
+            self.cap = max(self.cap, self.count - self.cap_start + extra)
+
+    def get(self, url: str, **_kwargs: object) -> Snapshot:
+        self.count += 1
+        self.requested.append(url)
+        if url not in self.pages:
+            return snap(url, "not found", 404, "text/html")
+        body, ctype = self.pages[url]
+        return snap(url, body, 200, ctype)
+
+
+def harvest_site(rec: CompanyRecord, home_url: str, home_html: str, pages: dict) -> Fetcher:
+    fetcher = Fetcher(pages)
+    visit = SiteVisit(fetcher, rec, time.monotonic() + 60)  # type: ignore[arg-type]
+    home = snap(home_url, home_html, ctype="text/html; charset=utf-8")
+    soup, _html, text = parse(home)
+    visit.pages.append((home, soup, text))
+    harvest._extract_site_facts(rec, visit, home, True, None)
+    return fetcher
+
+
+def job_claims(rec: CompanyRecord) -> list[dict]:
+    return [c for c in rec.claims if c["field"] == "job_posting"]
+
+
+class Detection(unittest.TestCase):
+    def test_tenant_urls(self) -> None:
+        t = ats.tenant_from_url
+        self.assertEqual(t("https://opplandelektro.teamtailor.com/jobs/7829376-prosjektleder").list_url, "https://opplandelektro.teamtailor.com/jobs.json")
+        self.assertIsNone(t("https://www.teamtailor.com/en/"))  # the vendor's own site
+        self.assertIsNone(t("https://app.teamtailor.com/login"))
+        self.assertEqual(t("https://boards.greenhouse.io/embed/job_board/js?for=acme").list_url, "https://boards-api.greenhouse.io/v1/boards/acme/jobs")
+        self.assertEqual(t("https://job-boards.eu.greenhouse.io/acme/jobs/123").list_url, "https://boards-api.eu.greenhouse.io/v1/boards/acme/jobs")
+        self.assertEqual(t("https://jobs.lever.co/acme/1f2e").list_url, "https://api.lever.co/v0/postings/acme?mode=json")
+        self.assertEqual(t("https://jobs.eu.lever.co/acme").list_url, "https://api.eu.lever.co/v0/postings/acme?mode=json")
+        self.assertEqual(t("https://jobs.ashbyhq.com/Acme/abc").list_url, "https://api.ashbyhq.com/posting-api/job-board/Acme")
+        self.assertEqual(t("https://acme.jobs.personio.de/job/123").list_url, "https://acme.jobs.personio.de/xml")
+        self.assertEqual(t("https://acme.recruitee.com/o/tomrer").list_url, "https://acme.recruitee.com/api/offers/")
+        self.assertEqual(t("https://apply.workable.com/acme/j/ABC123/").list_url, "https://apply.workable.com/api/v1/widget/accounts/acme")
+        self.assertIsNone(t("https://apply.workable.com/j/ABC123"))  # names no account
+        for skipped in ("https://candidate.webcruiter.com/nb-no/Ad/123", "https://www.finn.no/job/ad/1", "https://jobs.smartrecruiters.com/Acme/1", "https://acme.recman.no/job.php?job_id=1"):
+            self.assertIsNone(t(skipped), skipped)
+
+    def test_custom_domain_teamtailor_site(self) -> None:
+        html = '<html><head><link rel="alternate" type="application/rss+xml" title="Jobs" href="https://karriere.dips.com/jobs.rss" /><link href="https://assets-aws.teamtailor-cdn.com/x.css"></head><body></body></html>'
+        self.assertEqual(ats.tenant_for_page("https://karriere.dips.com/", html).list_url, "https://karriere.dips.com/jobs.json")
+        # Teamtailor's images on a company page, but no feed of its own: not a career site
+        self.assertIsNone(ats.tenant_for_page("https://www.dips.com/", '<img src="https://images.teamtailor-cdn.com/a.jpg">'))
+
+
+class Parsers(unittest.TestCase):
+    def test_teamtailor_feed(self) -> None:
+        tl = ats.parse_list("teamtailor", "https://opplandelektro.teamtailor.com/jobs.json", fixture("teamtailor-opplandelektro.json"))
+        self.assertIsNone(tl.error)
+        self.assertEqual(tl.name, "Oppland Elektro")
+        ad = tl.ads[0]
+        self.assertEqual((ad.title, ad.employer, ad.location, ad.country), ("Prosjektleder og faglig ansvarlig bygg", "Oppland Elektro", "Østre Gausdal", "NO"))
+        self.assertEqual(ad.url, "https://opplandelektro.teamtailor.com/jobs/7829376-prosjektleder-og-faglig-ansvarlig-bygg")
+        self.assertEqual(ad.published, "2026-06-01T15:27:33+02:00")
+        empty = ats.parse_list("teamtailor", "https://karriere.dips.com/jobs.json", fixture("teamtailor-dips-empty.json"))
+        self.assertEqual((empty.error, empty.ads, empty.name), (None, [], "DIPS AS"))
+        html = ats.parse_list("teamtailor", "https://jobs.zaptec.com/jobs.json", "<!DOCTYPE html><html></html>")
+        self.assertIsNotNone(html.error)  # Homerun answers its own HTML: not a feed
+
+    def test_other_systems(self) -> None:
+        gh = ats.parse_list("greenhouse", "https://boards-api.greenhouse.io/v1/boards/gitlab/jobs", fixture("greenhouse-gitlab.json"))
+        self.assertTrue(gh.ads and all(a.employer == "GitLab" and a.url.startswith("https://job-boards.greenhouse.io/gitlab/jobs/") for a in gh.ads))
+        lv = ats.parse_list("lever", "https://api.lever.co/v0/postings/spotify?mode=json", fixture("lever-spotify.json"))
+        self.assertTrue(lv.ads and all(a.employer is None and a.url.startswith("https://jobs.lever.co/spotify/") and a.published.endswith("Z") for a in lv.ads))
+        ash = ats.parse_list("ashby", "https://api.ashbyhq.com/posting-api/job-board/ramp", fixture("ashby-ramp.json"))
+        self.assertTrue(ash.ads and all(a.url.startswith("https://jobs.ashbyhq.com/ramp/") for a in ash.ads))
+        pe = ats.parse_list("personio", "https://personio.jobs.personio.de/xml", fixture("personio-personio.xml"))
+        self.assertEqual([(a.title, a.employer, a.url) for a in pe.ads], [("Staff Software Engineer, Data Platform", "Personio SE & Co. KG", "https://personio.jobs.personio.de/job/1834171")])
+        rc = ats.parse_list("recruitee", "https://channable.recruitee.com/api/offers/", fixture("recruitee-channable.json"))
+        self.assertTrue(rc.ads and all(a.employer == "Channable" for a in rc.ads))
+        wk = ats.parse_list("workable", "https://apply.workable.com/api/v1/widget/accounts/huggingface", fixture("workable-huggingface.json"))
+        self.assertTrue(wk.ads and all(a.employer == "Hugging Face" and a.url.startswith("https://apply.workable.com/j/") for a in wk.ads))
+
+    def test_screening(self) -> None:
+        body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "Fjordbygg", "items": [
+            {"title": "Åpen søknad", "url": "https://fjordbygg.teamtailor.com/jobs/1-apen-soknad", "_jobposting": {"hiringOrganization": {"name": "Fjordbygg"}}},
+            {"title": "Talent pool: ingeniører", "url": "https://fjordbygg.teamtailor.com/jobs/2-talent", "_jobposting": {"hiringOrganization": {"name": "Fjordbygg"}}},
+            {"title": "Tømrer", "url": "https://fjordbygg.teamtailor.com/jobs/3-tomrer", "_jobposting": {"validThrough": "2020-01-01", "hiringOrganization": {"name": "Fjordbygg"}}},
+            {"title": "Intern rekruttering", "url": "https://fjordbygg.teamtailor.com/jobs/internal/4-x", "_jobposting": {"hiringOrganization": {"name": "Fjordbygg"}}},
+            {"title": "Prosjektleder", "url": "https://fjordbygg.teamtailor.com/jobs/5-prosjektleder", "_jobposting": {"hiringOrganization": {"name": "Fjordbygg"}}},
+        ]})
+        tl = ats.parse_list("teamtailor", "https://fjordbygg.teamtailor.com/jobs.json", body)
+        self.assertEqual([a.title for a in tl.open_ads()], ["Prosjektleder"])
+        self.assertEqual(len([a for a in tl.ads if a.refused]), 4)
+
+    def test_not_a_vacancy_titles(self) -> None:
+        # Raggamuffin AS's only Teamtailor "job" on 23 Oct was a TV casting call
+        refused = ["Kompani Lauritzen - Tropp 6 Blodsbånd - søker nye deltakere!", "Jobb hos oss", "Jobb hos Fjordbygg", "Bli en del av teamet vårt", "Join us!", "Talent pool", "Open application"]
+        kept = ["Prosjektleder og faglig ansvarlig bygg", "Summer Internship 2027", "Join us as a developer", "Jobb i barnehage - pedagogisk leder", "Rørlegger i Oslo"]
+        for title in refused:
+            self.assertTrue(ats.OPEN_APPLICATION.search(title), title)
+        for title in kept:
+            self.assertFalse(ats.OPEN_APPLICATION.search(title), title)
+
+
+class EmployerRule(unittest.TestCase):
+    def test_single_employer_tenant(self) -> None:
+        tl = ats.parse_list("teamtailor", "https://opplandelektro.teamtailor.com/jobs.json", fixture("teamtailor-opplandelektro.json"))
+        kept, _ = ats.select(record("OPPLAND ELEKTRO AS"), tl, own_tenant=True)
+        self.assertEqual(len(kept), 1)
+        kept, refused = ats.select(record("OPPLAND ELEKTRO GJØVIK AS"), tl, own_tenant=False)
+        self.assertEqual(kept, [])
+        self.assertIn("another employer", next(iter(refused.values())))
+
+    def test_group_tenant_keeps_only_this_entity(self) -> None:
+        tl = ats.parse_list("teamtailor", "https://career.kitron.com/jobs.json", fixture("teamtailor-kitron-group.json"))
+        # KITRON ASA: every ad names a unit ("Kitron Lithuania", "Kitron Global"), none the ASA
+        kept, refused = ats.select(record("KITRON ASA", "976605713"), tl, own_tenant=True)
+        self.assertEqual(kept, [])
+        self.assertTrue(all("another employer" in r for r in refused.values()))
+        kept, _ = ats.select(record("KITRON SWEDEN AS", "000000000"), tl, own_tenant=False)
+        self.assertEqual({a.employer for a in kept}, {"Kitron Sweden"})
+
+    def test_list_naming_no_employer(self) -> None:
+        tl = ats.parse_list("lever", "https://api.lever.co/v0/postings/spotify?mode=json", fixture("lever-spotify.json"))
+        # Spotify's fixture ads are in Paris: on a list naming no employer, a workplace abroad is a
+        # foreign sister's as often as not
+        kept, refused = ats.select(record("SPOTIFY NORWAY AS"), tl, own_tenant=True)
+        self.assertEqual(kept, [])
+        self.assertTrue(all("no workplace in Norway" in r for r in refused.values()))
+        for ad in tl.ads:
+            ad.country, ad.location = "NO", "Oslo"
+        kept, _ = ats.select(record("SPOTIFY NORWAY AS"), tl, own_tenant=True)
+        self.assertEqual(len(kept), len(tl.ads))
+        kept, refused = ats.select(record("SPOTIFY NORWAY AS"), tl, own_tenant=False)
+        self.assertEqual(kept, [])
+        self.assertTrue(all("names no employer" in r for r in refused.values()))
+
+    def test_homerun_page_embeds_its_list(self) -> None:
+        html = fixture("homerun-zaptec.html")
+        tl = ats.inline_list("https://jobs.zaptec.com/", html)
+        self.assertIsNotNone(tl)
+        self.assertGreaterEqual(len(tl.ads), 5)
+        kept, refused = ats.select(record("ZAPTEC ASA", "999164137"), tl, own_tenant=True)
+        self.assertTrue(kept and all(a.country == "NO" or "Norway" in (a.location or "") for a in kept))
+        self.assertTrue(any("no workplace in Norway" in r for r in refused.values()))  # Paris, Munich
+        self.assertIsNone(ats.inline_list("https://www.zaptec.com/", "<html><body>no list</body></html>"))
+
+    def test_exact_names_only(self) -> None:
+        body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "Leirvik", "items": [
+            {"title": "Sveiser", "url": "https://leirvik.teamtailor.com/jobs/9-sveiser", "_jobposting": {"hiringOrganization": {"name": "Leirvik"}}}]})
+        tl = ats.parse_list("teamtailor", "https://leirvik.teamtailor.com/jobs.json", body)
+        # "Leirvik" is LEIRVIK AS's name, not LEIRVIK SVEIS AS's: never accepted for the latter
+        self.assertEqual(ats.select(record("LEIRVIK SVEIS AS"), tl, own_tenant=True)[0], [])
+        self.assertEqual(len(ats.select(record("LEIRVIK AS"), tl, own_tenant=False)[0]), 1)
+        # ... unless the verified website uses it as its brand
+        rec = record("LEIRVIK SVEIS AS")
+        rec.context["site_brand_names"] = ["Leirvik"]
+        self.assertEqual(len(ats.select(rec, tl, own_tenant=True)[0]), 1)
+
+    def test_name_shared_inside_a_group_is_refused(self) -> None:
+        body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "Kitron", "items": [
+            {"title": "Operatør", "url": "https://career.kitron.com/jobs/1-operator", "_jobposting": {"hiringOrganization": {"name": "Kitron"}}}]})
+        tl = ats.parse_list("teamtailor", "https://career.kitron.com/jobs.json", body)
+        rec = record("KITRON AS", "111111111")
+        self.assertEqual(len(ats.select(rec, tl, own_tenant=True)[0]), 1)
+        rec.context["group_tree"] = {"976605713": {"name": "KITRON ASA"}, "111111111": {"name": "KITRON AS"}}
+        kept, refused = ats.select(rec, tl, own_tenant=True)
+        self.assertEqual(kept, [])
+        self.assertIn("also the name of 976605713", next(iter(refused.values())))
+
+
+class HarvestIntegration(unittest.TestCase):
+    HOME = ('<html><head><title>Oppland Elektro</title></head><body><nav><a href="/karriere/">Karriere</a></nav>'
+            "<footer>Oppland Elektro AS, org.nr 986 885 358</footer></body></html>")
+
+    def test_careers_page_linking_a_tenant_reads_its_list_once(self) -> None:
+        careers = ('<html><head><title>Karriere | Oppland Elektro</title></head><body><h1>Jobb hos oss</h1>'
+                   '<a href="https://opplandelektro.teamtailor.com/jobs/7829376-prosjektleder-og-faglig-ansvarlig-bygg">Prosjektleder</a>'
+                   '<a href="https://opplandelektro.teamtailor.com/">Se alle stillinger</a></body></html>')
+        rec = record("OPPLAND ELEKTRO AS")
+        model.SNAPSHOT_DIR = None
+        fetcher = harvest_site(rec, "https://www.opplandelektro.no/", self.HOME, {
+            "https://www.opplandelektro.no/karriere/": careers,
+            "https://opplandelektro.teamtailor.com/jobs.json": (fixture("teamtailor-opplandelektro.json"), "application/feed+json; charset=utf-8"),
+        })
+        claims = job_claims(rec)
+        self.assertEqual([c["value"]["title"] for c in claims], ["Prosjektleder og faglig ansvarlig bygg"])
+        value = claims[0]["value"]
+        self.assertEqual((value["employer"], value["source"], value["published"]), ("Oppland Elektro", "teamtailor", "2026-06-01T15:27:33+02:00"))
+        self.assertEqual(claims[0]["extraction_method"], "ats_api_teamtailor_list")
+        ev = rec.evidence[claims[0]["evidence_ids"][0]]
+        self.assertEqual(ev["span_check"], "verbatim")
+        self.assertIn("Teamtailor career-site job feed", ev["access_policy"])
+        self.assertEqual(ev["source_url"], "https://opplandelektro.teamtailor.com/jobs.json")
+        # one list request, no ad pages, no HTML list page
+        self.assertEqual([u for u in fetcher.requested if "teamtailor" in u], ["https://opplandelektro.teamtailor.com/jobs.json"])
+        self.assertEqual(rec.family_state["hiring"]["state"], "available")
+
+    def test_own_teamtailor_career_site(self) -> None:
+        home = '<html><head><title>DIPS</title></head><body><a href="https://karriere.dips.com">Jobb i DIPS</a><footer>DIPS AS</footer></body></html>'
+        career = ('<html><head><title>Karriere - DIPS</title><link rel="alternate" type="application/rss+xml" title="Jobs" href="https://karriere.dips.com/jobs.rss" />'
+                  '<link rel="stylesheet" href="https://assets-aws.teamtailor-cdn.com/assets/packs/css/careersite.css"></head><body><h1>Bli med i DIPS</h1></body></html>')
+        feed = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "DIPS AS", "items": [
+            {"id": "a", "title": "Systemutvikler", "url": "https://karriere.dips.com/jobs/123456-systemutvikler", "date_published": "2026-10-01T09:00:00+02:00",
+             "_jobposting": {"hiringOrganization": {"name": "DIPS AS"}, "jobLocation": [{"address": {"addressLocality": "Bodø", "addressCountry": "NO"}}]}}]})
+        rec = record("DIPS AS", "979543883")
+        fetcher = harvest_site(rec, "https://www.dips.com/", home, {
+            "https://karriere.dips.com": career, "https://karriere.dips.com/": career,
+            "https://karriere.dips.com/jobs.json": (feed, "application/feed+json; charset=utf-8"),
+        })
+        self.assertEqual([c["value"]["title"] for c in job_claims(rec)], ["Systemutvikler"])
+        self.assertIn("https://karriere.dips.com/jobs.json", fetcher.requested)
+        self.assertNotIn("https://karriere.dips.com/jobs.rss", fetcher.requested)
+
+    def test_homerun_careers_site_needs_no_extra_request(self) -> None:
+        home = '<html><head><title>Zaptec</title></head><body><a href="https://jobs.zaptec.com/">Careers</a><footer>Zaptec ASA</footer></body></html>'
+        rec = record("ZAPTEC ASA", "999164137")
+        fetcher = harvest_site(rec, "https://www.zaptec.com/", home, {"https://jobs.zaptec.com/": fixture("homerun-zaptec.html")})
+        claims = job_claims(rec)
+        self.assertTrue(claims)
+        self.assertTrue(all(c["value"]["source"] == "homerun" and "France" not in (c["value"].get("location") or "") for c in claims))
+        ev = rec.evidence[claims[0]["evidence_ids"][0]]
+        self.assertEqual((ev["span_check"], ev["source_url"]), ("verbatim", "https://jobs.zaptec.com/"))
+        self.assertEqual([u for u in fetcher.requested if "zaptec" in u and "sitemap" not in u], ["https://jobs.zaptec.com/"])
+
+    def test_group_career_site_read_in_full_but_nothing_ours(self) -> None:
+        home = '<html><head><title>Kitron</title></head><body><a href="https://career.kitron.com/">Careers</a><footer>Kitron ASA</footer></body></html>'
+        career = ('<html><head><title>Career - Kitron</title><link rel="alternate" type="application/rss+xml" title="Jobs" href="https://career.kitron.com/jobs.rss" />'
+                  '<link rel="stylesheet" href="https://assets-aws.teamtailor-cdn.com/x.css"></head><body><h1>Join Kitron</h1></body></html>')
+        rec = record("KITRON ASA", "976605713")
+        harvest_site(rec, "https://www.kitron.com/", home, {
+            "https://career.kitron.com/": career, "https://career.kitron.com/jobs.json": (fixture("teamtailor-kitron-group.json"), "application/feed+json")})
+        self.assertEqual(job_claims(rec), [])
+        jobs.record_nav_hiring(rec, "not_available", "no active ad in NAV's vacancy feed names this organisation number")
+        state = rec.family_state["hiring"]
+        self.assertEqual(state["state"], "not_available")
+        self.assertIn("9 listed link(s) were not single open ads by this company", state["reason"])
+
+    def test_unreadable_list_falls_back_to_the_html_path(self) -> None:
+        careers = ('<html><head><title>Karriere</title></head><body><h1>Jobb hos oss</h1>'
+                   '<a href="https://opplandelektro.teamtailor.com/">Se alle stillinger</a></body></html>')
+        rec = record("OPPLAND ELEKTRO AS")
+        fetcher = harvest_site(rec, "https://www.opplandelektro.no/", self.HOME, {"https://www.opplandelektro.no/karriere/": careers})
+        self.assertIn("https://opplandelektro.teamtailor.com/jobs.json", fetcher.requested)
+        self.assertIn("https://opplandelektro.teamtailor.com/", fetcher.requested)  # the HTML page, after the 404
+        self.assertEqual(job_claims(rec), [])
+
+
+class TenantIndex(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        path = Path(self.tmp.name) / "ats-tenants.tsv.gz"
+        rows = ["\t".join(ats.INDEX_COLUMNS), "986885358\tteamtailor\thttps://opplandelektro.teamtailor.com/jobs.json\tregister_domain_cname\tkarriere.opplandelektro.no CNAME ext.teamtailor.com\tOppland Elektro\t2026-10-23"]
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            fh.write("\n".join(rows) + "\n")
+        self.saved = ats._INDEX
+        ats._INDEX = ats.load_index(path)
+
+    def tearDown(self) -> None:
+        ats._INDEX = self.saved
+        self.tmp.cleanup()
+
+    def test_index_tenant_is_read_live_and_checked(self) -> None:
+        rec = record("OPPLAND ELEKTRO AS")
+        fetcher = Fetcher({"https://opplandelektro.teamtailor.com/jobs.json": (fixture("teamtailor-opplandelektro.json"), "application/feed+json")})
+        count, sources = ats.research_index(fetcher, rec, time.monotonic() + 30)
+        self.assertEqual((count, sources), (1, ["https://opplandelektro.teamtailor.com/jobs.json"]))
+        claim = job_claims(rec)[0]
+        ev = rec.evidence[claim["evidence_ids"][0]]
+        self.assertEqual(ev["span_check"], "verbatim")
+        self.assertIn("declared ATS index (register_domain_cname", ev["access_policy"])
+        # read once per run: the site harvest's read (or an earlier lookup) is not repeated
+        self.assertEqual(ats.research_index(fetcher, rec, time.monotonic() + 30), (0, []))
+        self.assertEqual(fetcher.count, 1)
+
+    def test_index_row_never_overrides_the_employer_check(self) -> None:
+        rec = record("OPPLAND BYGG AS")  # wrongly tied: the live list names another employer
+        rec.organisation_number = "986885358"
+        fetcher = Fetcher({"https://opplandelektro.teamtailor.com/jobs.json": (fixture("teamtailor-opplandelektro.json"), "application/feed+json")})
+        self.assertEqual(ats.research_index(fetcher, rec, time.monotonic() + 30)[0], 0)
+        self.assertEqual(job_claims(rec), [])
+
+    def test_missing_index_is_empty(self) -> None:
+        self.assertEqual(ats.load_index(Path(self.tmp.name) / "absent.tsv.gz"), {})
+
+
+class NavNames(unittest.TestCase):
+    """Names NAV listed a company's ads under choose which feed entries to open; the entry's own
+    employer.orgnr still decides."""
+
+    def test_names_join_the_nav_search_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ats-nav-names.tsv.gz"
+            with gzip.open(path, "wt", encoding="utf-8") as fh:
+                fh.write("\t".join(ats.NAV_NAMES_COLUMNS) + "\n915361102\tNorasondegruppen\t2\t3\t2026-10-23\n")
+            self.assertEqual(ats.nav_names("915361102", path), ["Norasondegruppen"])
+            saved = ats._NAV_NAMES
+            ats._NAV_NAMES = {"915361102": ["Norasondegruppen"]}
+            try:
+                rec = record("NORASONDE KARRIERE AS", "915361102")
+                self.assertIn("Norasondegruppen", jobs.search_names(rec))
+                self.assertNotIn("Norasondegruppen", jobs.search_names(rec, nav_index=False))  # Jobbnorge: never
+            finally:
+                ats._NAV_NAMES = saved
+
+    def test_key_matches_the_agents(self) -> None:
+        for name in ("Norasondegruppen", "NORASONDE KARRIERE AS", "Stiftelsen Kirkens Familievern", "AV & PÅ ELEKTRO AS", "Mjøen Vvs As"):
+            self.assertEqual(ats.nav_name_key(name), jobs.name_key(name))
+
+
+class Jobbnorge(unittest.TestCase):
+    def board(self) -> jobs.JobbnorgeList:
+        board = jobs.JobbnorgeList(None)  # type: ignore[arg-type]
+        body = fixture("jobbnorge-sample.json")
+        board.snap = snap(jobs.JOBBNORGE, body)
+        for job in json.loads(body)["jobs"]:
+            board.by_key.setdefault(jobs.name_key(board.employer_of(job)), []).append(job)
+        board.count = 3
+        board.done.set()
+        return board
+
+    @staticmethod
+    def firda(municipality: str = "STRYN", postcode: str = "6783") -> CompanyRecord:
+        return record("FIRDA BILLAG BUSS AS", "915455662", forretningsadresse={"kommune": municipality, "postnummer": postcode})
+
+    def test_name_and_registered_place(self) -> None:
+        rec = self.firda()
+        count, sources = jobs.research_jobbnorge(rec, self.board())
+        self.assertEqual(count, 1)
+        claim = job_claims(rec)[0]
+        self.assertEqual((claim["value"]["employer"], claim["value"]["board"]), ("Firda Billag Buss AS", "jobbnorge.no"))
+        self.assertTrue(claim["value"]["url"].startswith("https://www.jobbnorge.no/ledige-stillinger/stilling/"))
+        self.assertEqual(rec.evidence[claim["evidence_ids"][0]]["span_check"], "verbatim")
+        self.assertEqual(sources, [jobs.JOBBNORGE + " (3 open ads)"])
+
+    def test_name_alone_is_not_enough(self) -> None:
+        self.assertEqual(jobs.research_jobbnorge(self.firda("BERGEN", "5003"), self.board())[0], 0)
+        # Jobbnorge regards the department "Firda Billag Buss AS" as the employer: never the parent's ad
+        self.assertEqual(jobs.research_jobbnorge(record("FIRDA BILLAG AS", forretningsadresse={"kommune": "STRYN"}), self.board())[0], 0)
+        # "AV & PÅ ELEKTRO AS" is not "Elektro AS", and "Linea AS" is not "LINEA BYGG AS"
+        self.assertEqual(jobs.research_jobbnorge(record("AV & PÅ ELEKTRO AS", forretningsadresse={"kommune": "VEFSN"}), self.board())[0], 0)
+        self.assertEqual(jobs.research_jobbnorge(record("LINEA BYGG AS", forretningsadresse={"kommune": "VEFSN"}), self.board())[0], 0)
+        self.assertEqual(jobs.research_jobbnorge(record("LINEA AS", forretningsadresse={"kommune": "VEFSN"}), self.board())[0], 1)
+
+    def test_settles_hiring_available(self) -> None:
+        rec = self.firda()
+        feed = jobs.NavFeed(Fetcher({}))  # type: ignore[arg-type]
+        feed.jobbnorge = self.board()
+        jobs._research_ats(Fetcher({}), rec, time.monotonic() + 30, feed)  # type: ignore[arg-type]
+        self.assertEqual(rec.family_state["hiring"]["state"], "available")
+        jobs.record_nav_hiring(rec, "not_available", "no active ad in NAV's vacancy feed names this organisation number")
+        self.assertEqual(rec.family_state["hiring"]["state"], "available")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class NavIndex(unittest.TestCase):
+    """Ads active when the declared NAV index was built are fetched by uuid; the live entry decides."""
+
+    def entry(self, uuid: str, orgnr: str, name: str, status: str = "ACTIVE") -> str:
+        return json.dumps({"uuid": uuid, "status": status, "ad_content": {
+            "title": f"Sykepleier {uuid[:4]}", "employer": {"name": name, "orgnr": orgnr}, "published": "2026-06-18T09:00:00+02:00",
+            "expires": "2026-12-31T00:00:00+01:00", "link": f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"}})
+
+    def test_indexed_sub_unit_ads_are_fetched_and_checked(self) -> None:
+        u = ["1e98d75d-dd59-46df-8517-811a03b422f9", "6cb0f611-06f1-4700-ac75-c0559d21d355", "8e68a283-a5bb-4efe-9d2d-b72b6b062e68",
+             "0000aaaa-0000-0000-0000-000000000001", "0000bbbb-0000-0000-0000-000000000002", "0000cccc-0000-0000-0000-000000000003"]
+        rows = {"983975240": [
+            {"uuid": u[0], "changed": "2026-10-12", "expires": "2026-12-31"},  # sub-unit ad, active
+            {"uuid": u[1], "changed": "2026-10-08", "expires": "2026-12-31"},  # the window saw it close
+            {"uuid": u[2], "changed": "2026-10-07", "expires": "2026-12-31"},  # live entry: another employer
+            {"uuid": u[3], "changed": "2026-06-01", "expires": "2026-01-01"},  # expired: not fetched
+            {"uuid": u[4], "changed": "2026-06-01", "expires": ""},            # anonymous employer
+            {"uuid": u[5], "changed": "2026-06-01", "expires": ""},            # INACTIVE now
+        ]}
+        base = "https://pam-stilling-feed.nav.no/api/v1/feedentry/"
+        fetcher = Fetcher({
+            base + u[0]: (self.entry(u[0], "974733013", "ABUP, Sørlandet sykehus HF"), "application/json"),
+            base + u[2]: (self.entry(u[2], "999999999", "Annen arbeidsgiver"), "application/json"),
+            base + u[4]: (self.entry(u[4], "974595214", "Anonym arbeidsgiver"), "application/json"),
+            base + u[5]: (self.entry(u[5], "974595214", "Sørlandet sykehus HF", status="INACTIVE"), "application/json"),
+        })
+        feed = jobs.NavFeed(fetcher)  # type: ignore[arg-type]
+        feed.token, feed.pages = "t", 1
+        feed.inactive = {u[1]}
+        feed.done.set()
+        rec = record("SØRLANDET SYKEHUS HF", "983975240")
+        rec.context["subunits"] = [{"organisation_number": n, "name": "SØRLANDET SYKEHUS HF AVD"} for n in ("974733013", "974595214")]
+        saved = ats._NAV_ACTIVE
+        ats._NAV_ACTIVE = rows
+        try:
+            jobs.research_jobs(fetcher, rec, time.monotonic() + 30, feed)  # type: ignore[arg-type]
+        finally:
+            ats._NAV_ACTIVE = saved
+        self.assertEqual([c["value"]["url"].rsplit("/", 1)[-1] for c in job_claims(rec)], [u[0]])
+        fetched = [x.rsplit("/", 1)[-1] for x in fetcher.requested]
+        self.assertNotIn(u[1], fetched)
+        self.assertNotIn(u[3], fetched)
+        self.assertEqual(rec.family_state["hiring"]["state"], "available")
+
+    def test_loader_and_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ats-nav-active.tsv.gz"
+            with gzip.open(path, "wt", encoding="utf-8") as fh:
+                fh.write("\t".join(ats.NAV_ACTIVE_COLUMNS) + "\n")
+                fh.write("983975240\t1e98d75d-dd59-46df-8517-811a03b422f9\t974733013\tABUP\t2026-10-09\t2026-11-30\t2026-10-12T10:00:00\t2026-10-23\n")
+                fh.write("983975240\tnot-a-uuid\t974733013\tABUP\t\t\t\t2026-10-23\n")
+            rows = ats.nav_active("983975240", path)
+            self.assertEqual([r["uuid"] for r in rows], ["1e98d75d-dd59-46df-8517-811a03b422f9"])
+            self.assertEqual(ats.nav_active("000000000", path), [])
+
+
+class JobPostingOnTheCareersPage(unittest.TestCase):
+    """halvorsenforvaltning.no/karriere carries its one vacancy as a JobPosting naming this employer
+    and has no ad page of its own: one ad by this company, published at the careers page's address."""
+
+    HOME = '<html><head><title>Halvorsen Bygg</title></head><body><nav><a href="/karriere/">Karriere</a></nav><footer>Halvorsen Bygg og Eiendomsforvaltning AS</footer></body></html>'
+
+    def run_site(self, careers: str) -> CompanyRecord:
+        rec = record("HALVORSEN BYGG OG EIENDOMSFORVALTNING AS", "935547423")
+        harvest_site(rec, "https://halvorsenforvaltning.no/", self.HOME, {"https://halvorsenforvaltning.no/karriere/": careers})
+        return rec
+
+    def test_named_posting_is_published(self) -> None:
+        rec = self.run_site(fixture("halvorsen-karriere.html"))
+        claims = job_claims(rec)
+        self.assertEqual([(c["value"]["title"], c["value"]["url"]) for c in claims], [("Tømrer/snekker", "https://halvorsenforvaltning.no/karriere/")])
+        self.assertEqual(rec.evidence[claims[0]["evidence_ids"][0]]["span_check"], "verbatim")
+
+    def test_unnamed_or_open_application_posting_is_not(self) -> None:
+        html = fixture("halvorsen-karriere.html")
+        unnamed = re.sub(r'"hiringOrganization": \{.*?\},\s*"jobLocation"', '"jobLocation"', html, flags=re.S)
+        self.assertEqual(job_claims(self.run_site(unnamed)), [])
+        self.assertEqual(job_claims(self.run_site(html.replace('"title": "Tømrer/snekker"', '"title": "Åpen søknad"'))), [])
+
+
+class OwnSiteListings(unittest.TestCase):
+    """Pool misses of 04f3daf: NUBU's careers page lists one ad; Øgrey's links a sub-list."""
+
+    @staticmethod
+    def ad(title: str) -> str:
+        return f"<html><head><title>{title}</title></head><body><main><h1>{title}</h1><p>Vi søker en dyktig medarbeider. Søknadsfrist: 15.11.2099</p></main></body></html>"
+
+    def test_a_lone_ad_like_link_is_read(self) -> None:
+        home = '<html><head><title>NUBU</title></head><body><nav><a href="/no/ledige-stillinger">Ledige stillinger</a></nav></body></html>'
+        careers = ('<html><head><title>Ledige stillinger</title></head><body><h1>Ledige stillinger</h1>'
+                   '<div class="card"><a href="/no/ledige-stillinger/postdoktor"><span>Ledig stilling</span><h3>Postdoktor (3 år)</h3><span>Les mer</span></a></div></body></html>')
+        rec = record("NASJONALT UTVIKLINGSSENTER FOR BARN OG UNGE AS", "985638187")
+        harvest_site(rec, "https://www.nubu.no/", home, {
+            "https://www.nubu.no/no/ledige-stillinger": careers, "https://www.nubu.no/no/ledige-stillinger/postdoktor": self.ad("Postdoktor (3 år)")})
+        self.assertEqual([c["value"]["title"] for c in job_claims(rec)], ["Postdoktor (3 år)"])
+
+    def test_a_lone_story_link_is_not(self) -> None:
+        home = '<html><head><title>Consto</title></head><body><nav><a href="/jobb/">Jobb</a></nav></body></html>'
+        careers = ('<html><head><title>Jobb</title></head><body><h1>Jobb hos oss</h1>'
+                   '<a href="https://consto.no/gd_career/128803/">Møt Anna og Lars</a></body></html>')
+        rec = record("CONSTO AS", "995754606")
+        fetcher = harvest_site(rec, "https://consto.no/", home, {"https://consto.no/jobb/": careers, "https://consto.no/gd_career/128803/": self.ad("Møt Anna og Lars")})
+        self.assertEqual(job_claims(rec), [])
+        self.assertNotIn("https://consto.no/gd_career/128803/", fetcher.requested)
+
+    def test_a_ledig_stilling_sub_list_is_followed(self) -> None:
+        home = '<html><head><title>Øgrey</title></head><body><nav><a href="/jobb/">Jobb</a></nav></body></html>'
+        landing = '<html><head><title>Jobb</title></head><body><h1>Jobb hos Øgrey</h1><a href="https://ogrey.no/jobb/ledig-stilling/">Ledig stilling</a></body></html>'
+        listing = ('<html><head><title>Ledig stilling</title></head><body><h1>Ledig stilling</h1>'
+                   '<a href="/ledig-stilling/energimontorer/">Fem energimontører</a><a href="/ledig-stilling/industrimekaniker/">Industrimekaniker</a></body></html>')
+        rec = record("EINAR ØGREY FARSUND AS", "987260742")
+        harvest_site(rec, "https://ogrey.no/", home, {
+            "https://ogrey.no/jobb/": landing, "https://ogrey.no/jobb/ledig-stilling/": listing,
+            "https://ogrey.no/ledig-stilling/energimontorer/": self.ad("Fem energimontører"),
+            "https://ogrey.no/ledig-stilling/industrimekaniker/": self.ad("Industrimekaniker")})
+        self.assertEqual(sorted(c["value"]["title"] for c in job_claims(rec)), ["Fem energimontører", "Industrimekaniker"])
+
+
+class PoolCases(unittest.TestCase):
+    def test_custom_domain_feed_links_ads_on_the_career_host(self) -> None:
+        # karriere.okoraad.no/jobs.json lists its ads at okorad.teamtailor.com; the ad is the same
+        body = json.dumps({"version": "https://jsonfeed.org/version/1.1", "title": "ØkoRåd", "items": [
+            {"title": "Vil du jobbe som regnskapsfører i et av Norges fineste regnskapsbyrå?", "url": "https://okorad.teamtailor.com/jobs/7401342-vil-du-jobbe-som-regnskapsforer",
+             "_jobposting": {"hiringOrganization": {"name": "ØkoRåd"}}}]})
+        tl = ats.parse_list("teamtailor", "https://karriere.okoraad.no/jobs.json", body)
+        self.assertEqual(tl.ads[0].url, "https://karriere.okoraad.no/jobs/7401342-vil-du-jobbe-som-regnskapsforer")
+        self.assertEqual(len(ats.select(record("ØKORÅD AS", "930688770"), tl, own_tenant=True)[0]), 1)
+        hosted = ats.parse_list("teamtailor", "https://okorad.teamtailor.com/jobs.json", body)
+        self.assertTrue(hosted.ads[0].url.startswith("https://okorad.teamtailor.com/"))
+
+    def test_jobbnorge_brand_dash_legal_name(self) -> None:
+        job = {"id": 309843, "title": "Postdoktor (3 år) ved NUBU", "employer": "NUBU AS - Nasjonalt utviklingssenter for barn og unge",
+               "link": "https://www.jobbnorge.no/ledige-stillinger/stilling/309843", "deadline": "15.11.2099", "publicationDate": "01.10.2026",
+               "locations": [{"municipality": "Oslo", "zipCode": "0484"}]}
+        board = jobs.JobbnorgeList(None)  # type: ignore[arg-type]
+        body = json.dumps({"jobs": [job]}, ensure_ascii=False)
+        board.snap = snap(jobs.JOBBNORGE, body)
+        for key in board.keys_of(board.employer_of(job)):
+            board.by_key.setdefault(key, []).append(job)
+        board.done.set()
+        rec = record("NASJONALT UTVIKLINGSSENTER FOR BARN OG UNGE AS", "985638187", forretningsadresse={"kommune": "OSLO", "postnummer": "0484"})
+        self.assertEqual(jobs.research_jobbnorge(rec, board)[0], 1)
+        self.assertEqual(rec.evidence[job_claims(rec)[0]["evidence_ids"][0]]["span_check"], "verbatim")
+        self.assertEqual(jobs.research_jobbnorge(record("NUBU HOLDING AS", forretningsadresse={"kommune": "OSLO"}), board)[0], 0)
