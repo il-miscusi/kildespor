@@ -1,6 +1,6 @@
 # 100-company smoke test
 
-Code commit: `641311d99dba8d82d1c8632bb329b57eb9147faa` (this folder was added in the following commit; it changes no code).
+Code commit: `48551ac296578b5566e4787b64f3bff1dd74bb1a` (this folder was added in the following commit; it changes no code).
 
 Run on a Kaggle CPU machine: the repository at that commit in a fresh directory, an empty
 virtualenv, `pip install -r requirements.txt`, the unit tests, then the documented run command
@@ -16,7 +16,7 @@ companies return exactly what the full files return.
 - Inputs: 100; envelopes emitted: 100; validation: **passed**
 - Checks: exact_expected_count = True, same_order_and_membership = True, unique_organisation_numbers = True, all_states_terminal = True, every_available_claim_has_evidence = True, every_evidence_id_resolves = True, every_external_claim_span_in_source = True
 - Envelope states: {'available': 100}
-- Wall clock: 67.0 s; requests: 1009 (10.1 per company); request latency p50 643 ms, p95 2672 ms
+- Wall clock: 73.3 s; requests: 1010 (10.1 per company); request latency p50 854 ms, p95 3718 ms
 - Third-party cost: $0.00; language-model calls: 0
 - Evidence-backed claims: 7040; evidence records: 7062
 
