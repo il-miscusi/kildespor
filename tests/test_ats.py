@@ -324,6 +324,30 @@ class TenantIndex(unittest.TestCase):
         self.assertEqual(ats.load_index(Path(self.tmp.name) / "absent.tsv.gz"), {})
 
 
+class NavNames(unittest.TestCase):
+    """Names NAV listed a company's ads under choose which feed entries to open; the entry's own
+    employer.orgnr still decides."""
+
+    def test_names_join_the_nav_search_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ats-nav-names.tsv.gz"
+            with gzip.open(path, "wt", encoding="utf-8") as fh:
+                fh.write("\t".join(ats.NAV_NAMES_COLUMNS) + "\n915361102\tNorasondegruppen\t2\t3\t2026-10-23\n")
+            self.assertEqual(ats.nav_names("915361102", path), ["Norasondegruppen"])
+            saved = ats._NAV_NAMES
+            ats._NAV_NAMES = {"915361102": ["Norasondegruppen"]}
+            try:
+                rec = record("NORASONDE KARRIERE AS", "915361102")
+                self.assertIn("Norasondegruppen", jobs.search_names(rec))
+                self.assertNotIn("Norasondegruppen", jobs.search_names(rec, nav_index=False))  # Jobbnorge: never
+            finally:
+                ats._NAV_NAMES = saved
+
+    def test_key_matches_the_agents(self) -> None:
+        for name in ("Norasondegruppen", "NORASONDE KARRIERE AS", "Stiftelsen Kirkens Familievern", "AV & PÅ ELEKTRO AS", "Mjøen Vvs As"):
+            self.assertEqual(ats.nav_name_key(name), jobs.name_key(name))
+
+
 class Jobbnorge(unittest.TestCase):
     def board(self) -> jobs.JobbnorgeList:
         board = jobs.JobbnorgeList(None)  # type: ignore[arg-type]

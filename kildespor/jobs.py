@@ -39,7 +39,7 @@ def name_key(name: str) -> str:
 NOT_A_BRAND = {"hjem", "home", "forside", "startside", "velkommen", "welcome", "index", "nettbutikk", "kontakt", "om oss"}
 
 
-def search_names(rec: CompanyRecord) -> list[str]:
+def search_names(rec: CompanyRecord, *, nav_index: bool = True) -> list[str]:
     """Names an ad's ``businessName`` may carry: the legal name, the registered subunits' names and
     the brand the verified website uses (an ad is often posted under the brand). The names only
     choose which entries to open; the entry's employer orgnr decides."""
@@ -47,6 +47,8 @@ def search_names(rec: CompanyRecord) -> list[str]:
     names = [entity.get("navn") or ""] + [s.get("name") or "" for s in rec.context.get("subunits") or []]
     brands = [c["value"] for c in rec.claims if c["field"] == "public_brand_name" and isinstance(c["value"], str)]
     brands += list(rec.context.get("site_brand_names") or [])
+    if nav_index:  # names NAV ads carried for this orgnr (declared index): only to choose entries to open
+        brands += ats.nav_names(rec.organisation_number)
     for brand in brands:
         key = name_key(brand)
         if len(key.replace(" ", "")) >= 3 and key not in NOT_A_BRAND and brand not in names:
@@ -239,7 +241,7 @@ def _register_places(rec: CompanyRecord) -> tuple[set[str], set[str]]:
 def research_jobbnorge(rec: CompanyRecord, board: JobbnorgeList) -> tuple[int, list[str]]:
     if board.snap is None:
         return 0, []
-    keys = {name_key(n) for n in search_names(rec) if name_key(n)}
+    keys = {name_key(n) for n in search_names(rec, nav_index=False) if name_key(n)}
     candidates = [job for key in sorted(keys) for job in board.by_key.get(key, [])]
     if not candidates:
         return 0, []

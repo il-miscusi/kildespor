@@ -249,7 +249,32 @@ def http_get(url: str, headers: dict[str, str] | None = None, timeout: float = 3
         return 0, b"", ""
 
 
-def read_nav(companies: dict[str, Company], sub_parent: dict[str, str], stats: dict[str, Any], minutes: float) -> list[tuple[str, str, str, str, str, str]]:
+NAV_PAIRS: Counter = Counter()  # (universe orgnr, businessName) -> active ads naming that orgnr or a subunit
+NAV_NAME_ADS: Counter = Counter()  # businessName key -> active ads listed under it
+
+
+def nav_name_rows(companies: dict[str, Company], built: str, stats: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:
+    """(orgnr, businessName, ads, ads under the name, built) for each name NAV listed an ad of the
+    company under that is none of its legal or subunit names. Kept when the company's ads are at
+    least half of that name's or the name has at most eight ads, so a chain's shared brand does not
+    send every member to open dozens of entries."""
+    rows = []
+    for (org, name), count in sorted(NAV_PAIRS.items()):
+        key = ats.nav_name_key(name)
+        if not key or len(key.replace(" ", "")) < 3:
+            continue
+        own = {ats.nav_name_key(n) for n in companies[org].names}
+        if key in own:
+            continue
+        total = NAV_NAME_ADS.get(key, count)
+        if count * 2 < total and total > 8:
+            stats["nav_names_dropped_shared"] = stats.get("nav_names_dropped_shared", 0) + 1
+            continue
+        rows.append((org, " ".join(name.split()), str(count), str(total), built))
+    return rows
+
+
+def read_nav(companies: dict[str, Company], sub_parent: dict[str, str], stats: dict[str, Any], minutes: float, *, days: int = 400) -> list[tuple[str, str, str, str, str, str]]:
     """(orgnr, platform, list_url, rule, evidence, nav employer name) from active NAV ads."""
     status, body, _ = http_get(NAV + "/api/publicToken")
     token = body.decode("utf-8", "replace").split()[-1] if status == 200 and body.split() else None
@@ -257,7 +282,7 @@ def read_nav(companies: dict[str, Company], sub_parent: dict[str, str], stats: d
         stats["nav_error"] = f"no public token (HTTP {status})"
         return []
     auth = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    since = format_datetime(datetime.now(timezone.utc) - timedelta(days=400), usegmt=True)
+    since = format_datetime(datetime.now(timezone.utc) - timedelta(days=days), usegmt=True)
     url: str | None = NAV + "/api/v1/feed"
     headers = {**auth, "If-Modified-Since": since}
     active: dict[str, str] = {}
@@ -282,6 +307,8 @@ def read_nav(companies: dict[str, Company], sub_parent: dict[str, str], stats: d
         url = NAV + nxt if nxt else None
     stats["nav_pages"] = pages
     stats["nav_active"] = len(active)
+    for name in active.values():
+        NAV_NAME_ADS[ats.nav_name_key(name)] += 1
     log(f"nav feed: {pages} pages, {len(active)} active ads")
     sources = Counter()
     hosts = Counter()
@@ -333,14 +360,18 @@ def read_nav(companies: dict[str, Company], sub_parent: dict[str, str], stats: d
                         examples[domain].append(link[:200])
         if parent not in companies:
             return
+        with lock:
+            NAV_PAIRS[(parent, active.get(uuid, ""))] += 1
         for link in links:
             tenant = tenant_of(link) if link.startswith("http") else None
             if tenant is not None:
                 with lock:
                     out.append((parent, tenant.platform, tenant.list_url, "nav_ad_employer_orgnr", f"NAV ad {uuid} names employer.orgnr {number} and applies via {link[:160]}", str(employer.get("name") or "")))
 
+    todo = sorted(active)
+    stats["nav_entries_to_read"] = len(todo)
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        list(pool.map(one, sorted(active)))
+        list(pool.map(one, todo))
     stats["nav_sources"] = dict(sources.most_common(30))
     stats["nav_application_hosts"] = hosts.most_common(80)
     stats["nav_ats_examples"] = dict(sorted(examples.items()))
@@ -382,6 +413,8 @@ def main() -> None:
     ap.add_argument("--dns-minutes", type=float, default=80.0)
     ap.add_argument("--nav-minutes", type=float, default=45.0)
     ap.add_argument("--no-nav", action="store_true")
+    ap.add_argument("--nav-names-only", action="store_true", help="read NAV only and write ats-nav-names.tsv.gz")
+    ap.add_argument("--nav-days", type=int, default=400)
     args = ap.parse_args()
     t0 = time.time()
     built = datetime.now(timezone.utc).date().isoformat()
@@ -394,6 +427,29 @@ def main() -> None:
     stats["universe"] = len(universe)
     stats["companies_with_own_domain"] = sum(1 for c in companies.values() if c.domains)
     log(f"register: {len(companies)} universe companies, {stats['companies_with_own_domain']} with a domain of their own ({time.time() - t0:.0f}s)")
+
+    if args.nav_names_only:
+        read_nav(companies, sub_parent, stats, args.nav_minutes, days=args.nav_days)
+        rows = nav_name_rows(companies, built, stats)
+        out = Path(args.out)
+        stats["nav_name_rows"] = write_tsv_gz(out / "ats-nav-names.tsv.gz", ats.NAV_NAMES_COLUMNS, rows)
+        stats["nav_name_companies"] = len({r[0] for r in rows})
+        stats["nav_names_size_bytes"] = (out / "ats-nav-names.tsv.gz").stat().st_size
+        by_org = defaultdict(list)
+        for r in rows:
+            by_org[r[0]].append(r[1])
+        batch_stats = {}
+        for spec in filter(None, args.batches.split(",")):
+            name, path = spec.split("=", 1)
+            orgs = [json.loads(line)["organisation_number"] for line in Path(path).read_text().splitlines() if line.strip()]
+            hits = {o: by_org[o] for o in orgs if o in by_org}
+            batch_stats[name] = {"orgs": len(orgs), "with_extra_nav_name": len(hits), "examples": dict(list(hits.items())[:15])}
+        stats["batches"] = batch_stats
+        stats["seconds"] = round(time.time() - t0)
+        print(json.dumps({k: v for k, v in stats.items() if k not in ("nav_application_hosts", "nav_ats_examples", "nav_custom_tenant_hosts")}, indent=1, ensure_ascii=False)[:8000], flush=True)
+        if args.stats:
+            Path(args.stats).write_text(json.dumps(stats, indent=1, ensure_ascii=False))
+        return
 
     nav_rows: list[tuple] = []
     nav_thread = None

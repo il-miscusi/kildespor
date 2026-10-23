@@ -628,6 +628,50 @@ def publish(rec: Any, kept: list[Ad], snap: Any, tenant: Tenant, *, method: str,
 
 _INDEX: dict[str, list[dict[str, str]]] | None = None
 _INDEX_LOCK = threading.Lock()
+NAV_NAMES_PATH = Path(__file__).resolve().parent / "data" / "ats-nav-names.tsv.gz"
+NAV_NAMES_COLUMNS = ("orgnr", "business_name", "ads", "name_ads", "built_at")
+_NAV_NAMES: dict[str, list[str]] | None = None
+_LEGAL_SUFFIXES = {"as", "asa", "ans", "da", "sa", "ba", "nuf", "enk", "ks", "hf", "iks", "sf", "bbl", "fli", "stiftelse", "stiftelsen", "aksjeselskap"}
+
+
+def nav_name_key(name: str) -> str:
+    """``jobs.name_key`` without the agent's imports (the index builder uses it): name tokens,
+    legal form dropped, æøå folded, accents stripped."""
+    import unicodedata
+
+    tokens = re.findall(r"[a-z0-9æøåäöüé]+", str(name or "").lower().replace("&", " og "))
+    while tokens and tokens[-1] in _LEGAL_SUFFIXES:
+        tokens.pop()
+    while tokens and tokens[0] in ("stiftelsen",):
+        tokens.pop(0)
+    folded = (t.replace("æ", "ae").replace("ø", "o").replace("å", "a") for t in tokens)
+    return " ".join("".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c)) for t in folded)
+
+
+def nav_names(orgnr: str, path: Path | str | None = None) -> list[str]:
+    """Employer names NAV ads carried for this organisation number (or a subunit) when the index
+    was built, beyond its legal and subunit names: NAV's feed lists ads by that name only, so
+    without it the ad is never opened. Each ad is still published only on its own live
+    ``employer.orgnr``."""
+    global _NAV_NAMES
+    if _NAV_NAMES is None or path is not None:
+        rows: dict[str, list[str]] = {}
+        try:
+            with gzip.open(Path(path or NAV_NAMES_PATH), "rt", encoding="utf-8") as fh:
+                header = fh.readline().rstrip("\n").split("\t")
+                for line in fh:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) == len(header):
+                        row = dict(zip(header, parts))
+                        if row.get("orgnr") and row.get("business_name"):
+                            rows.setdefault(row["orgnr"], []).append(row["business_name"])
+        except (OSError, EOFError, UnicodeDecodeError):
+            rows = {}
+        if path is not None:
+            return rows.get(orgnr, [])
+        with _INDEX_LOCK:
+            _NAV_NAMES = rows
+    return list(_NAV_NAMES.get(orgnr, []))
 
 
 def load_index(path: Path | str | None = None) -> dict[str, list[dict[str, str]]]:
