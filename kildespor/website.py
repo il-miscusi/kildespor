@@ -1135,6 +1135,42 @@ def _umbrella_brand(sig: RegisterSignals, parts: list[tuple[str, str]]) -> bool:
     return any(len(t) >= 4 and t not in GENERIC_NAME_WORDS and t not in STRIP_GUESS_WORDS for t in missing)
 
 
+# Legal forms that are not Norwegian ("SE" only in capitals: "se" is a Norwegian word). Norwegian
+# sites still write "A/S" (Road Supply), so "A/S" counts only beside a Danish marker.
+FOREIGN_FORMS = r"(?i:aps|ab|gmbh|oyj?|ltd|limited|inc|llc|b\.v\.?|bv|a/s)|SE"
+DANISH_MARKERS = re.compile(r"\bdanmark\b|\bdenmark\b|\bdk-\d{4}\b|\+45[\s\d]", re.I)
+
+
+def _foreign_group_host(snap: Snapshot, soup: BeautifulSoup, text: str, parts: list[tuple[str, str]], sig: RegisterSignals) -> str | None:
+    """The foreign group whose site a register-listed address leads to, else None.
+
+    Brreg's group structure stops at the border (HIPAQ's Danish parent, Instalco, Aderian, KAEFER
+    all read erIKonsern = false), so a foreign group is read off the site itself: the listed domain
+    redirects to a foreign country domain (hipaq.no -> hipaq.dk), or the title, site name,
+    copyright, meta description or JSON-LD name puts our own name under a foreign legal form
+    ("HIPAQ A/S" beside "DK-9230 Svenstrup"). A shared name is then the group's, not ours."""
+    declared = registered_domain(urlsplit(snap.requested_url or snap.final_url).hostname or "")
+    final_host = urlsplit(snap.final_url).hostname or ""
+    if declared and registered_domain(final_host) != declared and _foreign_cctld(final_host):
+        return f"{registered_domain(final_host)} (the listed {declared} redirects there)"
+    lines = [part for label, part in parts if label in ("title", "og:site_name", "copyright", "JSON-LD legalName", "JSON-LD name")]
+    for attrs in ({"name": "description"}, {"property": "og:description"}):
+        meta = soup.find("meta", attrs=attrs)
+        if meta and meta.get("content"):
+            lines.append(str(meta["content"]))
+    danish = bool(DANISH_MARKERS.search(text))
+    for name in sig.names:
+        tokens = [strip_accents(t) for t in name_tokens(name) if t not in ("og", "and")]
+        if not tokens:
+            continue
+        pattern = re.compile(r"(?<!\w)(?i:" + r"[\s\-]+".join(map(re.escape, tokens)) + r")\s*,?\s+(" + FOREIGN_FORMS + r")(?![\w/])")
+        for line in lines:
+            match = pattern.search(strip_accents(line))
+            if match and (match.group(1).lower() != "a/s" or danish):
+                return match.group(0).strip()
+    return None
+
+
 def _register_rules(sig: RegisterSignals, ev: _Evidence, origin: str, site_domain: str, final_host: str, parts: list[tuple[str, str]],
                     blocked: bool) -> tuple[str, str, Snapshot] | None:
     """``register_contact_on_site`` or ``name_and_register_signal`` for a site without our number, else None."""
@@ -1301,7 +1337,14 @@ def _assess(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig: 
         rec.context["website_ambiguous"] = snap.final_url
         rec.context["website_ambiguous_reason"] = f"the listed site {snap.final_url} carries the former name {former_hit}, not the current one"
         return None
-    our_cores = {" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
+    # A name match proves nothing when the site is a foreign group's that shares our name: the
+    # register can still list it (hipaq.no) after the domain was folded into the group's (hipaq.dk).
+    group_host = _foreign_group_host(snap, soup, text, parts, sig)
+    if group_host:
+        rec.context["website_ambiguous"] = snap.final_url
+        rec.context["website_ambiguous_reason"] = f"the listed site {snap.final_url} is the group site of {group_host}, not this company's own"
+        return None
+    our_cores ={" ".join(t for t in core_tokens(n) if t not in ("og", "and")) for n in sig.names}
     mentions = entity_mentions(parts)
     if mentions and not set(mentions) & our_cores:
         rec.context["website_ambiguous"] = snap.final_url
