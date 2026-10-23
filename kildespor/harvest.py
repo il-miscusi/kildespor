@@ -1180,6 +1180,7 @@ GUIDE_TITLE = re.compile(
     r"hva\s+er\b|alt\s+(?:du\s+trenger|om)\b|\d+\s+[\wæøå]+\s+(?:feil|tips|grunner|ting)\b)",
     re.I,
 )
+ELLIPSIS = re.compile(r"(?:\.\.\.|…)\s*$")
 # A WordPress site with no news-like category that files its posts under four or more topics (therapy
 # areas, treatments, product lines) uses posts as a content library: such a post is news only under a
 # news or /YYYY/MM/ path. Measured on the audited set: 25 wrong items, 1 correct.
@@ -1197,6 +1198,17 @@ def is_headline(title: str) -> bool:
         return False
     letters = re.sub(r"[^A-Za-zÆØÅæøåÄÖäöÜüÉé]", "", title)
     return len(letters) >= 8 and 8 <= len(title) <= 250 and text_date(title) != title.strip()
+
+
+def truncated_title(title: str, url: str | None) -> bool:
+    """A card title cut short by the theme ("Astaxanthin: Naturens kraftigste antioksidant o..."):
+    a single ellipsis at the end, with the article's slug running on past the words shown, or a
+    cut of 40 characters or more. A title that ends in a deliberate "……" is kept."""
+    if not ELLIPSIS.search(title) or re.search(r"(?:…|\.\.\.)\s*(?:…|\.\.\.)\s*$", title):
+        return False
+    stem = _alnum(ELLIPSIS.sub("", title))
+    slug = _alnum(_segments(url)[-1]) if url and _segments(url) else ""
+    return (bool(stem) and slug.startswith(stem) and len(slug) > len(stem)) or len(ELLIPSIS.sub("", title).strip()) >= 40
 
 
 def news_path(url: str | None) -> bool:
@@ -1338,7 +1350,7 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
     seen: set[str] = set()
     blocks = soup.find_all(["article", "li"]) + soup.find_all(["div", "section"], class_=CARD_CLASS)
     for block in blocks:
-        if block.find_parent(["nav", "header"]) is not None:
+        if _site_chrome_block(block):
             continue
         links: dict[str, Any] = {}
         for anchor in block.find_all("a", href=True):
@@ -1364,9 +1376,14 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
         if require_news_path and not is_article_url(url, site_host):
             continue
         published = None
-        time_tag = next((t for t in block.find_all("time") if not _update_date(t)), None)
+        dated_by = ""
+        times = [t for t in block.find_all("time") if not _update_date(t)]
+        # A <time> marked as the publication date wins over the card's first <time>.
+        time_tag = next((t for t in times if _PUBLISHED_MARK.search(_ident(t))), times[0] if times else None)
         if time_tag is not None:
+            raw_time = time_tag.get("datetime") or time_tag.get_text(" ", strip=True)
             published = stamp(time_tag.get("datetime")) or stamp(time_tag.get_text(" ", strip=True))
+            dated_by = f'<time datetime="{raw_time}">' if time_tag.get("datetime") else f"<time>{raw_time}</time>"
         if published is None:
             # A dateline beside the item's own title ("14.10.2026", "Publisert 14. oktober 2026"),
             # never a date inside a sentence of the teaser, never an update date.
@@ -1374,6 +1391,7 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
                 text = str(string).strip()
                 if 6 <= len(text) <= 40 and string.parent is not None and not _update_date(string.parent) and (day := text_date(text)):
                     published = (day, day)
+                    dated_by = text
                     break
         if published is None:
             continue
@@ -1388,9 +1406,35 @@ def listing_items(snap: Snapshot, soup: BeautifulSoup, site_host: str, *, requir
             title = text if is_headline(text) else None
         if title is None:
             continue
+        if truncated_title(title, url):
+            # The card cut its title short: the link's own title or label often carries it in full.
+            stem = _alnum(ELLIPSIS.sub("", title))
+            full = next((t for t in (str(anchor.get("title") or ""), str(anchor.get("aria-label") or "")) if is_headline(t) and _alnum(t).startswith(stem) and len(_alnum(t)) > len(stem)), None)
+            title = full or title
         seen.add(key)
-        items.append(NewsItem(_clean(title), url, published[0], published[1], snap, title, "news_listing_item", "company_website"))
+        items.append(NewsItem(_clean(title), url, published[0], published[1], snap, f"{title} | {dated_by}", "news_listing_item", "company_website"))
     return items
+
+
+_PUBLISHED_MARK = re.compile(r"publi|datepublished|post-?date|entry-?date", re.I)
+# Site chrome a dated card can sit in without being news: menus, mega-menus, footers and sidebars.
+_CHROME_CLASS = re.compile(r"(?<![a-z])(?:menu|mega|dropdown|submenu|sub-menu|navbar|navigation)(?![a-z])|menu-item|mega-?menu", re.I)
+
+
+def _ident(node: Any) -> str:
+    return " ".join(node.get("class") or []) + " " + str(node.get("id") or "") + " " + str(node.get("itemprop") or "")
+
+
+def _site_chrome_block(block: Any) -> bool:
+    """The block is (or sits in) navigation, a menu, the footer or a sidebar: never a news card."""
+    if re.search(r"menu-item", " ".join(block.get("class") or []), re.I):
+        return True
+    for parent in block.parents:
+        if getattr(parent, "name", None) in (None, "[document]", "html", "body"):
+            break
+        if parent.name in ("nav", "header", "footer", "aside") or str(parent.get("role") or "").lower() == "navigation" or _CHROME_CLASS.search(" ".join(parent.get("class") or []) + " " + str(parent.get("id") or "")):
+            return True
+    return False
 
 
 _PUBLISHED_META = (
@@ -1422,6 +1466,11 @@ def _update_date(node: Any) -> bool:
     """The date is labelled as an update ("Sist oppdatert", "Endret", "Updated", "Last modified"):
     judged on the node's own text and on a short parent (the label usually sits beside the date)."""
     if "datemodified" in str(node.get("itemprop") or "").lower() if hasattr(node, "get") else False:
+        return True
+    # hentry themes mark the modification time <time class="updated"> (and a never-edited post's
+    # single date "entry-date published updated", which is the publication date).
+    classes = " ".join(node.get("class") or []) if hasattr(node, "get") else ""
+    if re.search(r"(?<![a-z])(?:updated|modified)(?![a-z])", classes, re.I) and not re.search(r"publi", classes, re.I):
         return True
     texts = [node.get_text(" ", strip=True) if hasattr(node, "get_text") else str(node)]
     parent = node.parent
@@ -1487,8 +1536,11 @@ def _refers_to(item: dict[str, Any], page_url: str) -> bool:
 def page_article(soup: BeautifulSoup, page_url: str) -> dict[str, Any] | None:
     """The JSON-LD article (or WebPage) that describes this page: bound to it by url, @id or
     mainEntityOfPage, or the page's only article object. A related or embedded article never
-    lends this page its date."""
-    items = [i for i in json_ld_items(soup) if i.get("datePublished") and (_article_like(i) or "WebPage" in _types(i))]
+    lends this page its date. A WebPage counts only on a page that declares og:type article:
+    SEO plugins give every page, service and product pages included, a WebPage datePublished."""
+    og_type = soup.find("meta", attrs={"property": "og:type"})
+    webpage_ok = og_type is not None and str(og_type.get("content") or "").strip().lower() == "article"
+    items = [i for i in json_ld_items(soup) if i.get("datePublished") and (_article_like(i) or (webpage_ok and "WebPage" in _types(i)))]
     bound = [i for i in items if _refers_to(i, page_url)]
     if bound:
         return next((i for i in bound if _article_like(i)), bound[0])
@@ -2196,6 +2248,10 @@ def _articles_to_read(anchors: list[tuple[str, str, Snapshot, str]], news: dict[
         if key not in done and key not in {_norm_url(u) for u in out}:
             out.append(url)
 
+    # A card that cut its title short is published only once its own page gives the full headline.
+    for item in sorted(news.values(), key=lambda n: n.date, reverse=True):
+        if item.url and truncated_title(item.title, item.url) and _site(item.url) == site_host:
+            add(item.url)
     for url, _text, snap, _raw in anchors:
         if len(_segments(snap.final_url)) == 0 and is_article_url(url, site_host):
             add(url)
@@ -2407,7 +2463,7 @@ def copy_bursts(items: list[NewsItem]) -> set[int]:
 
 def _publish_news(rec: CompanyRecord, items: list[NewsItem], company_label: str | None) -> None:
     burst = copy_bursts(items)
-    kept = [item for index, item in enumerate(items) if index not in burst]
+    kept = [item for index, item in enumerate(items) if index not in burst and not truncated_title(item.title, item.url)]
     items = sorted(kept, key=lambda i: (i.date, i.published), reverse=True)[:MAX_NEWS]
     for item in items:
         ev = rec.evidence_from_snapshot(item.snap, source_class=item.source_class, span=item.span, method=item.method, url=item.snap.final_url)
