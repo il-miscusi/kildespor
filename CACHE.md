@@ -200,7 +200,7 @@ does not link its career site.
 
 | file | source | build date | licence | rows | companies | size | build |
 |---|---|---|---|---|---|---|---|
-| `ats-nav-names.tsv.gz` | NAV's vacancy feed (`pam-stilling-feed.nav.no`, public token): every active ad's `businessName` and `employer.orgnr`, with sub-units mapped to their company by the Brreg bulk register | 2026-10-23 | facts we derived from NAV's redistributed ads | 1,453 | 613 | 22 KB | `python3 tools/build_ats.py --nav-names-only` (Kaggle CPU, 42 min) |
+| `ats-nav-names.tsv.gz` | NAV's vacancy feed (`pam-stilling-feed.nav.no`, public token): every active ad's `businessName` and `employer.orgnr`, with sub-units mapped to their company by the Brreg bulk register | 2026-10-23 | facts we derived from NAV's redistributed ads | 1,474 | 620 | 22 KB | `python3 tools/build_ats.py --nav-names-only` (Kaggle CPU, 40 min) |
 
 Columns: `orgnr business_name ads name_ads built_at`.
 
@@ -216,3 +216,27 @@ dropped, so a chain's brand does not send every member to open dozens of
 entries). The names choose which live entries to open; an ad is published
 only on its live `employer.orgnr`. They are never used to match Jobbnorge or
 ATS employers.
+
+### Active NAV ads by company (`ats-nav-active.tsv.gz`)
+
+| file | source | build date | licence | rows | companies | size | build |
+|---|---|---|---|---|---|---|---|
+| `ats-nav-active.tsv.gz` | NAV's vacancy feed, read in full (840 pages) and every active entry fetched (10,970 ads); each ad's `employer.orgnr` mapped to its universe company through the Brreg bulk register's sub-units | 2026-10-23 | facts we derived from NAV's redistributed ads | 5,528 | 2,411 | 265 KB | same run as above (`--nav-names-only` writes both) |
+
+Columns: `orgnr uuid employer_orgnr business_name published expires changed built_at`.
+
+NAV's feed returns what changed in the window the agent reads (45 days), and a
+feed entry is opened only when its listed name is one of the company's own. An
+ad published in June and unchanged since, or listed under a department's name
+("Medisinsk avdeling Flekkefjord, Sørlandet sykehus HF"), was never seen: the
+pool missed Sørlandet Sykehus, Madsen og Brekke, B.A. Gruppen, Mercell, REMA
+Dusavik, Norlandia Eltonåsen and Flexibemanning for these two reasons. A row
+names one ad that was active on the build date and the company it was
+advertised for. At run time the agent fetches those entries live (at most 30 per
+company) unless the window has seen the ad close or its expiry has passed, and
+publishes an entry only when it is ACTIVE and names this entity or one of its
+sub-units by `employer.orgnr`. The live feed supplies what changed after the
+build: a snapshot plus the changes since is the whole active set, and an index
+older than the 45-day window widens the window to its age (at most 120 days).
+Ads whose employer is shown as "Anonym arbeidsgiver" are not published.
+
