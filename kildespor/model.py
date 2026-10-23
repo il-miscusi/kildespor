@@ -30,10 +30,16 @@ PERSONAL_KEYS = {"fodselsdato"}
 
 # Evidence whose span describes an inference rather than quoting the source ("domain x spells the
 # name y", "homepage reached: <url>"), so there is nothing to find in the body.
-COMPOSED_SPAN_METHODS = {
-    "registry_listed_name_on_site", "registry_listed_name_in_metadata", "candidate_site_fetch",
-    "registry_listed_site_fetch", "wikidata_p2333_live_item", "registry_listed_domain_spells_name",
-}
+COMPOSED_SPAN_METHODS = {"wikidata_p2333_live_item"}
+# Website identity evidence: the span is a window of the text the identity gate parsed (visible
+# text, or markup when the number sits in an attribute), and the gate is its check. Matching it
+# again against the raw body withheld 23 of 145 verified sites on pop1000 (run-rev2cp).
+_IDENTITY_SUFFIXES = ("_on_site", "_register_signal", "_spells_name", "_in_metadata", "_site_fetch")
+
+
+def span_checked(method: str) -> bool:
+    """Whether evidence by this extraction method quotes its source and is checked against it."""
+    return not (method.startswith("brreg_") or method in COMPOSED_SPAN_METHODS or method.endswith(_IDENTITY_SUFFIXES))
 _SPAN_PREFIX = re.compile(r"^(?:mailto link|tel link|e-mail on page|homepage reached|feedentry [\w-]+|byline):\s*", re.I)
 _QUOTED = re.compile(r'"([^"]{3,})"')
 _LOCATOR = re.compile(r'^[\w.<>/\[\] -]{1,60}? = "?(.+?)"?$', re.S)
@@ -228,7 +234,7 @@ class CompanyRecord:
             record["access_policy"] = access_policy
         if snapshot is not None:
             # Register evidence names the API field it read; it is a locator, not a quotation.
-            if not extraction_method.startswith("brreg_") and extraction_method not in COMPOSED_SPAN_METHODS:
+            if span_checked(extraction_method):
                 found = span_found(span, snapshot)
                 if found is not None:
                     record["span_check"] = "verbatim" if found else "not_found"
