@@ -307,3 +307,50 @@ def _settle(rec: CompanyRecord) -> None:
         state = "not_available"
     rec.set_state("hiring", state, reason, checked_sources=sources)
 
+
+# -- one claim per vacancy ------------------------------------------------------------------------
+
+
+def _title_key(title: Any) -> str:
+    return " ".join(re.sub(r"[^\w ]", " ", strip_accents(str(title or "").lower())).split())
+
+
+def _from_nav(claim: dict[str, Any]) -> bool:
+    value = claim.get("value") if isinstance(claim.get("value"), dict) else {}
+    return str(claim.get("extraction_method") or "").startswith("nav") or value.get("board") == "arbeidsplassen.nav.no"
+
+
+def merge_duplicate_ads(rec: CompanyRecord) -> None:
+    """The same vacancy read on the company's careers channel and in NAV's feed is one fact.
+
+    Duplicates are matched by normalised title within one envelope; every ad here is already
+    attributed to this organisation number (NAV by the employer orgnr, which may be a subunit's;
+    the site by its ad page), so the employer side of the match is this entity. The NAV entry is
+    kept, because it carries the organisation number and the expiry; the other URL moves to its
+    ``also_at`` with its evidence. Runs on the frozen record before refresh and synthesis."""
+    jobs = [c for c in rec.claims if c.get("field") == "job_posting" and isinstance(c.get("value"), dict) and not c.get("stale")]
+    nav: dict[str, dict[str, Any]] = {}
+    for claim in jobs:
+        key = _title_key(claim["value"].get("title"))
+        if key and _from_nav(claim):
+            nav.setdefault(key, claim)
+    if not nav:
+        return
+    dropped: list[dict[str, Any]] = []
+    for claim in jobs:
+        if _from_nav(claim):
+            continue
+        twin = nav.get(_title_key(claim["value"].get("title")))
+        if twin is None:
+            continue
+        value = dict(twin["value"])
+        also = list(value.get("also_at") or [])
+        url = claim["value"].get("url")
+        if url and url not in also:
+            also.append(url)
+        value["also_at"] = sorted(also)
+        twin["value"] = value
+        twin["evidence_ids"] = sorted(set(twin["evidence_ids"]) | set(claim.get("evidence_ids", [])))
+        dropped.append(claim)
+    if dropped:
+        rec.claims = [c for c in rec.claims if not any(c is d for d in dropped)]

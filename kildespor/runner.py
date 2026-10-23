@@ -236,6 +236,7 @@ def assemble(orgs: list[str], recs: dict[str, CompanyRecord], previous: dict[str
         try:
             snap = frozen_copy(recs[org])
             merge_duplicate_profiles(snap)
+            jobs.merge_duplicate_ads(snap)
             withhold_shared_profiles(snap, shared)
             if final:
                 snap.finalize_states()
