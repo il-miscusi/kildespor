@@ -228,5 +228,72 @@ class ChainSections(unittest.TestCase):
         self.assertEqual(harvested, [None])
 
 
+class GroupSiteHarvest(unittest.TestCase):
+    """A site labelled group_site publishes none of its profiles, news, job ads or brand as ours."""
+
+    def harvest(self, name: str, home_url: str, home_body: str, pages: dict[str, tuple[str, str]], section: str | None, brand: str,
+                extra_pages: dict[str, str] | None = None):
+        from kildespor import harvest
+        from test_harvest import FakeFetcher, snap
+
+        rec = make_rec(name=name, phone=None)
+        rec.context["website"] = {"url": section or home_url, "relationship": "group_site", "group_reason": "the site names a sister company", "group_brand": brand}
+        visit = website.SiteVisit(FakeFetcher(pages), rec, time.monotonic() + 60)  # type: ignore[arg-type]
+        for url, body in (extra_pages or {}).items():  # pages read before harvest (a section's root)
+            visit.pages.append(page(url, body))
+        visit.section = section
+        home = snap(home_url, home_body)
+        soup, _html, text = website.parse(home)
+        visit.pages.append((home, soup, text))
+        with patch.object(website, "caches", FakeCaches()):
+            harvest._extract_site_facts(rec, visit, home, False, "group_site")
+        return rec
+
+    def fields(self, rec) -> dict[str, list]:
+        out: dict[str, list] = {}
+        for claim in rec.claims:
+            value = claim["value"]
+            out.setdefault(claim["field"], []).append(value.get("url") or value.get("title") if isinstance(value, dict) else value)
+        return out
+
+    def test_group_site_publishes_no_profiles_news_jobs_or_brand(self) -> None:
+        from test_harvest import RECENT
+
+        home = f"""<html><head><title>Consto - et av Norges ledende konsern</title><meta property="og:site_name" content="Consto">
+        <meta name="description" content="Consto bygger og rehabiliterer bygg og anlegg i hele Norge."></head><body>
+        <nav><a href="/karriere/">Karriere</a><a href="/nyheter/">Nyheter</a></nav>
+        <article><a href="/nyheter/consto-vinner-kontrakt"><h3>Consto vinner stor kontrakt i Tromsø</h3></a><time datetime="{RECENT}">x</time></article>
+        <footer><a href="https://www.facebook.com/Constokonsern/">Facebook</a><a href="https://www.linkedin.com/company/consto-as/">LinkedIn</a>
+        <a href="tel:+4777601234">77 60 12 34</a><a href="mailto:post@consto.no">post@consto.no</a></footer></body></html>"""
+        careers = """<html><head><title>Karriere | Consto</title></head><body><h1>Jobb hos oss</h1>
+        <a href="https://consto.no/karriere/anleggsleder-tromso">Anleggsleder Tromsø</a></body></html>"""
+        pages = {"https://consto.no/karriere/": (careers, "text/html")}
+        rec = self.harvest("CONSTO ANLEGG NORD AS", "https://consto.no/", home, pages, None, "Consto")
+        self.assertEqual(self.fields(rec), {})
+        self.assertEqual(rec.family_state["public_brand"]["state"], "ambiguous")
+        self.assertEqual(rec.family_state["company_profiles"]["state"], "ambiguous")
+        self.assertIn("sister company", rec.family_state["company_profiles"]["reason"])
+        self.assertNotIn("job_posting:site", rec.checked_fields)
+
+    def test_store_page_keeps_its_own_contacts_and_profile(self) -> None:
+        # Husfliden Holmestrand on norskflid.no: the store's phone and its own Facebook page stay; the
+        # chain's Facebook, the root's phone and the chain brand do not.
+        store = """<html><head><title>Husfliden Holmestrand | Norsk Flid</title></head><body>
+        <p>Husfliden Holmestrand, Langgata 5. <a href="tel:+4733051234">33 05 12 34</a></p>
+        <a href="https://www.facebook.com/husflidenholmestrand/">Følg butikken</a>
+        <footer><a href="https://www.facebook.com/husfliden/">Husfliden på Facebook</a></footer></body></html>"""
+        root = html("Hjem - Norsk Flid Husfliden", '<a href="tel:+4722001122">22 00 11 22</a> <a href="https://www.instagram.com/husfliden/">Instagram</a>')
+        rec = self.harvest("HUSFLIDEN HOLMESTRAND SA", "https://www.norskflid.no/butikker/holmestrand/", store, {},
+                           "https://www.norskflid.no/butikker/holmestrand/", "Norsk Flid Husfliden", {"https://www.norskflid.no/": root})
+        got = self.fields(rec)
+        self.assertEqual(got.get("social_profile"), ["https://facebook.com/husflidenholmestrand"])
+        self.assertEqual(got.get("website_phone"), ["+47 33 05 12 34"])
+        self.assertNotIn("public_brand_name", got)
+        profile = next(c for c in rec.claims if c["field"] == "social_profile")
+        self.assertNotIn("relationship", profile)  # ours by its own handle, not the group's
+        phone = next(c for c in rec.claims if c["field"] == "website_phone")
+        self.assertEqual(phone["relationship"], "group_site")
+
+
 if __name__ == "__main__":
     unittest.main()
