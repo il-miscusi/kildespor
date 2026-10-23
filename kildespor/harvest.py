@@ -46,6 +46,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
+from . import ats
 from .http import RequestBudgetExhausted, RobotsDisallowed, Snapshot
 from .model import CompanyRecord
 from .website import (
@@ -1203,6 +1204,37 @@ class Role:
     span: str
     method: str
     employer: str | None = None  # the employer the listing's structured data names, if any
+    policy: str | None = None  # access policy of the source, for an ATS's public list
+
+
+def _ats_roles(plan: Plan, rec: CompanyRecord, tenant: "ats.Tenant", *, own_tenant: bool) -> tuple[list[tuple[Role, Snapshot]] | None, "ats.TenantList | None", Snapshot | None]:
+    """The open ads of an ATS tenant's keyless public list (one request), as structured roles.
+
+    Only the ads ``ats.select`` keeps become roles: each names this employer, or (own tenant, a
+    list naming no employer at all) names none. None when the list could not be read; the caller
+    then falls back to reading the tenant's HTML pages."""
+    read = rec.context.setdefault("ats_read", {})
+    if tenant.list_url in read:
+        return [], None, None  # already read through another link this run
+    if not plan.can(1, 6.0):
+        return None, None, None
+    try:
+        snap, listing = ats.read_list(plan.visit.fetcher, tenant, timeout=(5.0, min(10.0, max(3.0, plan.visit.time_left()))))
+    except Exception as exc:  # robots, budget, network: the HTML path may still work
+        rec.error("hiring", f"ATS list skipped: {type(exc).__name__}: {str(exc)[:120]}", tenant.list_url)
+        return None, None, None
+    if listing.error:
+        return None, listing, snap
+    kept, refused = ats.select(rec, listing, own_tenant=own_tenant)
+    read[tenant.list_url] = len(kept)
+    rec.context.setdefault("ats_refused", {}).update(refused)
+    linked = "the verified website's own career site" if own_tenant else "linked from the verified website"
+    policy = f"{ats.POLICY[tenant.platform]}; tenant {linked}"
+    roles = [
+        (Role(ad.title[:200], ad.url, ad.published, ad.expires, ad.location, tenant.platform, ats.span_of(ad, tenant.platform), f"ats_api_{tenant.platform}_list", ad.employer, policy), snap)
+        for ad in kept
+    ]
+    return roles, listing, snap
 
 
 _TITLE_CLASS = re.compile(r"title|heading|name|tittel|overskrift", re.I)
@@ -2465,8 +2497,16 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             careers.append((_clean_url(c_snap.final_url), c_snap, f"careers page: {title[:200]}", "careers_page_on_verified_site"))
             if NO_OPENINGS.search(c_text):
                 hiring_notes["no_openings"].append(_clean_url(c_snap.final_url))
-            roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
-            listing = None if roles else _job_listing_link(c_snap, c_soup)
+            # The careers page is itself an ATS career site (karriere.dips.com runs Teamtailor): its
+            # public list gives every open ad and the employer each names, in one request.
+            own_tenant = ats.tenant_for_page(c_snap.final_url, c_snap.text())
+            api_roles = _ats_roles(plan, rec, own_tenant, own_tenant=True)[0] if own_tenant is not None else None
+            if api_roles is not None:
+                roles += api_roles
+                listing = None
+            else:
+                roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
+                listing = None if roles else _job_listing_link(c_snap, c_soup)
             if listing and listing.endswith(".rss") and plan.can(1, 6.0):
                 feed = plan.raw(listing, headers={"Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.5"})
                 roles += [(r, feed) for r in rss_roles(feed, c_snap.final_url)] if feed is not None else []
@@ -2485,13 +2525,23 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
             elif listing:
                 jobs_complete = False  # the job list was not read: the budget ran out
                 hiring_notes["unread"].append(listing)
-            for a in c_soup.find_all(["a", "iframe"]):
+            for a in c_soup.find_all(["a", "iframe", "script"]):
                 href = a.get("href") or a.get("src")
                 if not href:
                     continue
                 try:
                     link = urljoin(c_snap.final_url, str(href)).split("#")[0]
                 except ValueError:
+                    continue
+                listed = ats.tenant_from_url(link)
+                if listed is not None:
+                    # An ATS with a keyless list (a board link, an embedded board script, one ad's
+                    # link): its tenant list is read instead of the HTML pages.
+                    target = listed.board_url if _role_url(link) or a.name == "script" else link
+                    if not any(ats.tenant_from_url(x[1]) == listed for x in ats_links):
+                        ats_links.insert(0, (1, target, c_snap, f"link on the careers page {c_snap.final_url}: {link[:200]}", "@careers-page"))
+                    continue
+                if a.name == "script":
                     continue
                 if ats_of(link) and is_careers_link(link, a.get_text(" ", strip=True) if a.name == "a" else "", site_host) == 1 and not _role_url(link):
                     ats_links.insert(0, (1, link, c_snap, f"link on the careers page {c_snap.final_url}: {link[:200]}", "@careers-page"))
@@ -2507,6 +2557,16 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         tenant = ats_tenant(url) or ""
         tenant_ok = bool(tenant) and resembles(tenant, contains, prefixes)
         ats_name = (ats_of(url) or ("", ""))[0]
+        listed = ats.tenant_from_url(url)
+        if listed is not None:
+            api_roles, api_list, api_snap = _ats_roles(plan, rec, listed, own_tenant=tenant_ok)
+            if api_roles is not None:
+                roles += api_roles
+                if api_snap is not None:
+                    careers.append((_clean_url(listed.board_url), api_snap, f"applicant-tracking list ({listed.platform}): {(api_list.name if api_list else '') or listed.key}"[:200], "ats_list_linked_from_verified_site"))
+                if jobs_complete is None:
+                    jobs_complete = True
+                continue
         page = None
         why = "budget"
         if not ats_name:
@@ -2540,6 +2600,10 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
 
     # A group careers site also lists its foreign subsidiaries' roles (career-lithuania.kitron.com).
     roles = [(r, s) for r, s in roles if not foreign_page(r.url, own_text) and _norm_url(r.url) not in rejected_roles and not _rejected_title(r.title, rejected_roles)]
+    # A tenant whose public list was read has given its whole set of open ads: a page's link to one of
+    # them is not read again as an ad page (and a link the list left out was refused there).
+    api_read = rec.context.get("ats_read") or {}
+    roles = [(r, s) for r, s in roles if r.method != "careers_page_role_link" or (ats.tenant_from_url(r.url) or ats.Tenant("", "", "", "")).list_url not in api_read]
 
     # News: WordPress post API or the declared feed, then a listing page, then article pages.
     news: dict[str, NewsItem] = {}
@@ -3107,7 +3171,7 @@ def _publish_hiring(
             evidence.append(rec.evidence_from_snapshot(ad_snap, source_class=_hiring_source(ad_snap, site_host), span=span, method="ad_page_read", url=ad_snap.final_url))
             if _site(ad_snap.final_url) == site_host and hasattr(rec, "note_page"):
                 rec.note_page(ad_snap, title, "job_ad")
-        evidence.append(rec.evidence_from_snapshot(listing, source_class=_hiring_source(listing, site_host), span=role.span, method="careers_page_role_link" if ad_snap is not None else role.method, url=listing.final_url))
+        evidence.append(rec.evidence_from_snapshot(listing, source_class=_hiring_source(listing, site_host), span=role.span, method="careers_page_role_link" if ad_snap is not None else role.method, url=listing.final_url, access_policy=role.policy))
         rec.add_claim(
             family="hiring",
             field_name="job_posting",
