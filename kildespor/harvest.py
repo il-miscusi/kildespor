@@ -1606,10 +1606,16 @@ ORG_TYPES = {
 def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, exact: bool, relationship: str | None) -> None:
     site_host = _site(home.final_url)
     company_label = "group_site" if relationship == "group_site" else None
+    # A group, chain or umbrella site (website._publish_site): its brand, profiles, news and job ads are
+    # the group's. Contacts are read only from a store's own section; a whole-domain group site has none
+    # that are ours.
+    group_site = company_label is not None
+    site_contacts = not group_site or bool(visit.section)
     plan = Plan(rec, visit)
 
     def own_pages() -> list[tuple[Snapshot, BeautifulSoup, str]]:
-        return [p for p in visit.pages if _site(p[0].final_url) == site_host]
+        # A section's root page, read to learn who owns the domain, is not one of this company's pages.
+        return [p for p in visit.pages if _site(p[0].final_url) == site_host and visit.in_section(p[0].final_url)]
 
     home_page = next((p for p in visit.pages if p[0] is home), None) or (own_pages()[0] if own_pages() else None)
     if home_page is None:
@@ -1619,7 +1625,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     wordpress = bool(WORDPRESS.search(home_html[:600000]))
 
     # -- brand, description, contacts (homepage and the pages the identity check read) ------------
-    brand_names = _brand_and_contacts(rec, home, own_pages(), exact, company_label)
+    brand_names = _brand_and_contacts(rec, home, own_pages(), exact, company_label, contacts_only=group_site) if site_contacts else []
     # Current names only (legal, subunits, brand, domain). A former name never approves a profile:
     # the name may now belong to a successor, so an account matching only it is not published.
     names = _names_of(rec) + brand_names
@@ -1639,7 +1645,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         page = plan.page(url)
         if page is not None and _site(page[0].final_url) == site_host:
             have.add(kind)
-            _brand_and_contacts(rec, home, [page], exact, company_label, contacts_only=True)
+            if site_contacts:
+                _brand_and_contacts(rec, home, [page], exact, company_label, contacts_only=True)
     anchors = _anchors(own_pages())
 
     # Hiring: the careers page (own site first), then the ATS listing it links.
@@ -1808,9 +1815,26 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 continue
             profiles[key] = found
             per_platform[found.platform] = per_platform.get(found.platform, 0) + 1
+    if group_site:
+        # The organiser's rule: a group's site lends this company none of its social accounts, news or
+        # job ads. A profile the page links whose handle carries a word of our own name that the group's
+        # brand lacks is this company's own, and is published without the group label; nothing else is.
+        profiles = {key: found for key, found in profiles.items() if _own_on_group_site(found.handle, rec)}
+        careers, roles, news, jobs_complete = [], [], {}, None
+        company_label = None
     _publish_profiles(rec, list(profiles.values()), exact, company_label, own_pages())
     _publish_hiring(rec, careers, roles, company_label, site_host)
     _publish_news(rec, list(news.values()), company_label)
+    if group_site:
+        reason = (rec.context.get("website") or {}).get("group_reason") or "the verified site is a group site"
+        rec.set_state("public_brand", "ambiguous", f"{reason}; its brand and self-description are the group's, not attributed to this entity")
+        if not rec.claims_for("company_profiles"):
+            rec.set_state("company_profiles", "ambiguous", f"{reason}; its social profiles are the group's, not attributed to this entity")
+        for family, what in (("hiring", "careers page and job ads"), ("public_activity", "news")):
+            if not rec.claims_for(family):
+                rec.set_state(family, "not_available", f"{reason}; its {what} are the group's, not attributed to this entity")
+        if not site_contacts and not rec.claims_for("contact_channels"):
+            rec.set_state("contact_channels", "ambiguous", f"{reason}; its phone numbers and e-mail addresses are the group's, not attributed to this entity")
 
     _note_pages(rec, own_pages(), home, careers, news, site_host)
     if jobs_complete:
@@ -1819,6 +1843,16 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if visit.time_left() > 5:
         rec.checked_fields.add("company_news")
     rec.context["harvest"] = {"requests": plan.used(), "sitemap_entries": len(sitemap), "profiles": len(profiles), "careers": len(careers), "roles": len(roles), "news": len(news)}
+
+
+def _own_on_group_site(handle: str, rec: CompanyRecord) -> bool:
+    """On a group site, a profile is this company's own only when its handle carries a word of our legal
+    name that the group's brand lacks: facebook.com/husflidenholmestrand on the Holmestrand store's page
+    of norskflid.no, never facebook.com/husfliden (the chain's)."""
+    group = {_alnum(w) for w in name_tokens(str((rec.context.get("website") or {}).get("group_brand") or ""))}
+    key = _alnum(handle)
+    words = {_alnum(f(t)) for t in name_tokens((rec.context.get("entity") or {}).get("navn") or "") for f in (_fold_a, _fold_b)}
+    return any(len(w) >= 4 and w not in GENERIC_NAME_WORDS and w not in group and w in key for w in words)
 
 
 _CHROME = re.compile(r"menu|nav|footer|header|mega", re.I)

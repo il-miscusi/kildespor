@@ -72,6 +72,18 @@ def canonical_social(url: str) -> str:
     return f"https://{CANONICAL_HOST[platform]}/{'/'.join(segments)}"
 
 
+# A group's site lends the company none of its profiles, job ads or news (the organiser's rule). The
+# harvest already withholds them; this is the last check before anything reaches disk.
+GROUP_RELATIONSHIPS = {"group_site", "parent", "ultimate_parent", "subsidiary", "sister"}
+GROUP_WITHHELD_FIELDS = {"social_profile", "hiring_signal", "dated_news"}
+
+
+def group_content(claim: dict[str, Any]) -> bool:
+    """A profile, hiring signal or news claim labelled with a group relationship: never published."""
+    field = claim.get("field")
+    return (PUBLISHED_FIELD.get(field, field) in GROUP_WITHHELD_FIELDS) and claim.get("relationship") in GROUP_RELATIONSHIPS
+
+
 def _scalar(field: str, value: Any) -> Any:
     if not isinstance(value, dict):
         return value
@@ -95,6 +107,8 @@ def publish(envelope: dict[str, Any]) -> dict[str, Any]:
     published_available: set[str] = set()
     for claim in envelope.get("claims", []):
         field = claim.get("field")
+        if group_content(claim):
+            continue
         if field in PUBLISHED_FIELD and claim.get("availability") == "available":
             item = dict(claim)
             item["field"] = PUBLISHED_FIELD[field]
@@ -181,7 +195,7 @@ def internal(envelope: dict[str, Any]) -> dict[str, Any]:
 def kit_profile(envelope: dict[str, Any]) -> dict[str, Any]:
     """The starter kit's ``profile.evidence.website`` record, from our verified claims only."""
     org = envelope.get("organisation_number")
-    claims = [c for c in envelope.get("claims", []) if c.get("availability") == "available"]
+    claims = [c for c in envelope.get("claims", []) if c.get("availability") == "available" and not group_content(c)]
     evidence = {e["id"]: e for e in envelope.get("evidence", [])}
     site = next((c for c in claims if c.get("field") == "official_website" and isinstance(c.get("value"), dict)), None)
     if site is None:
