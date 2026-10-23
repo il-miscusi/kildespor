@@ -712,6 +712,27 @@ def _in_site_chrome(node: Any) -> bool:
     return False
 
 
+def _social_href(href: str) -> bool:
+    try:
+        host = (urlsplit(href.strip()).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in SOCIAL_HOSTS)
+
+
+def _names_company(node: Any, contains: set[str]) -> bool:
+    """The link's own text, title or aria-label (or its icon's alt text) names the company."""
+    parts = [node.get_text(" ", strip=True), str(node.get("title") or ""), str(node.get("aria-label") or "")]
+    parts += [f'{img.get("alt") or ""} {img.get("title") or ""}' for img in node.find_all("img")]
+    label = _alnum(" ".join(parts))
+    return any(len(t) >= 4 and t in label for t in contains)
+
+
+def _admin_link(url: str) -> bool:
+    """A LinkedIn page's admin URL (/company/<id>/admin/...): whoever edits the site manages the page."""
+    return bool(re.search(r"linkedin\.[a-z.]+/company/[^/?#]+/admin(?:/|$|\?)", url, re.I))
+
+
 @dataclass
 class Found:
     platform: str
@@ -735,16 +756,20 @@ def profiles_on_page(
 ) -> list[Found]:
     """Company profiles a page of the company's own site links, in page order.
 
-    A named account must resemble the company and carry no other company's name; an account
-    known only by an id must sit in the site's header/footer social block or in the sameAs of
-    the site's own Organization; a link labelled as a sister, parent, partner or customer
-    company's is never the company's."""
+    A named account must resemble the company and carry no other company's name. An account known only by an id is compared with nothing, so it needs other evidence: a
+    label naming the company, a LinkedIn admin URL, the sameAs of the site's own Organization, or,
+    for a link in the site's header/footer/social block, a named profile that passed on the same
+    page. Sitting in the footer or the menu is not evidence by itself. A link labelled as a sister,
+    parent, partner or customer company's is never the company's."""
     base = snap.final_url
-    found: list[Found] = []
     own_names = own_names or []
     own_words = own_words or set()
+    taken: list[tuple[Found, bool]] = []  # (profile, kept only if a named profile passed on this page)
 
-    def take(raw: str, via: str, *, allow_id: bool = True, span: str | None = None) -> None:
+    def take(raw: str, via: str, *, ids: str = "none", span: str | None = None) -> None:
+        """``ids`` says how an id-only account may pass from here: "ok" (the label names the company,
+        or the site's own Organization sameAs), "sibling" (site chrome: if a named profile passes on
+        this page) or "none" (only with a LinkedIn admin URL)."""
         if not raw or raw.startswith(("#", "mailto:", "tel:", "javascript:")):
             return
         try:
@@ -755,21 +780,33 @@ def profiles_on_page(
         if profile is None:
             return
         platform, canonical, handle = profile
-        if not owned_profile(handle, contains, prefixes, allow_id=allow_id, own_text=own_text):
-            return
+        item = Found(platform, canonical, handle, snap, span or raw.strip()[:300], via)
         account = account_name(handle)
-        if account and not id_like(handle) and names_other_company(account, contains, prefixes, own_words):
+        if id_like(handle) or not account:
+            if ids == "ok" or _admin_link(url):
+                taken.append((item, False))
+            elif ids == "sibling":
+                taken.append((item, True))
             return
-        found.append(Found(platform, canonical, handle, snap, span or raw.strip()[:300], via))
+        if not owned_profile(handle, contains, prefixes, own_text=own_text):
+            return
+        if names_other_company(account, contains, prefixes, own_words):
+            return
+        taken.append((item, False))
+
+    def route(node: Any) -> str:
+        if _names_company(node, contains):
+            return "ok"
+        return "sibling" if _in_site_chrome(node) else "none"
 
     for anchor in soup.find_all("a", href=True):
-        if _credit_link(anchor) or _related_link(anchor, own_names):
+        if not _social_href(str(anchor["href"])) or _credit_link(anchor) or _related_link(anchor, own_names):
             continue
-        take(anchor["href"], "anchor", allow_id=_in_site_chrome(anchor))
+        take(anchor["href"], "anchor", ids=route(anchor))
     for node in soup.find_all(attrs={"data-href": True}):
-        if _related_link(node, own_names):
+        if not _social_href(str(node.get("data-href") or "")) or _related_link(node, own_names):
             continue
-        take(str(node.get("data-href") or ""), "data_href", allow_id=_in_site_chrome(node))
+        take(str(node.get("data-href") or ""), "data_href", ids=route(node))
     for frame in soup.find_all("iframe", src=True):
         if _related_link(frame, own_names):
             continue
@@ -778,9 +815,10 @@ def profiles_on_page(
             params = parse_qs(urlsplit(urljoin(base, src)).query)
         except ValueError:
             continue
+        ids = route(frame) if any(params.get(k) for k in ("href", "u", "url")) else "none"
         for key in ("href", "u", "url"):
             for value in params.get(key, [])[:1]:
-                take(value, "embed_iframe", span=src[:300], allow_id=_in_site_chrome(frame))
+                take(value, "embed_iframe", span=src[:300], ids=ids)
     for item in json_ld_items(soup):
         if _types(item) & {"Person", "Product", "Event", "Offer", "JobPosting", "Review"}:
             continue
@@ -789,14 +827,15 @@ def profiles_on_page(
         same_as = item.get("sameAs")
         for url in same_as if isinstance(same_as, list) else [same_as] if same_as else []:
             if isinstance(url, str):
-                take(url, "json_ld_sameAs", allow_id=bool(_types(item) & ORG_TYPES))
+                take(url, "json_ld_sameAs", ids="ok" if _types(item) & ORG_TYPES else "none")
     for script in soup.find_all("script"):
         if "ld+json" in (script.get("type") or "").lower():
             continue
         text = script.string or script.get_text() or ""
         for m in _SCRIPT_PROFILE_RE.finditer(text):
-            take(m.group(0).replace("\\/", "/"), "script_data", allow_id=False, span=m.group(0)[:300])
-    return found
+            take(m.group(0).replace("\\/", "/"), "script_data", ids="none", span=m.group(0)[:300])
+    named = any(account_name(f.handle) and not id_like(f.handle) for f, _ in taken)
+    return [f for f, needs_named in taken if named or not needs_named]
 
 
 # ----------------------------------------------------------------------------------------------

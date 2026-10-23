@@ -143,18 +143,38 @@ class SocialTests(unittest.TestCase):
 
     def test_id_only_accounts_need_the_site_social_block(self) -> None:
         """Codex review rc1 finding 4: a numeric Facebook/YouTube account in body content is not
-        published; in the footer social block or the site's own Organization sameAs it is."""
+        published; in the footer social block beside a named profile, or in the site's own
+        Organization sameAs, it is."""
         html = """<html><head><script type="application/ld+json">{"@type":"Organization","name":"Fjordbygg AS","sameAs":["https://www.linkedin.com/company/7654321/"]}</script>
         <script type="application/ld+json">{"@type":"WebPage","name":"Fjordbygg AS","sameAs":["https://www.facebook.com/profile.php?id=100099999999999"]}</script></head>
         <body><article><p>Les om prosjektet <a href="https://www.facebook.com/profile.php?id=100012345678901">her</a> og
         <a href="https://www.youtube.com/channel/UCbodybodybodybodybody12">se videoen</a>.</p></article>
-        <div class="social-icons"><a href="https://www.facebook.com/profile.php?id=100055555555555">Facebook</a></div></body></html>"""
+        <div class="social-icons"><a href="https://www.facebook.com/profile.php?id=100055555555555">Facebook</a>
+        <a href="https://www.instagram.com/fjordbygg/">Instagram</a></div></body></html>"""
         found = self._profiles(html)
         self.assertIn("https://facebook.com/profile.php?id=100055555555555", found)
+        self.assertIn("https://instagram.com/fjordbygg", found)
         self.assertIn("https://linkedin.com/company/7654321", found)
         self.assertNotIn("https://facebook.com/profile.php?id=100012345678901", found)
         self.assertNotIn("https://youtube.com/channel/UCbodybodybodybodybody12", found)
         self.assertNotIn("https://facebook.com/profile.php?id=100099999999999", found)
+
+    def test_id_only_account_in_site_chrome_needs_evidence(self) -> None:
+        """Audit 23 Oct R2 (HIPAQ): an id-only link is compared with no name, so sitting in the nav or
+        footer is not enough. It needs a named profile that passed on the same page, a label naming
+        the company, a LinkedIn admin URL, or the site's own Organization sameAs."""
+        alone = """<html><body><nav><ul class="sf-menu"><li class="menu-item"><a href="https://www.linkedin.com/company/11362983/">LinkedIn</a></li></ul></nav>
+        <footer><div class="social"><a href="https://www.facebook.com/profile.php?id=61565700511472">Facebook</a>
+        <a href="https://twitter.com/">Twitter</a><a href="https://instagram.com/">Instagram</a></div></footer></body></html>"""
+        self.assertEqual(self._profiles(alone), {})
+        labelled = """<html><body><footer><a aria-label="Fjordbygg på Facebook" href="https://www.facebook.com/profile.php?id=100055555555555"><i class="fa-facebook"></i></a>
+        <a href="https://www.linkedin.com/company/17993528/admin/feed/posts/">LinkedIn</a></footer>
+        <main><p>Se <a href="https://www.youtube.com/channel/UCbodybodybodybodybody12">YouTube</a></p></main></body></html>"""
+        self.assertEqual(set(self._profiles(labelled)), {"https://facebook.com/profile.php?id=100055555555555", "https://linkedin.com/company/17993528"})
+        # A named account elsewhere on the page does not admit an id-only link in body text.
+        body = """<html><body><footer><a href="https://www.facebook.com/fjordbygg">Facebook</a></footer>
+        <article><a href="https://www.youtube.com/channel/UCbodybodybodybodybody12">video</a></article></body></html>"""
+        self.assertEqual(list(self._profiles(body)), ["https://facebook.com/fjordbygg"])
 
     def test_page_title_words_are_not_identity_tokens(self) -> None:
         """Audit 23 Oct R1: a brand from the <title> or og:site_name counts only when it shares a word
