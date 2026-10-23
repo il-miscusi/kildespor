@@ -1084,6 +1084,8 @@ DEADLINE = re.compile(r"(?:søknadsfrist|frist|deadline|apply\s+by|application\s
 LOCATION = re.compile(r"\b(?i:arbeidssted|sted|lokasjon|location|kontorsted)\s*:\s*([A-ZÆØÅ][\wæøåÆØÅ.\-]{1,30}(?:,? [A-ZÆØÅ][\wæøåÆØÅ.\-]{1,30})?)")
 
 
+# A listing card that reads as one vacancy: a lone role link on the company's own page counts.
+AD_CARD = re.compile(r"\bledig(?:e)?\s+stilling(?:er)?\b|s[øo]knadsfrist|\bfrist\s*:|\bvi\s+s[øo]ker\b|\bdeadline\b|\bapply\s+by\b|\bvacancy\b|\bstillingsprosent\b|\b\d{1,3}\s?%\s+(?:fast|vikariat|stilling)", re.I)
 # Open applications and pages about working here sit under the careers path but are not vacancies.
 NOT_A_ROLE = re.compile(r"spontan|[aå]pen[- ]s[øo]knad|apen-soknad|open[- ]application|general[- ]applications?|generell[- ]s[øo]knad|karriere|career|jobbe-i-et|om-oss", re.I)
 
@@ -1207,6 +1209,7 @@ class Role:
     method: str
     employer: str | None = None  # the employer the listing's structured data names, if any
     policy: str | None = None  # access policy of the source, for an ATS's public list
+    card: str = ""  # the listing card's text, for a role link
 
 
 def _ats_roles(plan: Plan, rec: CompanyRecord, tenant: "ats.Tenant", *, own_tenant: bool) -> tuple[list[tuple[Role, Snapshot]] | None, "ats.TenantList | None", Snapshot | None]:
@@ -1420,9 +1423,13 @@ def roles_on_page(
         if located is not None and not location and 2 <= len(located.get_text(" ", strip=True)) <= 60:
             location = re.match(r"(.+)", located.get_text(" ", strip=True))
         source = ats[0] if ats else ("company_careers_page" if own_site else "ats_listing")
-        links.append(Role(title, _clean_url(url), None, expires, location.group(1).strip() if location else None, source, title, "careers_page_role_link"))
+        links.append(Role(title, _clean_url(url), None, expires, location.group(1).strip() if location else None, source, title, "careers_page_role_link", card=card[:300]))
     off_site = [r for r in links if _site(r.url) != page_site]
     if not own_site or len(links) >= 2 or off_site:
+        roles.extend(links)
+    elif len(links) == 1 and links[0].card and AD_CARD.search(links[0].card):
+        # One role link on the company's own page counts when its card reads as an ad ("Ledig
+        # stilling Postdoktor (3 år)", a deadline); its ad page is still read and checked.
         roles.extend(links)
     return roles[:MAX_JOBS]
 
@@ -2990,7 +2997,7 @@ def _careers_candidates(anchors: list[tuple[str, str, Snapshot, str]], sitemap: 
     return [(rank, url, snap, span, text) for rank, _order, url, snap, span, text in ranked]
 
 
-JOB_LISTING_SEGMENT = re.compile(r"^(?:jobs|jobb|stillinger|ledige-stillinger|ledige-jobber|vacancies|open-positions|positions|openings|alle-stillinger)$", re.I)
+JOB_LISTING_SEGMENT = re.compile(r"^(?:jobs|jobb|stillinger|ledige-stillinger|ledig-stilling|ledige-jobber|vacancies|open-positions|positions|openings|alle-stillinger)$", re.I)
 
 
 def _job_listing_link(snap: Snapshot, soup: BeautifulSoup) -> str | None:

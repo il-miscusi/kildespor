@@ -488,3 +488,41 @@ class JobPostingOnTheCareersPage(unittest.TestCase):
         unnamed = re.sub(r'"hiringOrganization": \{.*?\},\s*"jobLocation"', '"jobLocation"', html, flags=re.S)
         self.assertEqual(job_claims(self.run_site(unnamed)), [])
         self.assertEqual(job_claims(self.run_site(html.replace('"title": "Tømrer/snekker"', '"title": "Åpen søknad"'))), [])
+
+
+class OwnSiteListings(unittest.TestCase):
+    """Pool misses of 04f3daf: NUBU's careers page lists one ad; Øgrey's links a sub-list."""
+
+    @staticmethod
+    def ad(title: str) -> str:
+        return f"<html><head><title>{title}</title></head><body><main><h1>{title}</h1><p>Vi søker en dyktig medarbeider. Søknadsfrist: 15.11.2099</p></main></body></html>"
+
+    def test_a_lone_ad_like_link_is_read(self) -> None:
+        home = '<html><head><title>NUBU</title></head><body><nav><a href="/no/ledige-stillinger">Ledige stillinger</a></nav></body></html>'
+        careers = ('<html><head><title>Ledige stillinger</title></head><body><h1>Ledige stillinger</h1>'
+                   '<div class="card"><a href="/no/ledige-stillinger/postdoktor"><span>Ledig stilling</span><h3>Postdoktor (3 år)</h3><span>Les mer</span></a></div></body></html>')
+        rec = record("NASJONALT UTVIKLINGSSENTER FOR BARN OG UNGE AS", "985638187")
+        harvest_site(rec, "https://www.nubu.no/", home, {
+            "https://www.nubu.no/no/ledige-stillinger": careers, "https://www.nubu.no/no/ledige-stillinger/postdoktor": self.ad("Postdoktor (3 år)")})
+        self.assertEqual([c["value"]["title"] for c in job_claims(rec)], ["Postdoktor (3 år)"])
+
+    def test_a_lone_story_link_is_not(self) -> None:
+        home = '<html><head><title>Consto</title></head><body><nav><a href="/jobb/">Jobb</a></nav></body></html>'
+        careers = ('<html><head><title>Jobb</title></head><body><h1>Jobb hos oss</h1>'
+                   '<a href="https://consto.no/gd_career/128803/">Møt Anna og Lars</a></body></html>')
+        rec = record("CONSTO AS", "995754606")
+        fetcher = harvest_site(rec, "https://consto.no/", home, {"https://consto.no/jobb/": careers, "https://consto.no/gd_career/128803/": self.ad("Møt Anna og Lars")})
+        self.assertEqual(job_claims(rec), [])
+        self.assertNotIn("https://consto.no/gd_career/128803/", fetcher.requested)
+
+    def test_a_ledig_stilling_sub_list_is_followed(self) -> None:
+        home = '<html><head><title>Øgrey</title></head><body><nav><a href="/jobb/">Jobb</a></nav></body></html>'
+        landing = '<html><head><title>Jobb</title></head><body><h1>Jobb hos Øgrey</h1><a href="https://ogrey.no/jobb/ledig-stilling/">Ledig stilling</a></body></html>'
+        listing = ('<html><head><title>Ledig stilling</title></head><body><h1>Ledig stilling</h1>'
+                   '<a href="/ledig-stilling/energimontorer/">Fem energimontører</a><a href="/ledig-stilling/industrimekaniker/">Industrimekaniker</a></body></html>')
+        rec = record("EINAR ØGREY FARSUND AS", "987260742")
+        harvest_site(rec, "https://ogrey.no/", home, {
+            "https://ogrey.no/jobb/": landing, "https://ogrey.no/jobb/ledig-stilling/": listing,
+            "https://ogrey.no/ledig-stilling/energimontorer/": self.ad("Fem energimontører"),
+            "https://ogrey.no/ledig-stilling/industrimekaniker/": self.ad("Industrimekaniker")})
+        self.assertEqual(sorted(c["value"]["title"] for c in job_claims(rec)), ["Fem energimontører", "Industrimekaniker"])
