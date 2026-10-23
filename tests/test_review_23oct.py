@@ -62,8 +62,11 @@ class SpanSupport(unittest.TestCase):
         raw = "<html><head><title>Nydals AS</title><style>.a{x:1}</style></head><body><div>Org.nr: 853&nbsp;097 012</div><nav>Meny Hjem</nav></body></html>".encode()
         snap = Snapshot("https://nydals.no/", "https://nydals.no/", 200, "2026-10-23T00:00:00Z", hashlib.sha256(raw).hexdigest(), "text/html", raw)
         rec = record()
-        ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span="Nydals AS Org. nr: 853 097 012 Meny Hjem", method="organisation_number_on_site")
+        ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span="Nydals AS Org. nr: 853 097 012 Meny Hjem", method="html_metadata")
         self.assertEqual(rec.evidence[ev]["span_check"], "verbatim")
+        # Identity evidence is the identity gate's to check, not the span replay's.
+        ev = rec.evidence_from_snapshot(snap, source_class="company_owned_website", span="Org.nr 853 097 012 (from markup)", method="registry_listed_and_organisation_number_on_site")
+        self.assertNotIn("span_check", rec.evidence[ev])
 
 
 class NavFeedCompleteness(unittest.TestCase):
