@@ -385,9 +385,11 @@ def task_refresh(s: Session, t: dict[str, Any]) -> str:
     if "Refresh status" not in status:
         raise Miss("no refresh status on /refresh")
     detail = "baseline run" if t["baseline"] else "refresh run"
-    if not t["baseline"]:
-        if not t["changed"]:
-            raise Miss("a refresh run reports no change anywhere (fixture has none)")
+    if not t["baseline"] and not t["changed"]:
+        if "No published fact changed" not in p.inner_text("main"):
+            raise Miss("a refresh with no change does not say so")
+        detail += ", no published fact changed (idempotent refresh)"
+    elif not t["baseline"]:
         if s.mode == "pointer":
             p.locator("details.change > summary").first.click()
         else:
