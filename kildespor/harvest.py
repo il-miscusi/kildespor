@@ -78,13 +78,17 @@ try:  # Norwegian sites publish in local time; feeds and post APIs give UTC.
 except Exception:  # pragma: no cover - no tz database
     OSLO = None
 
-HARVEST_REQUESTS = int(os.environ.get("KILDESPOR_HARVEST_REQUESTS", "12"))
+HARVEST_REQUESTS = int(os.environ.get("KILDESPOR_HARVEST_REQUESTS", "20"))
 # Ad pages read to confirm role links (on top of HARVEST_REQUESTS, after news and profiles): a
 # link that is not read is not published. 20 lets a group's list (afgruppen.no lists ~25 roles,
 # most of them its units') reach the few ads that name the parent itself; companies with fewer
 # role links spend only what they list.
 MAX_AD_FETCHES = int(os.environ.get("KILDESPOR_AD_FETCHES", "20"))
-NEWS_MAX_AGE_DAYS = int(os.environ.get("KILDESPOR_NEWS_MAX_AGE_DAYS", "730"))
+# A dated post is a fact whatever its age, and the newest ten are the ones published.
+NEWS_MAX_AGE_DAYS = int(os.environ.get("KILDESPOR_NEWS_MAX_AGE_DAYS", "3650"))
+# Older than this, a post must pass the news gate on its own score: an old site's only post is a
+# theme's sample or a product page far more often than a thin blog.
+NEWS_RESCUE_MAX_AGE_DAYS = 730
 # One correct item per company is the first goal; ten is the cap (review B, WP-C). Env override for corpus runs.
 MAX_NEWS = int(os.environ.get("KILDESPOR_MAX_NEWS", "10"))
 MAX_JOBS = 25
@@ -237,14 +241,14 @@ def stamp(raw: Any, *, to_local: bool = False) -> tuple[str, str] | None:
     return (day, day) if day else None
 
 
-def _news_window(day: str) -> bool:
+def _news_window(day: str, max_age_days: int | None = None) -> bool:
     try:
         parsed = date.fromisoformat(day[:10])
     except ValueError:
         return False
     today = datetime.now(OSLO).date() if OSLO is not None else _today()
     # A date after today is never a publication date (an event, a deadline, a typo).
-    return today - timedelta(days=NEWS_MAX_AGE_DAYS) <= parsed <= today
+    return today - timedelta(days=NEWS_MAX_AGE_DAYS if max_age_days is None else max_age_days) <= parsed <= today
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1951,7 +1955,11 @@ _CARD_LABEL = re.compile(r"^(?:(?:siste\s+)?nytt|nyheter|nyhet|news|aktuelt|pres
                          r"[\s:|\-–—]*\b(?:nyheter|nyhet|news|aktuelt|pressemelding|press\s+release|event|blogg?)$", re.I)
 CARD_CLASS = re.compile(r"news|nyhet|post|article|artikkel|card|teaser|entry|story|blog|item|aktuelt|press", re.I)
 # A theme's slider, test or cloned post ("HeroSliderPost ( Cloned )", "TestPostMobil"): a page element, never news.
-TEMPLATE_TITLE = re.compile(r"slider|test\s?post|lorem|ipsum|dummy|placeholder|\(\s*cloned\s*\)|\bcopy\b|\bkopi\b|untitled|uten\s+tittel|hello\s+world", re.I)
+TEMPLATE_TITLE = re.compile(
+    r"slider|test\s?post|lorem|ipsum|dummy|placeholder|\(\s*cloned\s*\)|\bcopy\b|\bkopi\b|untitled|uten\s+tittel|hello\s+world|"
+    r"h(?:ei|allo)\s+verden|hallo\s+welt|moikka\s+maailma|blog\s+post\s+title|^tittel\s+innlegg$|^nyhets\s*innlegg(?:\s+\d+)?$|^featured$",
+    re.I,
+)
 # WordPress category slugs (from the post's class_list) for posts a theme uses as page parts, catalogue
 # or treatment pages, guides and portfolio entries. Exact slugs, a few with a prefix: "kosmetiske-
 # behandlinger" holds a clinic's own news as well as its treatments, so only "behandling..." counts.
@@ -1965,6 +1973,7 @@ NOT_NEWS_CATEGORY = re.compile(
 # (/aktuelt/ledige-stillinger-bli-en-av-oss).
 JOB_AD_TITLE = re.compile(
     r"ledige?\s+stilling|søker\s+(?:nye?\s+)?(?:[\wæøå-]+\s+){0,2}(?:medarbeider|teammedlem|kolleg|ansatt|lærling)|vi\s+ansetter|"
+    r"søker\s+(?:[\wæøå-]+\s+){1,3}til\s+vår|åpen\s+(?:jobb)?søknad|"
     r"bli\s+en\s+(?:av\s+oss|del\s+av)|arbeta\s+i|we.?re\s+hiring|join\s+our\s+team",
     re.I,
 )
@@ -2435,6 +2444,21 @@ def page_kind(soup: BeautifulSoup, html: str, text: str) -> tuple[str, tuple[str
     return og_type, tuple(sorted(ld_types))[:12], article_time, newsgate.page_signals(html, text, ld_types)
 
 
+_URL_DAY = re.compile(r"/(20\d\d)/(\d\d)/(\d\d)/")
+_SLUG_DAY = re.compile(r"(20\d\d)-(\d{1,2})-(\d{1,2})-")
+
+
+def url_day(url: str) -> str | None:
+    """The publication day a post's own URL states: a date permalink (/2026/09/29/renteendring) or a
+    dated slug under a news section (/nyheter/2026-09-29-renteendring)."""
+    path = urlsplit(url).path
+    segments = _segments(url)
+    found = _URL_DAY.search(path if path.endswith("/") else path + "/")
+    if found is None and len(segments) >= 2 and NEWS_SEGMENT.match(segments[-2]):
+        found = _SLUG_DAY.match(segments[-1])
+    return _valid(*map(int, found.groups())) if found else None
+
+
 def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str], text: str = "") -> NewsItem | None:
     """Headline and published datetime read from an article page itself."""
     published = None
@@ -2468,6 +2492,11 @@ def article_meta(snap: Snapshot, soup: BeautifulSoup, brands: list[str], text: s
             if dateline:
                 published, span = (dateline[0], dateline[0]), f"byline: {dateline[1]}"
                 date_source = "byline_text"
+    if published is None:
+        day = url_day(snap.final_url)
+        if day:
+            published, span = (day, day), f"post URL: {urlsplit(snap.final_url).path}"
+            date_source = "url_path"
     # Never a date merely written near the headline: it may be an event, a deadline or a project year.
     if published is None or not _news_window(published[1]):
         return None
@@ -3068,7 +3097,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     # the model is a classifier of content, and on a thin blog its word alone should not turn "has posts"
     # into "no news". Ties break on the URL, so the choice is the same on every run.
     if not news and refused_by_gate and newsgate.rescue_limit():
-        best = sorted(((sc, key, it) for key, (sc, it) in refused_by_gate.items() if sc >= newsgate.rescue_floor()), key=lambda t: (-t[0], t[1]))[: newsgate.rescue_limit()]
+        rescuable = [(sc, key, it) for key, (sc, it) in refused_by_gate.items() if sc >= newsgate.rescue_floor() and _news_window(it.date, NEWS_RESCUE_MAX_AGE_DAYS)]
+        best = sorted(rescuable, key=lambda t: (-t[0], t[1]))[: newsgate.rescue_limit()]
         for _sc, key, it in best:
             news[key] = it
             gated.pop(key, None)

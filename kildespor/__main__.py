@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument("--checkpoint-seconds", type=float, default=90.0, help="how often the complete output is rewritten during enrichment")
     parser.add_argument("--max-requests", type=int, default=int(os.environ.get("KILDESPOR_MAX_REQUESTS", "0")), help="hard cap on outbound requests for the run, redirects and retries included (default: --requests-per-company x inputs)")
     parser.add_argument("--requests-per-company", type=float, default=float(os.environ.get("KILDESPOR_REQUESTS_PER_COMPANY", "19")), help="request budget per input used when --max-requests is not set (default 19)")
-    parser.add_argument("--company-request-cap", type=int, default=16, help="cap on website+jobs requests for one company (default 16)")
+    parser.add_argument("--company-request-cap", type=int, default=24, help="cap on website+jobs requests for one company (default 24)")
     parser.add_argument("--official-only", action="store_true", help="official registers only (fast mode)")
     parser.add_argument("--no-snapshots", action="store_true", help="do not store raw source snapshots under <state-dir>/snapshots")
     parser.add_argument("--run-id", default=os.environ.get("KILDESPOR_RUN_ID"))

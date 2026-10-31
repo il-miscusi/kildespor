@@ -725,7 +725,7 @@ class PublicationDateTests(unittest.TestCase):
         <script type="application/ld+json">{{"@type":"NewsArticle","headline":"Prosjektet på Voss","datePublished":"2019-05-02T10:00:00+02:00","mainEntityOfPage":{{"@id":"{page}/"}}}}</script>
         <script type="application/ld+json">{{"@type":"NewsArticle","headline":"Ny kontrakt i Bergen","datePublished":"{RECENT}T10:00:00+02:00"}}</script>
         </head><body><article><h1>Prosjektet på Voss</h1></article></body></html>"""
-        self.assertIsNone(harvest.article_meta(snap(page, html), soup_of(html), ["Fjordbygg"]))  # 2019: outside the window
+        self.assertEqual(harvest.article_meta(snap(page, html), soup_of(html), ["Fjordbygg"]).date, "2019-05-02")
         unbound = html.replace(f',"mainEntityOfPage":{{"@id":"{page}/"}}', "")
         self.assertIsNone(harvest.article_meta(snap(page, unbound), soup_of(unbound), ["Fjordbygg"]))  # two unbound: none
         sole = f"""<html><head><title>Ny kontrakt i Bergen</title><script type="application/ld+json">{{"@type":"NewsArticle","headline":"Ny kontrakt i Bergen","datePublished":"{RECENT}T10:00:00+02:00"}}</script></head>
@@ -830,3 +830,29 @@ class RecruiterLinkTests(unittest.TestCase):
         self.assertIn("https://talangpunkten.se/career/work-system/lang/no", rec.family_state["hiring"]["checked_sources"])
         self.assertFalse(any("talangpunkten" in u for u in fetcher.requested))
         self.assertNotIn("job_posting:site", rec.checked_fields)
+
+
+class NewsAgeAndPlaceholders(unittest.TestCase):
+    def test_a_ten_year_old_post_is_inside_the_window_but_too_old_to_rescue(self) -> None:
+        day = (TODAY - timedelta(days=9 * 365)).isoformat()
+        self.assertTrue(harvest._news_window(day))
+        self.assertFalse(harvest._news_window(day, harvest.NEWS_RESCUE_MAX_AGE_DAYS))
+        self.assertTrue(harvest._news_window(RECENT, harvest.NEWS_RESCUE_MAX_AGE_DAYS))
+        self.assertFalse(harvest._news_window((TODAY - timedelta(days=11 * 365)).isoformat()))
+
+    def test_sample_posts_are_not_headlines(self) -> None:
+        for title in ("Moikka maailma!", "Hei verden!", "Hello world!", "Tittel innlegg", "Nyhets innlegg 1", "Blog Post Title Four", "Featured"):
+            self.assertFalse(harvest.is_headline(title), title)
+        self.assertTrue(harvest.is_headline("Nytt innlegg om verdens viktigste yrke"))
+
+    def test_more_job_ad_titles(self) -> None:
+        for title in ("Rich. Steen søker mekaniker til vårt verksted på Grorud", "Åpen jobbsøknad"):
+            self.assertTrue(harvest.JOB_AD_TITLE.search(title), title)
+
+    def test_day_in_a_post_url(self) -> None:
+        self.assertEqual(harvest.url_day("https://www.fp.no/nyheter/2026-09-29-renteendring"), "2026-09-29")
+        self.assertEqual(harvest.url_day("https://www.fp.no/nyheter/2015-03-4-har-du-forsikret-barna-dine"), "2015-03-04")
+        self.assertEqual(harvest.url_day("https://glp.no/2024/09/03/merkedagen/"), "2024-09-03")
+        self.assertIsNone(harvest.url_day("https://www.fp.no/kurs/2026-09-29-renteendring"))
+        self.assertIsNone(harvest.url_day("https://www.fp.no/nyheter/2026-13-40-renteendring"))
+        self.assertIsNone(harvest.url_day("https://www.fp.no/nyheter/renteendring"))
