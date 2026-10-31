@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--state-dir", default=os.environ.get("KILDESPOR_STATE_DIR", "state"), help="where run snapshots are kept for refresh (default: state/)")
     parser.add_argument("--registry-snapshot", default=os.environ.get("KILDESPOR_REGISTRY_SNAPSHOT"), help="optional Brreg bulk CSV(.gz) used if the live register is unreachable")
     env_budget = os.environ.get("KILDESPOR_TIME_BUDGET_S")
-    parser.add_argument("--time-budget", type=float, default=float(env_budget) if env_budget else None, help="wall-clock budget in seconds; research stops at 88%% of it and the complete output is always on disk (default: 900 + 0.6 per company, at most 2,700)")
+    parser.add_argument("--time-budget", type=float, default=float(env_budget) if env_budget else None, help="wall-clock budget in seconds; research stops at 88%% of it and the complete output is always on disk (default: 900 + 0.6 per company)")
     parser.add_argument("--workers", type=int, default=int(os.environ.get("KILDESPOR_WORKERS", "32")), help="concurrent companies (default 32)")
     parser.add_argument("--per-company-seconds", type=float, default=120.0, help="cap on website+jobs research per company (default 120)")
     parser.add_argument("--checkpoint-seconds", type=float, default=90.0, help="how often the complete output is rewritten during enrichment")

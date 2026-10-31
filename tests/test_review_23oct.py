@@ -133,7 +133,11 @@ class Budget(unittest.TestCase):
     def test_default_budget_scales_with_the_batch(self) -> None:
         self.assertEqual(default_budget(100), 960.0)
         self.assertEqual(default_budget(1000), 1500.0)
-        self.assertEqual(default_budget(10000), 2700.0)
+        self.assertEqual(default_budget(10000), 6900.0)
+
+    def test_default_budget_stays_inside_45_minutes_per_100_companies(self) -> None:
+        for companies in (100, 1000, 1100, 5000, 100000):
+            self.assertLess(default_budget(companies), 27.0 * companies / 2)
 
 
 if __name__ == "__main__":

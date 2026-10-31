@@ -80,15 +80,17 @@ model. Expected third-party cost per official run: **$0**.
 
 ### Time budget
 
-The agent keeps its own wall-clock budget (`--time-budget`, default 900 s,
-or `KILDESPOR_TIME_BUDGET_S`). It reads the official registers for every
-company first and writes a complete output file straight away (a few seconds
-per 100 companies). Website, profile and job research then improves that file,
-and the complete file is rewritten atomically every 90 s. Research stops at 88% of the budget. If the budget runs
-out, unfinished work is abandoned and its areas are reported as `failed` with
-the reason, so the output on disk always has exactly one envelope per input.
-Lower the budget if the evaluator's limit is shorter. `--workers` (default 32)
-sets concurrency. `--max-requests` caps outbound requests for the whole run,
+The documented command needs no flag: the agent sets its own wall-clock budget
+of 900 s plus 0.6 s per company (960 s for 100 companies, 1,500 s for 1,000,
+3,900 s for 5,000), well inside Builderr's 45 minutes per 100 companies.
+`--time-budget` or `KILDESPOR_TIME_BUDGET_S` overrides it. The agent reads the
+official registers for every company first and writes a complete output file
+straight away (a few seconds per 100 companies). Website, profile and job
+research then improves that file, and the complete file is rewritten atomically
+every 90 s. Research stops at 88% of the budget. If the budget runs out,
+unfinished work is abandoned and its areas are reported as `failed` with the
+reason, so the output on disk always has exactly one envelope per input.
+`--workers` (default 32) sets concurrency. `--max-requests` caps outbound requests for the whole run,
 redirects and retries included (default 19 per input company).
 
 ### Refresh

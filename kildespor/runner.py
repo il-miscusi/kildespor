@@ -394,12 +394,13 @@ def write_root_index(out_dir: Path, site_dir: Path) -> None:
 
 
 def default_budget(companies: int) -> float:
-    """Wall-clock budget when none is given: 900 s plus 0.6 s per company, at most 2,700 s.
+    """Wall-clock budget when none is given: 900 s plus 0.6 s per company.
 
-    1,000 companies get 1,500 s and 3,000 or more get 2,700 s, the 45 minutes Builderr once
-    published for a daily run. A fixed 900 s would end research after about 2,000 companies on
-    the larger retest set."""
-    return min(2700.0, 900.0 + 0.6 * max(0, companies))
+    1,000 companies get 1,500 s and 5,000 get 3,900 s. Official runs pass no flags and allow 45
+    minutes per 100 companies (27 s per company), which this stays well inside from 34 companies
+    up. Research takes about 0.5 s per company at any size, so a ceiling on the total would cut
+    it on a larger retest set."""
+    return 900.0 + 0.6 * max(0, companies)
 
 
 def run_batch(args: Any) -> int:
