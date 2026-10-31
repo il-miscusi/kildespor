@@ -5,8 +5,8 @@
     "run_id": "smoke-100-a",
     "agent": "kildespor",
     "agent_version": "1.0.0",
-    "started_at": "2026-10-23T22:45:20Z",
-    "completed_at": "2026-10-23T22:46:32Z",
+    "started_at": "2026-10-31T15:37:50Z",
+    "completed_at": "2026-10-31T15:38:53Z",
     "terminal_status": "completed",
     "time_budget_s": 960.0,
     "input_count": 100,
@@ -109,9 +109,9 @@
       }
     }
   },
-  "available_claims": 7029,
+  "available_claims": 7032,
   "claims_by_field": {
-    "company_news": 18,
+    "company_news": 21,
     "financial.annual_result": 283,
     "financial.audit_opt_out": 283,
     "financial.current_assets": 282,
@@ -147,42 +147,42 @@
     "registered_employees": 15,
     "registered_workplace": 73,
     "registry_phone": 29,
-    "registry_role_change": 261,
+    "registry_role_change": 260,
     "registry_status": 100,
     "registry_update": 497,
     "registry_website": 11,
-    "role": 410,
+    "role": 409,
     "self_description": 7,
     "share_capital": 90,
     "social_profile": 19,
     "statutory_purpose": 93,
     "vat_registered": 100,
-    "website_email": 16,
+    "website_email": 18,
     "website_phone": 6
   },
-  "evidence_records": 7051,
+  "evidence_records": 7053,
   "changes_detected": 0,
   "operations": {
-    "requests": 1010,
-    "bytes": 72864754,
-    "p50_ms": 841,
-    "p95_ms": 3290,
+    "requests": 1025,
+    "bytes": 73250120,
+    "p50_ms": 610,
+    "p95_ms": 2183,
     "max_requests": 1900,
     "budget_refusals": 0,
     "rate_limited_responses": 1,
     "dns_timeouts": 0,
-    "wall_clock_s": 72.2,
+    "wall_clock_s": 63.4,
     "per_company_runtime_ms": {
-      "p50": 8708,
-      "p95": 30091
+      "p50": 7803,
+      "p95": 41976
     },
     "third_party_cost_usd": 0.0,
     "language_model_calls": 0
   },
   "nav_feed": {
     "days": 45,
-    "pages": 92,
-    "active_ads": 9297,
+    "pages": 88,
+    "active_ads": 9384,
     "error": null,
     "loaded": true
   }
