@@ -1299,7 +1299,8 @@ def _sister_companies(rec: CompanyRecord, sig: RegisterSignals, texts: list[str]
     A footer listing "Consto Bergen AS, Consto Anlegg Nord AS ..." makes the site the group's, whichever
     of those companies it was found for. It holds when the pages name another member of our Brreg group
     that is neither our owner nor below us (a sister company), or two or more other legal entities whose
-    name starts with our name's first word. It never holds when our number is printed as the site's
+    name starts with our name's first word, or when the domain is that word and two or more sisters in
+    the register carry it. It never holds when our number is printed as the site's
     owner, when we are the group's parent, or when our name is the site's brand: Consto AS is the
     namesake of consto.no and keeps it, with its profiles and news."""
     org = rec.organisation_number
@@ -1329,6 +1330,14 @@ def _sister_companies(rec: CompanyRecord, sig: RegisterSignals, texts: list[str]
         others = {m.group(1) for m in re.finditer(rf"(?:^| )({re.escape(head)}(?: [a-z0-9]+){{0,4}}?) {ENTITY_FORM}(?= |$)", norm)} - our_cores
         if len(others) >= 2:
             return f"the site names {len(others)} other companies under the {head} name ({', '.join(sorted(others)[:3])})", brand or head
+        if site_domain.split(".")[0].replace("-", "") == head:
+            # The register shows the same when the pages we read do not: the domain is the word we share with
+            # two or more sisters, so it is their common brand (akademiet.no for the Akademiet schools). One
+            # sister is not enough: an operating company and its property company often share a name.
+            cores = {" ".join(t for t in core_tokens(node.get("name") or "") if t not in ("og", "and")): node.get("name") for number, node in tree.items() if number not in kin}
+            sisters = sorted(name for core, name in cores.items() if core.startswith(head + " ") and core not in our_cores)
+            if len(sisters) >= 2:
+                return f"the domain is the {head} name shared with {len(sisters)} sister companies ({', '.join(sisters[:3])})", brand or head
     return None
 
 

@@ -185,6 +185,24 @@ class SisterCompanies(unittest.TestCase):
         body = body.replace("bygger hus.", f"bygger hus. Vestland Tak AS org.nr {ORG} MVA")
         self.assertEqual(run_labelled(rec, {"https://taktekker.no/": body}), [("registry_listed_and_organisation_number_on_site", None)])
 
+    def test_domain_shared_with_two_sisters_in_the_register_is_labelled(self) -> None:
+        # akademiet.no: the pages we read name no sister, and the register shows the brand is shared.
+        def tree(*sisters: str) -> dict:
+            nodes = {PARENT: {"organisation_number": PARENT, "name": "AKADEMIET UTDANNING NORGE AS", "parent": None},
+                     ORG: {"organisation_number": ORG, "name": "AKADEMIET VGS SANDVIKA AS", "parent": PARENT}}
+            for index, name in enumerate(sisters):
+                nodes[f"99852239{index}"] = {"organisation_number": f"99852239{index}", "name": name, "parent": PARENT}
+            return nodes
+
+        body = html("Akademiet", "Akademiet VGS Sandvika AS er en privat videregående skole i Sandvika.")
+        rec = self.group_rec("AKADEMIET VGS SANDVIKA AS", "akademiet.no", tree("AKADEMIET VGS BISLETT AS", "AKADEMIET UTVEKSLING AS"))
+        [(_identity, group)] = run_labelled(rec, {"https://akademiet.no/": body})
+        self.assertIn("2 sister companies", group[0])
+        self.assertIn("AKADEMIET UTVEKSLING AS", group[0])
+        # One sister is not enough: an operating company and its property company often share a name.
+        rec = self.group_rec("AKADEMIET VGS SANDVIKA AS", "akademiet.no", tree("AKADEMIET EIENDOM AS"))
+        self.assertEqual(run_labelled(rec, {"https://akademiet.no/": body}), [("registry_listed_name_on_site", None)])
+
 
 class ChainSections(unittest.TestCase):
     def publish(self, name: str, home_url: str, pages: dict[str, str]):
