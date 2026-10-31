@@ -705,6 +705,151 @@ class NumberUnderAnotherName(unittest.TestCase):
         self.assertEqual([m for m, _ in run(rec, pages, guesses=["oobgolf.no"])], ["organisation_number_on_site"])
 
 
+class LegalPageDepth(unittest.TestCase):
+    """WP-D: when the homepage does not print the number, the contact, about, privacy and terms pages are read."""
+
+    def test_contact_links_one_per_class_in_order(self) -> None:
+        body = ("<a href='/nyheter/'>Nyheter</a><a href='/salgsbetingelser'>Salgsbetingelser</a><a href='/personvern'>Personvern</a>"
+                "<a href='https://www.berg.no/om-oss/'>Om oss</a><a href='/kontakt/'>Kontakt oss</a><a href='/kontakt/skjema'>Kontakt</a>"
+                "<a href='/brosjyre.pdf'>Kontakt (PDF)</a><a href='https://annen.no/kontakt'>Kontakt</a>")
+        snap, soup, _ = page("https://berg.no/", html("Berg", body))
+        self.assertEqual(website._contact_links(snap, soup), [
+            "https://berg.no/kontakt/", "https://www.berg.no/om-oss/", "https://berg.no/personvern", "https://berg.no/salgsbetingelser",
+            "https://berg.no/kontakt/skjema"])
+
+    def test_number_on_the_third_legal_page_verifies_a_name_domain(self) -> None:
+        rec = make_rec(name="FJELLGLIMT REHAB AS", phone=None, street="Ukjent vei 9")
+        home = html("Velkommen", "<a href='/kontakt'>Kontakt</a> <a href='/om-oss'>Om oss</a> <a href='/personvern'>Personvern</a>")
+        pages = {"https://fjellglimtrehab.no/": home,
+                 "https://fjellglimtrehab.no/kontakt": html("Kontakt", "Ring oss"),
+                 "https://fjellglimtrehab.no/om-oss": html("Om oss", "Vi er et team"),
+                 "https://fjellglimtrehab.no/personvern": html("Personvern", f"Behandlingsansvarlig er Fjellglimt Rehab AS, org.nr. {ORG}")}
+        out = run(rec, pages, guesses=["fjellglimtrehab.no"])
+        self.assertEqual(out, [("organisation_number_on_site", "https://fjellglimtrehab.no/")])
+
+    def test_at_most_three_legal_pages_per_candidate(self) -> None:
+        rec = make_rec(name="FJELLGLIMT REHAB AS", phone=None, street="Ukjent vei 9")
+        links = "".join(f"<a href='/{p}'>{p}</a>" for p in ("kontakt", "om-oss", "personvern", "vilkar", "salgsbetingelser"))
+        pages = {"https://fjellglimtrehab.no/": html("Fjellglimt Rehab", links)}
+        pages.update({f"https://fjellglimtrehab.no/{p}": html(p, "Ingen nummer her") for p in ("kontakt", "om-oss", "personvern", "vilkar", "salgsbetingelser")})
+        fetched: list[str] = []
+        fixtures = {url: page(url, body) for url, body in pages.items()}
+
+        def fetch(self, url):  # noqa: ANN001
+            fetched.append(url)
+            return fixtures.get(url)
+
+        with patch.object(website, "caches", FakeCaches()), patch.object(website, "resolve_public", return_value=True), \
+             patch.object(website, "_prefetch_dns", lambda hosts: None), patch.object(website.SiteVisit, "fetch_page", fetch), \
+             patch.object(website, "guess_domains", return_value=["fjellglimtrehab.no"]):
+            website.research_website(None, rec, time.monotonic() + 60)
+        self.assertEqual(fetched, ["https://fjellglimtrehab.no/", "https://fjellglimtrehab.no/kontakt",
+                                   "https://fjellglimtrehab.no/om-oss", "https://fjellglimtrehab.no/personvern"])
+
+
+class WiderNameGuesses(unittest.TestCase):
+    def test_type_words_dash_heads_and_initials(self) -> None:
+        self.assertIn("bryggeparken.no", website.guess_domains("HOTEL BRYGGEPARKEN AS", limit=11))
+        self.assertIn("olaskjeret.no", website.guess_domains("OLASKJERET - AUSTEVOLL OPPLEVINGSSENTER AS", limit=11))
+        self.assertNotIn("gpc.no", website.guess_domains("GARDERMOEN PERISHABLE CENTER AS", limit=11))
+        self.assertIn("gpc.no", website.guess_domains("GARDERMOEN PERISHABLE CENTER AS", limit=11, initials=True))
+        # the full name is still guessed first
+        self.assertEqual(website.guess_domains("HOTEL BRYGGEPARKEN AS", limit=11)[0], "hotelbryggeparken.no")
+
+    def test_initials_only_for_firms_with_ten_or_more_employees(self) -> None:
+        rec = make_rec(name="GARDERMOEN PERISHABLE CENTER AS")
+        self.assertNotIn("https://gpc.no/", [u for u, _ in website.website_candidates(rec)])
+        rec.context["entity"]["antallAnsatte"] = 140
+        self.assertIn("https://gpc.no/", [u for u, _ in website.website_candidates(rec)])
+
+
+class ChainStorePages(unittest.TestCase):
+    def test_number_only_on_a_store_page_of_a_chain_domain_is_ambiguous(self) -> None:
+        # The index found our number on kjede.no/butikker/majorstuen; kjede.no's homepage prints the chain's own number.
+        cache = FakeCaches(social=[{"url": "https://kjede.no/butikker/majorstuen", "kind": "website", "platform": None, "source": "noindex",
+                                    "match_rule": "single", "source_record": "https://kjede.no/butikker/majorstuen"}])
+        rec = make_rec(name="KJEDE MAJORSTUEN AS", phone=None)
+        pages = {"https://kjede.no/": html("Kjede", f"Kjede Norge AS org.nr {OTHER}"),
+                 "https://kjede.no/butikker/majorstuen": html("Kjede Majorstuen", f"Kjede Majorstuen AS org.nr {ORG}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
+        self.assertIn("as its own", rec.context.get("website_ambiguous_reason", ""))
+
+    def test_terms_page_listing_two_sister_shops_is_ambiguous(self) -> None:
+        cache = FakeCaches(social=[{"url": "https://dorogvindu.no/salgsbetingelser", "kind": "website", "platform": None, "source": "overture",
+                                    "match_rule": "overture_name_postcode", "source_record": "https://dorogvindu.no/salgsbetingelser"}])
+        rec = make_rec(name="DØR & VINDU HALDEN AS", phone=None)
+        pages = {"https://dorogvindu.no/": html("Dør & Vindu", "<a href='/salgsbetingelser'>Salgsbetingelser</a>"),
+                 "https://dorogvindu.no/salgsbetingelser": html("Salgsbetingelser", f"Dør & Vindu Halden AS Peder Ankers gate 19 1771 Halden Org. Nr.: {ORG[:3]} {ORG[3:6]} {ORG[6:]} "
+                                                                    f"Dør & Vindu Moss AS Årvollskogen 1 1529 Moss Org. Nr.: {OTHER}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
+        self.assertIn("shared", rec.context.get("website_ambiguous_reason", ""))
+
+    def test_terms_page_listing_register_linked_stores_is_ambiguous(self) -> None:
+        # dorogvindu.no: nine stores, each with its own "Org. Nr.", all linked to one parent in the register. The
+        # group link must not make their numbers "related": the site is the chain's, not the Halden store's.
+        cache = FakeCaches(social=[{"url": "https://dorogvindu.no/salgsbetingelser", "kind": "website", "platform": None, "source": "overture",
+                                    "match_rule": "overture_name_postcode", "source_record": "https://dorogvindu.no/salgsbetingelser"}])
+        rec = make_rec(name="DØR & VINDU HALDEN AS", phone=None)
+        rec.context["group_orgs"] = {ORG, OTHER, OTHER2, OTHER3}
+        pages = {"https://dorogvindu.no/": html("Dør & Vindu", "<a href='/salgsbetingelser'>Salgsbetingelser</a> Kopirett 2026 © Dør & Vindu Gruppen AS"),
+                 "https://dorogvindu.no/salgsbetingelser": html("Salgsbetingelser", f"Dør & Vindu Halden AS Halden Org. Nr.: {ORG[:3]} {ORG[3:6]} {ORG[6:]} "
+                                                                    f"Dør & Vindu Moss AS Moss Org. Nr.: {OTHER} Dør & Vindu Skien AS Skien Org. Nr.: {OTHER2}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [])
+        self.assertIn("shared", rec.context.get("website_ambiguous_reason", ""))
+
+    def test_group_parent_listing_its_subsidiaries_still_verifies(self) -> None:
+        cache = FakeCaches(social=[{"url": "https://konsern.no/kontakt", "kind": "website", "platform": None, "source": "noindex",
+                                    "match_rule": "single", "source_record": "https://konsern.no/kontakt"}])
+        rec = make_rec(name="KONSERN AS", phone=None)
+        rec.context["group_orgs"] = {ORG, OTHER, OTHER2}
+        rec.context["group_root"] = ORG
+        pages = {"https://konsern.no/": html("Konsern", "Vi eier selskaper"),
+                 "https://konsern.no/kontakt": html("Kontakt", f"Konsern AS org.nr {ORG} Datter A AS org.nr {OTHER} Datter B AS org.nr {OTHER2}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [("organisation_number_on_site", "https://konsern.no/")])
+
+    def test_number_on_the_contact_page_of_a_site_without_another_owner_still_verifies(self) -> None:
+        cache = FakeCaches(social=[{"url": "https://berg.no/kontakt", "kind": "website", "platform": None, "source": "noindex",
+                                    "match_rule": "single", "source_record": "https://berg.no/kontakt"}])
+        rec = make_rec(name="BERG BYGG AS", phone=None)
+        pages = {"https://berg.no/": html("Berg", "Vi bygger hus"),
+                 "https://berg.no/kontakt": html("Kontakt", f"Berg Bygg AS org.nr {ORG}")}
+        self.assertEqual(run(rec, pages, cache=cache, guesses=[]), [("organisation_number_on_site", "https://berg.no/")])
+
+
+class CommonCrawlIndexRows(unittest.TestCase):
+    """The merged reverse index carries source, page count and a name printed before the number."""
+
+    def setUp(self) -> None:
+        import gzip
+        import tempfile
+        from pathlib import Path
+
+        from kildespor import caches
+
+        self.caches = caches
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        with gzip.open(d / "candidates-noindex.tsv.gz", "wt", encoding="utf-8") as fh:
+            fh.write("orgnr\trank\tdomain\tpage_url\trule\tdomain_orgnrs\tretrieved_at\tsource\tn_pages\tnamed_other\n")
+            fh.write(f"{ORG}\t1\tatvtilsalgs.no\thttps://www.atvtilsalgs.no/\tcopyright\t1\t2026-10-05T10:00:00Z\tcc\t1\teuroshopper group\n")
+            fh.write(f"{ORG}\t2\tberg.no\thttps://berg.no/kontakt\tsingle\t1\t2026-10-14T10:00:00Z\tlive+cc\t3\t\n")
+        caches.reset(d)
+
+    def tearDown(self) -> None:
+        from pathlib import Path
+
+        self.caches.reset(Path(self.caches.__file__).with_name("data"))
+        self.tmp.cleanup()
+
+    def test_named_other_rows_go_last_and_extra_fields_load(self) -> None:
+        got = self.caches.candidates(ORG)
+        self.assertEqual([c["url"] for c in got], ["https://berg.no/", "https://www.atvtilsalgs.no/"])
+        self.assertEqual(got[0]["index_source"], "live+cc")
+        self.assertEqual(got[0]["n_pages"], 3)
+        self.assertEqual(got[1]["named_other"], "euroshopper group")
+        self.assertEqual(got[0]["source_record"], "https://berg.no/kontakt")
+
+
 class OrganiserGroupSites(unittest.TestCase):
     """Organiser point 1 (pool rejections at 9d1b1fd): a group, chain, vendor or acquirer site is not the company's own."""
 
@@ -786,3 +931,94 @@ class OrganiserGroupSites(unittest.TestCase):
 def urlunsplit_root(url: str) -> str:
     parts = website.urlsplit(url)
     return f"{parts.scheme}://{parts.netloc}/"
+
+
+class PoolVerifiedIdentity(unittest.TestCase):
+    """Sites the pool verified and the 04f3daf gate refused (campaign/discovery/identity_misses_04f3daf.json)."""
+
+    def run_with_search(self, rec, pages, guesses, namesakes=()):
+        snap = page("https://data.brreg.no/enhetsregisteret/api/enheter?navn=x", "{}")[0]
+        result = (list(namesakes), snap) if namesakes is not None else (None, None)
+        with patch.object(website, "_register_namesakes", return_value=result):
+            return run(rec, pages, guesses=guesses)
+
+    def silent_sea(self):
+        return make_rec(name="SILENT SEA AS", phone=None, street="Ukjent vei 9")
+
+    def test_no_domain_spelling_the_name_with_the_legal_name_in_its_title_and_no_namesake(self) -> None:
+        pages = {"https://silentsea.no/": html("Silent Sea AS", "Elektrisk fremdrift gjør båtlivet bedre")}
+        self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"]), [("name_and_domain_spells_name", "https://silentsea.no/")])
+
+    def test_the_brand_without_its_legal_form_is_not_enough(self) -> None:
+        # fbproductions.no: a photographer's "FB Productions", while FB PRODUCTIONS AS rents out vehicles
+        rec = make_rec(name="FB PRODUCTIONS AS", phone=None, street="Ukjent vei 9")
+        pages = {"https://www.fbproductions.no/": html("FB Productions – Reklamefilm. Eventfilm. Foto", "Om meg")}
+        self.assertEqual(self.run_with_search(rec, pages, ["fbproductions.no"]), [])
+
+    def test_a_name_without_a_legal_form_stands_as_registered(self) -> None:
+        rec = make_rec(name="ALVDAL BADSTUELAUG", phone=None, street="Ukjent vei 9", form="FLI")
+        pages = {"https://alvdalbadstuelaug.no/": html("Alvdal Badstuelaug", "Badstua foran iskalde Kvennbekken")}
+        self.assertEqual([m for m, _ in self.run_with_search(rec, pages, ["alvdalbadstuelaug.no"])], ["name_and_domain_spells_name"])
+
+    def test_default_wordpress_install_is_parked(self) -> None:
+        rec = make_rec(name="PRS GRUPPEN AS", phone=None, street="Ukjent vei 9")
+        pages = {"https://prsgruppen.no/": html("prsgruppen – My WordPress Blog – prsgruppen AS", "Hello world! Welcome to WordPress. This is your first post.")}
+        self.assertEqual(self.run_with_search(rec, pages, ["prsgruppen.no"]), [])
+
+    def test_a_namesake_in_the_register_refuses(self) -> None:
+        pages = {"https://silentsea.no/": html("Silent Sea AS", "Elektrisk fremdrift")}
+        rec = self.silent_sea()
+        self.assertEqual(self.run_with_search(rec, pages, ["silentsea.no"], namesakes=["SILENT SEA HOLDING AS (911111111)"]), [])
+        self.assertIn("other entities", rec.context["website_ambiguous_reason"])
+
+    def test_a_failed_register_search_refuses(self) -> None:
+        pages = {"https://silentsea.no/": html("Silent Sea AS", "Elektrisk fremdrift")}
+        self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"], namesakes=None), [])
+
+    def test_a_com_namesake_never_passes(self) -> None:
+        # estrella.com is a home builder in Arizona, not ESTRELLA AS
+        rec = make_rec(name="ESTRELLA AS", phone=None, street="Ukjent vei 9")
+        pages = {"https://estrella.com/": html("Estrella AS | New Homes in Goodyear AZ", "Estrella AS")}
+        self.assertEqual(self.run_with_search(rec, pages, ["estrella.com"]), [])
+
+    def test_a_one_word_name_needs_its_legal_form_in_the_identity_text(self) -> None:
+        rec = make_rec(name="ADDVIA AS", phone=None, street="Ukjent vei 9")
+        self.assertEqual(self.run_with_search(rec, {"https://addvia.no/": html("Addvia", "Addvia AS")}, ["addvia.no"]), [])
+        self.assertEqual([m for m, _ in self.run_with_search(rec, {"https://addvia.no/": html("Addvia AS", "Rådgivning")}, ["addvia.no"])],
+                         ["name_and_domain_spells_name"])
+        rec = make_rec(name="TP ELECTRONICS AS", phone=None, street="Ukjent vei 9")
+        self.assertEqual([m for m, _ in self.run_with_search(rec, {"https://tpelectronics.no/": html("TPelectronics AS", "Utvikling")}, ["tpelectronics.no"])],
+                         ["name_and_domain_spells_name"])
+
+    def test_holding_company_or_another_number_never_passes(self) -> None:
+        rec = make_rec(name="NORDLYS HOLDING AS", phone=None, street="Ukjent vei 9")
+        self.assertEqual(self.run_with_search(rec, {"https://nordlysholding.no/": html("Nordlys Holding AS", "Eiendom")}, ["nordlysholding.no"]), [])
+        pages = {"https://silentsea.no/": html("Silent Sea AS", f"Levert av Båtfirma AS org.nr {OTHER}")}
+        self.assertEqual(self.run_with_search(self.silent_sea(), pages, ["silentsea.no"]), [])
+
+    def test_own_name_run_together_or_misspelt_is_not_another_entity(self) -> None:
+        self.assertTrue(website._mention_is_ours("tpelectronics", {"tp electronics"}))
+        self.assertTrue(website._mention_is_ours("kasen fjellsprenging", {"kasen fjellsprengning"}))
+        self.assertFalse(website._mention_is_ours("erling rolstad", {"erling rolstad eiendom"}))
+        self.assertFalse(website._mention_is_ours("berg byg", {"berg bygg"}))  # short words are never fuzzy
+        rec = make_rec(name="TP ELECTRONICS AS", phone="55 12 34 56")
+        pages = {"https://tpelectronics.no/": html("TPelectronics AS", "Ring oss på 55 12 34 56. Strandgaten 1, 5013 BERGEN")}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=["tpelectronics.no"])], ["register_contact_on_site"])
+
+    def test_entities_in_json_ld_are_unescaped(self) -> None:
+        ld = '<script type="application/ld+json">{"@type":"WebSite","publisher":{"@type":"Organization","name":"O. Hansen &amp; Sønner AS","url":"https://o-hansen.no/"}}</script>'
+        snap, soup, text = page("https://o-hansen.no/", html("Transport", "", ld))
+        self.assertIn(("JSON-LD name", "O. Hansen & Sønner AS"), website.identity_parts(soup, text, "o-hansen.no"))
+
+    def test_colon_inside_our_name_does_not_make_it_another_company(self) -> None:
+        sig = website.RegisterSignals(make_rec(name="NORWEGIAN RE:TEXTILE AS"))
+        self.assertIsNone(website._number_named_for_another(f"© Norwegian Re:Textile AS org.nr {ORG}", ORG, sig))
+        self.assertEqual(website._number_named_for_another(f"© Euroshopper Group AS org.nr {ORG}", ORG, sig), "euroshopper group")
+
+    def test_full_legal_name_beside_the_registered_phone(self) -> None:
+        rec = make_rec(name="MBA ENTREPRENØR AS", phone="52 70 00 00", email="post@mba.no")
+        pages = {"https://mba.no/": html("MBA – DET ER VI SOM BYGGER", "KONTAKT MBA Entreprenør AS Tlf: 52 70 00 00 8601 Mo i Rana")}
+        self.assertEqual([m for m, _ in run(rec, pages, guesses=[])], ["register_contact_on_site"])
+        # the brand alone beside the phone is still an umbrella brand
+        pages = {"https://mba.no/": html("MBA – DET ER VI SOM BYGGER", "KONTAKT MBA Tlf: 52 70 00 00 8601 Mo i Rana")}
+        self.assertEqual(run(rec, pages, guesses=[]), [])
