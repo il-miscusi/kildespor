@@ -1022,3 +1022,33 @@ class PoolVerifiedIdentity(unittest.TestCase):
         # the brand alone beside the phone is still an umbrella brand
         pages = {"https://mba.no/": html("MBA – DET ER VI SOM BYGGER", "KONTAKT MBA Tlf: 52 70 00 00 8601 Mo i Rana")}
         self.assertEqual(run(rec, pages, guesses=[]), [])
+
+
+class CandidateHostVariants(unittest.TestCase):
+    """The register's www. host may not resolve while the bare host serves the site, and the other way round."""
+
+    def tried(self, url: str, answering: str) -> list[str]:
+        calls: list[str] = []
+
+        class Visit:
+            def time_left(self) -> float:
+                return 60.0
+
+            def fetch_page(self, attempt: str) -> str:
+                calls.append(attempt)
+                if attempt.startswith(answering):
+                    return "page"
+                raise ConnectionError("no route to host")
+
+        page, _robots, _budget, answered = website._fetch_candidate(Visit(), CompanyRecord(ORG), url)
+        self.assertEqual((page, answered), ("page", True))
+        return calls
+
+    def test_bare_host_after_the_registers_www_host(self) -> None:
+        self.assertEqual(self.tried("https://www.hemerlas.no/", "https://hemerlas.no/"), ["https://www.hemerlas.no/", "https://hemerlas.no/"])
+
+    def test_www_host_after_a_bare_host(self) -> None:
+        self.assertEqual(self.tried("https://hemerlas.no/", "https://www.hemerlas.no/"), ["https://hemerlas.no/", "https://www.hemerlas.no/"])
+
+    def test_plain_http_on_the_listed_host_comes_last(self) -> None:
+        self.assertEqual(self.tried("https://www.hemerlas.no/", "http://www.hemerlas.no/"), ["https://www.hemerlas.no/", "https://hemerlas.no/", "http://www.hemerlas.no/"])

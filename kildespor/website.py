@@ -1716,15 +1716,16 @@ def _identity(fetcher: Fetcher | None, rec: CompanyRecord, visit: SiteVisit, sig
 
 
 def _fetch_candidate(visit: SiteVisit, rec: CompanyRecord, url: str) -> tuple[tuple[Snapshot, BeautifulSoup, str] | None, str | None, bool, bool]:
-    """Fetch a candidate homepage, trying www. and http:// when the bare https host does not answer.
+    """Fetch a candidate homepage, trying the host with or without www. and then http:// when the
+    https host does not answer. The register often lists a www. host that has no DNS record or
+    certificate while the bare host serves the site (hemerlas.no, lovstad.barnehage.no).
 
     Returns (page, robots_reason, budget_hit, answered)."""
     parts = urlsplit(url)
-    bare = (parts.hostname or "").removeprefix("www.")
-    variants = [url]
-    if not (parts.hostname or "").startswith("www."):
-        variants.append(urlunsplit(("https", "www." + bare, parts.path or "/", parts.query, "")))
-    variants.append(urlunsplit(("http", parts.hostname or bare, parts.path or "/", parts.query, "")))
+    host = parts.hostname or ""
+    other = host.removeprefix("www.") if host.startswith("www.") else "www." + host
+    variants = [url, urlunsplit(("https", other, parts.path or "/", parts.query, ""))]
+    variants.append(urlunsplit(("http", host, parts.path or "/", parts.query, "")))
     timeouts = 0
     for attempt_url in variants:
         if visit.time_left() < 5:
