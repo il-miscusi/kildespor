@@ -595,6 +595,10 @@ class OrganiserFirstNovember(unittest.TestCase):
         self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Som elektriker hos Aircoil vil du:</h2>{ad}"), [])
         self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Fyll ut skjema og bli kontaktet av en rådgiver nær deg</h2>{ad}"), [])
 
+    def test_a_deadline_under_a_later_heading_still_closes_the_ad(self) -> None:
+        ad = "<p>Arbeidsoppgaver: finne nye kunder og følge opp eksisterende kunder over hele landet i mange år.</p><p>Kvalifikasjoner: teknisk bakgrunn.</p>"
+        self.assertEqual(self.inline(f"<h1>Aircoil</h1><h3>Teknisk selger</h3>{ad}<h3>Velkommen med din søknad!</h3><p>Søknadsfrist : 10.03.24</p>"), [])
+
     def test_a_units_list_on_a_shared_site(self) -> None:
         ad = "<p>Arbeidsoppgaver: lede avdelingen og følge opp de ansatte gjennom hele skoleåret som kommer.</p><p>Kvalifikasjoner: ledererfaring.</p>"
         page = snap("https://blaakors.no/ledige-stillinger/", f"<html><body><main><h1>Ledige stillinger</h1><h2>Avdelingsleder, Seiersborg vgs</h2>{ad}<h2>Controller</h2>{ad}<p>Stiftelsen Blå Kors Fredrikstad søker en controller.</p><h2>Åpen søknad</h2><p>Stiftelsen Blå Kors Fredrikstad</p></main></body></html>")

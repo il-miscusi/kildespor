@@ -1936,18 +1936,25 @@ def inline_ads(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, site_url
             continue  # a link to a page of its own: the role-link route reads that page
         level = int(head.name[1])
         stop = next((h for h in heads[i + 1:] if int(h.name[1]) <= level), None)
+        next_role = next((h for h in heads[i + 1:] if int(h.name[1]) <= level and ROLE_WORD.search(h.get_text(" ", strip=True))), None)
+        # The ad's own section names the employer; its deadline can sit under a later heading ("Velkommen
+        # med din søknad!"), so the date is looked for up to the next role.
         parts: list[str] = []
+        rest: list[str] = []
+        into = parts
         for node in head.next_elements:
-            if node is stop:
+            if node is next_role:
                 break
+            if node is stop:
+                into = rest
             if isinstance(node, str):
-                parts.append(node)
+                into.append(node)
         section = re.sub(r"\s+", " ", " ".join(parts)).strip()
         if len(section) < 80 or not reads_as_ad(section, 1):
             continue
         if not own_domain and not ad_names_company(f"{title} {section}", rec, legal_only=True):
             continue  # blaakors.no lists several units' ads: on a site not named for us, the ad itself must name us
-        deadline = DEADLINE.search(section)
+        deadline = DEADLINE.search(section + " " + " ".join(rest))
         expires = text_date(deadline.group(1)) if deadline else None
         if expires and expires < today:
             continue
