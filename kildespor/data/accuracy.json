@@ -1,0 +1,45 @@
+{
+ "as_of": "2026-11-02",
+ "run": "r4c",
+ "companies": 40,
+ "rows": [
+  {
+   "key": "site",
+   "label": "Company website",
+   "checked": 36,
+   "right": 35,
+   "wrong": 1,
+   "unopened": 0,
+   "share": "97%"
+  },
+  {
+   "key": "social",
+   "label": "Social profile",
+   "checked": 45,
+   "right": 44,
+   "wrong": 1,
+   "unopened": 14,
+   "share": "98%"
+  },
+  {
+   "key": "news",
+   "label": "Dated news",
+   "checked": 34,
+   "right": 27,
+   "wrong": 7,
+   "unopened": 0,
+   "share": "79%"
+  },
+  {
+   "key": "jobs",
+   "label": "Job ad",
+   "checked": 21,
+   "right": 19,
+   "wrong": 2,
+   "unopened": 0,
+   "share": "90%"
+  }
+ ],
+ "checked_by": "Sites, jobs and news were opened by two independent AI review agents with no access to the agent's rules; social pages were read in a browser as a logged-out visitor by the session that built this revision. No person has re-checked them yet.",
+ "note": "40 companies checked page by page on 2026-11-02 against the live pages. Sites, jobs and news were opened by two independent AI review agents with no access to the agent's rules; social pages were read in a browser as a logged-out visitor by the session that built this revision. No person has re-checked them yet. Job ads and social pages were sampled more heavily because they are rare."
+}

@@ -2124,6 +2124,7 @@ NOT_NEWS_CATEGORY = re.compile(
 # (/aktuelt/ledige-stillinger-bli-en-av-oss).
 JOB_AD_TITLE = re.compile(
     r"ledige?\s+stilling|søker\s+(?:nye?\s+)?(?:[\wæøå-]+\s+){0,2}(?:medarbeider|teammedlem|kolleg|ansatt|lærling)|vi\s+ansetter|"
+    r"søker\s+(?:[\wæøå/-]+\s+){0,2}[\wæøå/-]*(?:leder|sjef|ingeniør|selger|konsulent|rådgiver|tekniker|montør|operatør)\b|"
     r"søker\s+(?:[\wæøå-]+\s+){1,3}til\s+vår|åpen\s+(?:jobb)?søknad|"
     r"bli\s+en\s+(?:av\s+oss|del\s+av)|arbeta\s+i|we.?re\s+hiring|join\s+our\s+team",
     re.I,
@@ -2136,6 +2137,7 @@ JOB_AD_SEGMENT = re.compile(
 # Evergreen guides, explainers and white papers: dated, but not news about the company. Matched at the
 # start of the title or of a part after a dash or colon ("Lipødem – Hvordan kan behandling hjelpe?").
 GUIDE_TITLE = re.compile(
+    r"(?:oversikt\s+over\s+)?offentlige\s+(?:oppgaver\s+og\s+)?frister|"
     r"practical\s+guide|whitepaper|\be-?bok\b|sjekkliste|checklist|\btips\b"
     r"|(?:^|[–—:|]\s*|\s-\s)(?:guide\b|report:|slik\s+(?:sjekker|forebygger|feirer|gjør|unngår|velger|fungerer)\b|hvordan\b|how\s+to\b|"
     r"hva\s+er\b|alt\s+(?:du\s+trenger|om)\b|\d+\s+[\wæøå]+\s+(?:feil|tips|grunner|ting)\b)",
@@ -3265,7 +3267,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     parents = [] if company_label == "group_site" else _parent_names(rec)
     for snap, soup, _ in own_pages():
         for found in profiles_on_page(snap, soup, snap.text(), p_contains, p_prefixes, rec, p_text, p_names, p_words, parents):
-            key = found.url.lower()
+            key = _profile_key(found)
             if key in profiles or per_platform.get(found.platform, 0) >= MAX_PROFILES_PER_PLATFORM:
                 continue
             profiles[key] = found
@@ -3328,6 +3330,13 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
         "profiles": len(profiles), "careers": len(careers), "roles": len(roles), "ads_read": verified.read, "ads_unread": verified.unread,
         "ads_refused": len(verified.refused or {}), "jobs": len(verified.kept), "news": len(news),
     }
+
+
+def _profile_key(found: Found) -> str:
+    """One page, one claim: Facebook gives a page several addresses ending in the same id
+    (/p/Vega-Byggservice-As-1000… and /profile.php?id=1000…)."""
+    number = re.search(r"(?:-|/|=)(\d{9,})/?$", found.url) if found.platform == "facebook" else None
+    return f"facebook:{number.group(1)}" if number else found.url.lower()
 
 
 def _own_on_group_site(handle: str, rec: CompanyRecord) -> bool:

@@ -565,15 +565,25 @@ def merge_duplicate_ads(rec: CompanyRecord) -> None:
         key = _title_key(claim["value"].get("title"))
         if key and _from_nav(claim):
             nav.setdefault(key, claim)
-    if not nav:
-        return
     dropped: list[dict[str, Any]] = []
+    site: dict[str, dict[str, Any]] = {}
     for claim in jobs:
+        value = claim["value"]
+        key = _title_key(value.get("title"))
         if _from_nav(claim):
-            continue
-        twin = nav.get(_title_key(claim["value"].get("title")))
-        if twin is None:
-            continue
+            # A recruiter's import can post one vacancy twice: same title, place and closing date. Two
+            # openings at two sites of one company keep their own claims.
+            twin = nav.get(key)
+            same = twin is not None and all(twin["value"].get(f) == value.get(f) for f in ("location", "expires", "employer"))
+            if twin is None or twin is claim or not same:
+                continue
+        else:
+            twin = nav.get(key) or site.get(key)
+            if key and twin is None:
+                site[key] = claim  # the company's page and a job board's copy of it
+                continue
+            if twin is None:
+                continue
         value = dict(twin["value"])
         also = list(value.get("also_at") or [])
         url = claim["value"].get("url")

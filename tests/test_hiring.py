@@ -601,6 +601,28 @@ class OrganiserFirstNovember(unittest.TestCase):
         rec = self.company("STIFTELSEN BLÅ KORS FREDRIKSTAD")
         self.assertEqual([r.title for r in harvest.inline_ads(page, parse(page)[0], rec, "https://blaakors.no/")], ["Controller, Blå Kors Fredrikstad"])
 
+    def test_job_ads_and_deadline_lists_are_not_news(self) -> None:
+        self.assertTrue(harvest.JOB_AD_TITLE.search("Lokal entreprenør med stolt historie og vekstambisjoner søker Prosjektleder/Driftsleder Grunn/VA!"))
+        self.assertTrue(harvest.GUIDE_TITLE.search("April 2023: Oversikt over offentlige frister for næringsdrivende"))
+        self.assertTrue(harvest.GUIDE_TITLE.search("Ta det med ro - Vi tar oss av fristene! Offentlige oppgaver og frister for næringsdrivende"))
+        self.assertIsNone(harvest.JOB_AD_TITLE.search("Vi har signert ny avtale med Statnett"))
+
+    def test_one_facebook_page_is_one_claim(self) -> None:
+        found = lambda url: harvest.Found("facebook", url, url.rsplit("/", 1)[-1], None, "", "anchor")
+        self.assertEqual(harvest._profile_key(found("https://facebook.com/p/Vega-Byggservice-As-100063747121005")), harvest._profile_key(found("https://facebook.com/profile.php?id=100063747121005")))
+        self.assertNotEqual(harvest._profile_key(found("https://facebook.com/vega")), harvest._profile_key(found("https://facebook.com/vegabygg")))
+
+    def test_one_vacancy_posted_twice_is_one_claim(self) -> None:
+        rec = self.company("ADDSECURE AS")
+        ev = rec.evidence_from_snapshot(snap("https://example.no/", "<html></html>"), source_class="official_public_job_feed", span="x", method="nav_feed_entry_employer_orgnr")
+        for uuid, place in (("a1", "OSLO"), ("a2", "OSLO"), ("a3", "BERGEN")):
+            value = {"title": "Account Manager", "url": f"https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}", "location": place, "expires": "2099-01-01", "employer": "Bravura Norge", "board": "arbeidsplassen.nav.no"}
+            rec.add_claim(family="hiring", field_name="job_posting", value=value, key=["nav", uuid], evidence_ids=[ev], method="nav_feed_entry_employer_orgnr")
+        jobs.merge_duplicate_ads(rec)
+        kept = [c["value"] for c in rec.claims_for("hiring")]
+        self.assertEqual([v["location"] for v in kept], ["OSLO", "BERGEN"])
+        self.assertEqual(kept[0]["also_at"], ["https://arbeidsplassen.nav.no/stillinger/stilling/a2"])
+
     def test_a_shared_brand_does_not_name_the_employer(self) -> None:
         rec = self.company("STIFTELSEN BLÅ KORS FREDRIKSTAD")
         self.assertEqual(harvest.ad_names_company("Bli med i Blå Kors", rec, "https://blaakors.no/", legal_only=True), None)

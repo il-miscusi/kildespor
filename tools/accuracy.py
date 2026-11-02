@@ -1,4 +1,4 @@
-"""The hand check: draw a sample of published facts, then report how often each source type is right.
+"""The accuracy check: draw a sample of published facts, then report how often each source type is right.
 
     python3 tools/accuracy.py sample --envelopes out/envelopes.jsonl --companies 40 --out docs/accuracy/sheet.csv
     (a reviewer opens every row's live page and fills ``verdict`` and ``note``)
@@ -117,11 +117,11 @@ def report(args: argparse.Namespace) -> None:
     misses = [f"- **{r['company']}** ({r['organisation_number']}), {r['source_type']}: {r['value']}. {r['note']}" for r in wrong_rows] or ["None."]
     companies = len({r["organisation_number"] for r in rows})
     payload = {"as_of": args.as_of, "run": args.run, "companies": companies, "rows": out_rows, "checked_by": args.checked_by,
-               "note": f"{companies} companies checked by hand on {args.as_of} against the live pages. {args.checked_by} Job ads and social pages were sampled more heavily because they are rare."}
+               "note": f"{companies} companies checked page by page on {args.as_of} against the live pages. {args.checked_by} Job ads and social pages were sampled more heavily because they are rare."}
     (ROOT / "kildespor" / "data" / "accuracy.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     text = [
         "# How often each source type is right", "",
-        f"Hand check of run `{args.run}` on {args.as_of}: {companies} companies, {len(rows)} published facts. Sheet: "
+        f"Page-by-page check of run `{args.run}` on {args.as_of}: {companies} companies, {len(rows)} published facts. Sheet: "
         f"[`accuracy/sheet.csv`](accuracy/sheet.csv). {args.checked_by}", "",
         "Companies were drawn at random, those with a job ad or a social page first, because both are rare. At most "
         "three facts of one type per company. So the shares describe published facts, not coverage: they say how often "
@@ -132,6 +132,7 @@ def report(args: argparse.Namespace) -> None:
         "## What each check asked", "",
         *[f"- **{LABELS[k]}:** {QUESTIONS[k]}" for k in ("site", "social", "news", "jobs")], "",
         "## What was wrong", "", *misses, "",
+        *(["## Fixed after this check", "", args.fixed, "", "These fixes are not in the table: it reports the run as it was checked.", ""] if args.fixed else []),
     ]
     (ROOT / "docs" / "ACCURACY.md").write_text("\n".join(text), encoding="utf-8")
     print("\n".join(table))
@@ -151,6 +152,7 @@ def main() -> None:
     rep.add_argument("--run", required=True)
     rep.add_argument("--as-of", required=True)
     rep.add_argument("--checked-by", required=True, help="who opened the pages, stated plainly")
+    rep.add_argument("--fixed", default="", help="what changed in the agent after the check")
     args = parser.parse_args()
     (sample if args.command == "sample" else report)(args)
 
