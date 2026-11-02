@@ -32,6 +32,7 @@ import html
 import json
 import os
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -437,6 +438,10 @@ def build_site(envelopes: list[dict[str, Any]], site_dir: Path, report: dict[str
         pages.append((org, env, payload, row))
     run = (report or {}).get("run") or (envelopes[0].get("run") if envelopes else {}) or {}
     previous = sorted({str((e.get("refresh") or {}).get("previous_run_id")) for e in envelopes if (e.get("refresh") or {}).get("previous_run_id")})
+    previous_at = max((str((e.get("refresh") or {}).get("previous_completed_at") or "") for e in envelopes), default="")
+    kinds = Counter(str(ch.get("change_type")) for e in envelopes for ch in e.get("changes") or [])
+    # A fact first seen on an earlier run and read again on this one: what a quiet re-run still tells the reader.
+    confirmed = sum(1 for e in envelopes for c in claims_of(e) if c.get("availability") == "available" and not c.get("stale") and not c.get("historical") and c.get("first_observed_at") and c.get("first_observed_at") != c.get("last_observed_at"))
     meta = {
         "agent": "kildespor",
         "version": __version__,
@@ -444,7 +449,11 @@ def build_site(envelopes: list[dict[str, Any]], site_dir: Path, report: dict[str
         "completed_at": run.get("completed_at"),
         "count": len(envelopes),
         "previous_runs": previous,
+        "previous_completed_at": previous_at or None,
         "baseline": not previous,
+        "change_kinds": dict(kinds.most_common()),
+        "confirmed": confirmed,
+        "accuracy": _accuracy(),
         "validation": ((report or {}).get("validation") or {}).get("passed"),
         "coverage": {k: v.get("share_available") for k, v in ((report or {}).get("coverage_by_family") or {}).items()},
         "requests": ((report or {}).get("operations") or {}).get("requests"),
@@ -463,6 +472,15 @@ def build_site(envelopes: list[dict[str, Any]], site_dir: Path, report: dict[str
     _write(site_dir / "compare" / "index.html", page_html("compare", root="../", site="../", body=f'<section class="card"><h1>Compare companies</h1><p>Choose two to four companies with their Compare button, or open <span class="mono">compare/index.html?orgs=&lt;org&gt;,&lt;org&gt;</span>.</p></section>{_noscript("../")}'))
     _write(site_dir / "refresh" / "index.html", page_html("refresh", root="../", site="../", body=f'<section class="card"><h1>Refresh: what changed in this run</h1><p>Run {_esc(meta["run_id"])}; {"baseline run, no previous snapshot" if meta["baseline"] else "compared with " + _esc(", ".join(previous))}.</p></section>{_noscript("../")}'))
     return site_dir / "index.html"
+
+
+def _accuracy() -> dict[str, Any] | None:
+    """The published hand check (``kildespor/data/accuracy.json``, written by ``tools/accuracy.py``), shown on the research page."""
+    path = Path(__file__).parent / "data" / "accuracy.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def write_root_page(out_dir: Path, site_dir: Path) -> Path | None:
