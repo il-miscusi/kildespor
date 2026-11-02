@@ -1,6 +1,6 @@
 # 100-company smoke test
 
-Code commit: `622767ce693cd821581d75a84c16c9fe698a7a94` (this folder was added in the following commit; it changes no code).
+Code commit: `622767ce693cd821581d75a84c16c9fe698a7a94` (this folder was added in the following commit; it changes no code, and the commit after that changes one screen-reader caption in the viewer).
 
 Run on a Kaggle CPU machine: the repository at that commit in a fresh directory, an empty
 virtualenv, `pip install -r requirements.txt`, the unit tests, then the documented run command
