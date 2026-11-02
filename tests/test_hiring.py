@@ -592,6 +592,12 @@ class OrganiserFirstNovember(unittest.TestCase):
         self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Vi søker dyktige selgere</h2>{ad}"), [])
         self.assertEqual(self.inline(f"<h1>Ledige stillinger</h1><h2>Teknisk selger</h2>{ad}", "FJORDBYGG AS"), [])
         self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Teknisk selger</h2>{ad}<p>Stillingen er besatt.</p>"), [])
+        self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Som elektriker hos Aircoil vil du:</h2>{ad}"), [])
+        self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Fyll ut skjema og bli kontaktet av en rådgiver nær deg</h2>{ad}"), [])
+
+    def test_a_shared_brand_does_not_name_the_employer(self) -> None:
+        rec = self.company("STIFTELSEN BLÅ KORS FREDRIKSTAD")
+        self.assertEqual(harvest.ad_names_company("Bli med i Blå Kors", rec, "https://blaakors.no/", legal_only=True), None)
 
 
 if __name__ == "__main__":

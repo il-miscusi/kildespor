@@ -1854,12 +1854,18 @@ def _word_key(text: str, fold: Any = _fold_a) -> str:
     return " " + " ".join(re.findall(r"[a-z0-9æøå]+", fold(text))) + " "
 
 
-def ad_names_company(text: str, rec: CompanyRecord, site_url: str = "") -> str | None:
+def ad_names_company(text: str, rec: CompanyRecord, site_url: str = "", *, legal_only: bool = False) -> str | None:
     """The name of ours the ad's own text carries (legal, subunit or admitted brand name without the
     legal form, or the domain's word), None when it carries none. A job title alone says nothing about
-    who is hiring, so an ad that never names the company is not published as the company's."""
-    legal = _names_of(rec)
-    names = legal + identity_brands(list(rec.context.get("site_brand_names") or []), legal, site_url)
+    who is hiring, so an ad that never names the company is not published as the company's. With
+    ``legal_only`` only the registered names count: a shared brand ("Blå Kors") names many employers."""
+    entity = rec.context.get("entity") or {}
+    if legal_only:
+        names = [entity.get("navn") or ""] + [s.get("name") or "" for s in rec.context.get("subunits") or []]
+        site_url = ""
+    else:
+        legal = _names_of(rec)
+        names = legal + identity_brands(list(rec.context.get("site_brand_names") or []), legal, site_url)
     for fold in (_fold_a, _fold_b):
         hay = _word_key(text, fold)
         for name in sorted(names, key=len, reverse=True):
@@ -1909,7 +1915,7 @@ def inline_ads(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, site_url
     the top of the careers page."""
     content = _content_soup(soup)
     text = re.sub(r"\s+", " ", content.get_text(" ", strip=True))
-    named = ad_names_company(text, rec, site_url)
+    named = ad_names_company(text, rec, site_url, legal_only=True)
     if not named or NO_OPENINGS.search(text) or AD_CLOSED.search(text) or not reads_as_ad(text):
         return []
     today = utc_today()
@@ -1921,6 +1927,8 @@ def inline_ads(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, site_url
         title = _clean(head.get_text(" ", strip=True))
         if not 4 <= len(title) <= 90 or not ROLE_WORD.search(title) or NOT_A_ROLE.search(title) or AD_NOT_A_ROLE.search(title):
             continue
+        if title[-1] in ":?!" or len(re.split(r"[,–—(]| - ", title)[0].split()) > 6:
+            continue  # a lead-in to a list ("Som elektriker hos oss vil du:") or a sentence, not a role
         if ROLE_SECTION.match(title) or ROLE_BOILERPLATE.search(title) or title.lower() in titles:
             continue
         if any(not str(a["href"]).startswith("#") for a in head.find_all("a", href=True)):
@@ -3430,7 +3438,8 @@ def _probe_careers(plan: Plan, home: Snapshot, site_host: str) -> tuple[int, str
             return None
         url = urlunsplit((root.scheme, root.netloc, f"/{path}", "", ""))
         page, _why = plan.read(url)
-        if page is not None and _is_careers_page(page, 0, site_host):
+        # The heading must say so too: a site that answers every address with its homepage has no careers page there.
+        if page is not None and _is_careers_page(page, 0, site_host) and CAREER_HEADING.search(f"{page[1].title.get_text(' ', strip=True) if page[1].title else ''} {' '.join(h.get_text(' ', strip=True) for h in page[1].find_all('h1'))}"):
             return 0, url, home, f"careers page at {url}", ""
     return None
 
