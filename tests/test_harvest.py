@@ -217,6 +217,7 @@ class SocialTests(unittest.TestCase):
         rec = record(name)
         rec.add_claim(family="legal_identity", field_name="group_relationship", value={"relationship": "parent", "organisation_number": "995754606", "name": parent},
                       key=["parent", "995754606"], evidence_ids=["ev-test"], method="official_register")
+        rec.context["group_tree"] = {"999999999": {"parent": rec.organisation_number}}  # a unit below it, as Consto AS has
         return rec
 
     def test_parent_group_account_on_subsidiary_site(self) -> None:
@@ -266,7 +267,9 @@ class SocialTests(unittest.TestCase):
         <p>© Kitron Group</p></footer></body></html>"""
         page = snap("https://consto.no/", own)
         contains, prefixes = harvest.identity_tokens(["CONSTO AS"], page.final_url)
-        found = [f.url for f in harvest.profiles_on_page(page, soup_of(own), own, contains, prefixes, record("CONSTO AS"))]
+        consto = record("CONSTO AS")
+        consto.context["group_tree"] = {"999999999": {"parent": consto.organisation_number}}
+        found = [f.url for f in harvest.profiles_on_page(page, soup_of(own), own, contains, prefixes, consto)]
         self.assertEqual(found, ["https://facebook.com/Constokonsern", "https://linkedin.com/company/consto-as",
                                  "https://youtube.com/channel/UCconstoconstoconsto12", "https://instagram.com/consto_as"])
 

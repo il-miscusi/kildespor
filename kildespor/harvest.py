@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
@@ -676,6 +676,27 @@ def foreign_page(url: str, own_text: str) -> bool:
     return any(marker in host and marker not in own_text for marker in FOREIGN_MARKERS)
 
 
+# Words that make an account the group's rather than one company's.
+GROUP_ACCOUNT = re.compile(r"gruppen|gruppa|group|konsern|holding")
+
+
+def group_account(account: str, rec: CompanyRecord | None) -> bool:
+    """The account is a group's page, not this company's: its name says group (permiangruppen beside
+    PERMIAN AS) and our legal name does not. Brreg often records no parent, so the word on the account
+    is the only sign. A company with units below it keeps its page, because the group is then its own:
+    a listed company (kitrongroup, KITRON ASA), the root of its Brreg group tree, or a parent inside
+    the tree (Constokonsern, CONSTO AS over Consto Anlegg Nord AS)."""
+    if rec is None or not GROUP_ACCOUNT.search(account):
+        return False
+    entity = rec.context.get("entity") or {}
+    org = rec.organisation_number
+    if GROUP_ACCOUNT.search(_alnum(entity.get("navn") or "")) or rec.context.get("group_root") == org:
+        return False
+    if any(node.get("parent") == org for node in (rec.context.get("group_tree") or {}).values()):
+        return False
+    return (entity.get("organisasjonsform") or {}).get("kode") != "ASA"
+
+
 def owned_profile(handle: str, contains: set[str], prefixes: set[str], *, allow_id: bool = True, own_text: str = "") -> bool:
     """A profile the company's site links is published as the company's own only when its account
     name resembles the company's names or domain and does not name a sister company abroad (an
@@ -988,6 +1009,8 @@ def profiles_on_page(
             return
         if parent_account(account, contains, parent_names + ([related] if related else [])):
             return
+        if group_account(account, rec):
+            return
         taken.append((item, False))
 
     def route(node: Any) -> tuple[str, str]:
@@ -1237,6 +1260,7 @@ class Role:
     employer: str | None = None  # the employer the listing's structured data names, if any
     policy: str | None = None  # access policy of the source, for an ATS's public list
     card: str = ""  # the listing card's text, for a role link
+    named_as: str = ""  # the name of ours the ad's own text carries
 
 
 _TT_JOB_PATH = re.compile(r"^/jobs/(\d+)(?:-|$)")
@@ -1826,6 +1850,105 @@ def norwegian_workplace(ad: AdPage, rec: CompanyRecord, listed_location: str | N
     return len(words) >= 6 and nb >= 3 and nb > other
 
 
+def _word_key(text: str, fold: Any = _fold_a) -> str:
+    return " " + " ".join(re.findall(r"[a-z0-9æøå]+", fold(text))) + " "
+
+
+def ad_names_company(text: str, rec: CompanyRecord, site_url: str = "") -> str | None:
+    """The name of ours the ad's own text carries (legal, subunit or admitted brand name without the
+    legal form, or the domain's word), None when it carries none. A job title alone says nothing about
+    who is hiring, so an ad that never names the company is not published as the company's."""
+    legal = _names_of(rec)
+    names = legal + identity_brands(list(rec.context.get("site_brand_names") or []), legal, site_url)
+    for fold in (_fold_a, _fold_b):
+        hay = _word_key(text, fold)
+        for name in sorted(names, key=len, reverse=True):
+            key = " ".join(fold(t) for t in name_tokens(name))
+            if len(key) >= 4 and f" {key} " in hay:
+                return " ".join(name_tokens(name))
+        label = _domain_label(site_url) if site_url else ""
+        if len(label) >= 4 and label not in PLACE_WORDS and f" {label} " in hay:
+            return label
+    return None
+
+
+# What an ad says and a page about working here does not. Two different ones are needed: a story about
+# two employees ends with a "Søk jobb" button, but carries no duties, qualifications or deadline.
+AD_MARKERS = (
+    r"s[øo]knadsfrist|siste\s+s[øo]knadsdag|application\s+deadline|apply\s+by",
+    r"arbeidsoppg[aå]ver|oppg[aå]ver|ansvarsomr[aå]der|responsibilities|dine\s+oppgaver",
+    r"kvalifikasjon(?:er|ar)|vi\s+ser\s+etter|krav\s+til|qualifications|requirements",
+    r"stillingsprosent|ansettelsesform|tiltredelse|fast\s+stilling|vikariat|heltid|deltid|full[- ]?time|part[- ]?time",
+    r"s[øo]k\s+(?:p[aå]\s+)?(?:stillingen|jobben|her|n[aå])|send\s+(?:inn\s+)?(?:din\s+|en\s+|oss\s+)?(?:din\s+)?s[øo]knad|s[øo]knad\s+(?:og\s+cv\s+)?(?:sendes|med\s+cv)|apply\s+(?:now|here|for)",
+    r"vi\s+tilbyr|we\s+offer|l[øo]nn\s+etter|konkurransedyktig\s+l[øo]nn",
+)
+AD_MARKER_RES = [re.compile(p, re.I) for p in AD_MARKERS]
+
+
+def reads_as_ad(text: str, need: int = 2) -> bool:
+    return sum(bool(p.search(text)) for p in AD_MARKER_RES) >= need
+
+
+# A role noun in a heading, at the end of a word: "Teknisk selger", "Sjåfør - transport", "Bilmekaniker".
+ROLE_WORD = re.compile(
+    r"(?:selger|sjåfør|sjafor|tømrer|montør|snekker|konsulent|ingeniør|engineer|rådgiver|rådgjevar|medarbeider|medarbeidar|arbeider|arbeidar|"
+    r"elektriker|rørlegger|mekaniker|operatør|assistent|lærling|sykepleier|renholder|maler|murer|anleggsgartner|planlegger|kokk|servitør|"
+    r"frisør|barber|kundebehandler|regnskapsfører|utvikler|developer|manager|advokat|arkitekt|tekniker|vaktmester|pedagog|lærer|sveiser|"
+    r"maskinfører|steinlegger|leder|sjef|koordinator|controller|prosjektleder|bilpleier|lagermedarbeider|butikkmedarbeider|helsefagarbeider)(?:e|en|ar|ane)?\b",
+    re.I,
+)
+INLINE_AD = "careers_page_inline_ad"
+
+
+def inline_ads(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, site_url: str, rejected: set[str] | None = None) -> list[Role]:
+    """Ads written out on the careers page itself, with no page of their own (Aircoil's "Teknisk selger",
+    Notra's two): small employers post them this way and a link-only reader finds nothing. A heading
+    counts when it names a role and is not a section of an ad or a general call ("Vi søker dyktige
+    tømrere"); its text must read as an ad, and the page must name this company and not say the role is
+    closed. The claim's URL points at the role with a text fragment, so it opens on that ad and not on
+    the top of the careers page."""
+    content = _content_soup(soup)
+    text = re.sub(r"\s+", " ", content.get_text(" ", strip=True))
+    named = ad_names_company(text, rec, site_url)
+    if not named or NO_OPENINGS.search(text) or AD_CLOSED.search(text) or not reads_as_ad(text):
+        return []
+    today = utc_today()
+    heads = content.find_all(["h1", "h2", "h3", "h4"])
+    legal = (rec.context.get("entity") or {}).get("navn") or named
+    out: list[Role] = []
+    titles: list[str] = []
+    for i, head in enumerate(heads):
+        title = _clean(head.get_text(" ", strip=True))
+        if not 4 <= len(title) <= 90 or not ROLE_WORD.search(title) or NOT_A_ROLE.search(title) or AD_NOT_A_ROLE.search(title):
+            continue
+        if ROLE_SECTION.match(title) or ROLE_BOILERPLATE.search(title) or title.lower() in titles:
+            continue
+        if any(not str(a["href"]).startswith("#") for a in head.find_all("a", href=True)):
+            continue  # a link to a page of its own: the role-link route reads that page
+        level = int(head.name[1])
+        stop = next((h for h in heads[i + 1:] if int(h.name[1]) <= level and ROLE_WORD.search(h.get_text(" ", strip=True))), None)
+        parts: list[str] = []
+        for node in head.next_elements:
+            if node is stop:
+                break
+            if isinstance(node, str):
+                parts.append(node)
+        section = re.sub(r"\s+", " ", " ".join(parts)).strip()
+        if len(section) < 80 or not reads_as_ad(section, 1):
+            continue
+        deadline = DEADLINE.search(section)
+        expires = text_date(deadline.group(1)) if deadline else None
+        if expires and expires < today:
+            continue
+        key = _title_key(title)
+        if rejected and "title:" + key in rejected:
+            continue
+        titles.append(title.lower())
+        location = LOCATION.search(section)
+        out.append(Role(title[:200], f"{snap.final_url.split('#')[0]}#:~:text={quote(title[:60])}", None, expires, location.group(1).strip() if location else None, INLINE_AD, f'ad on the careers page: "{title}"', INLINE_AD, legal[:200], named_as=named))
+    return out
+
+
 @dataclass
 class Verified:
     """Roles that passed their ad page (or came from structured data), and what happened to the rest."""
@@ -1838,16 +1961,17 @@ class Verified:
     group_list: bool = False
 
 
-def verify_roles(plan: Plan, rec: CompanyRecord, roles: list[tuple[Role, Snapshot]], own_names: list[str], *, group_site: bool) -> Verified:
+def verify_roles(plan: Plan, rec: CompanyRecord, roles: list[tuple[Role, Snapshot]], own_names: list[str], *, group_site: bool, site_url: str = "") -> Verified:
     """Keep only roles that are one open ad by this company.
 
     Structured roles (JSON-LD JobPosting, the ATS's own job feed) were checked where they were
     read. Every role link has its own ad page read (at most ``MAX_AD_FETCHES`` requests); a link
     that is not read is not published. The ad page decides: ``read_ad_page`` refuses closed ads,
-    open applications and logins, and the employer it names must be this company. A page naming
-    no employer is accepted only on the company's own (or own-tenant) list that is not a group
-    list; a list is a group list when the site is a group site or its ad pages name two or more
-    employers."""
+    open applications and logins, and the employer it names must be this company. A page with no
+    employer field is accepted only on the company's own (or own-tenant) list that is not a group
+    list, and only when its own text names the company and reads as an ad: a bare job title with
+    nothing tying it to the company is not published (organiser, 1 Nov). A list is a group list when
+    the site is a group site or its ad pages name two or more employers."""
     out = Verified([], refused={})
     ads: list[tuple[Role, Snapshot, AdPage, Snapshot]] = []
     structured: list[tuple[Role, Snapshot]] = []
@@ -1894,10 +2018,17 @@ def verify_roles(plan: Plan, rec: CompanyRecord, roles: list[tuple[Role, Snapsho
         if verdict is None and not norwegian_workplace(ad, rec, role.location):
             out.refused[role.url] = "the ad names no employer and no workplace in Norway"
             continue
+        role.named_as = ad_names_company(ad.text, rec, site_url) or ""
+        if verdict is None and not role.named_as:
+            out.refused[role.url] = "the ad's text never names the company"
+            continue
+        if verdict is None and not reads_as_ad(ad.text):
+            out.refused[role.url] = "the page does not read as one ad"
+            continue
         role.title = role.title or (ad.title or "")[:200]
         role.expires = role.expires or ad.expires
         role.published = role.published or ad.published
-        role.employer = role.employer or (ad.employers[0] if ad.employers else None)
+        role.employer = role.employer or (ad.employers[0] if ad.employers else (rec.context.get("entity") or {}).get("navn"))
         role.method = "ad_page_read"
         out.kept.append((role, listing, snap))
     for role, listing in structured:
@@ -1907,8 +2038,17 @@ def verify_roles(plan: Plan, rec: CompanyRecord, roles: list[tuple[Role, Snapsho
         if not role.employer and role.method == "json_ld_jobposting" and not norwegian_workplace(AdPage(None, role.title, [], set(), None, None, [], role.location, ""), rec, role.location):
             out.refused[role.url] = "the posting names no employer and no workplace in Norway"
             continue
+        if not role.employer:
+            role.named_as = ad_names_company(_page_text(listing), rec, site_url) or ""
+            if not role.named_as:
+                out.refused[role.url] = "the posting never names the company"
+                continue
         out.kept.append((role, listing, None))
     return out
+
+
+def _page_text(snap: Snapshot) -> str:
+    return re.sub(r"\s+", " ", _content_soup(parse(snap)[0]).get_text(" ", strip=True))
 
 
 def _name_is_ours(name: str, own_keys: set[str], rec: CompanyRecord) -> bool:
@@ -2793,6 +2933,8 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     candidates = _careers_candidates(anchors, sitemap, sitemap_snaps, site_host, contains)
     own = next((c for c in candidates if c[0] in (0, 2)), None)
     ats_links = [c for c in candidates if c[0] == 1]
+    if own is None and not ats_links and not group_site:
+        own = _probe_careers(plan, home, site_host)
     # True only when every careers source this site points to was read in full this run: refresh
     # may then close a site-found role that is gone ("job_posting:site").
     jobs_complete: bool | None = None
@@ -2823,6 +2965,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 listing = None
             else:
                 roles += [(r, c_snap) for r in roles_on_page(c_snap, c_soup, rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
+                roles += [(r, c_snap) for r in ([] if roles else inline_ads(c_snap, c_soup, rec, home.final_url, rejected_roles))]
                 listing = None if roles else _job_listing_link(c_snap, c_soup)
             if listing and listing.endswith(".rss") and plan.can(1, 6.0):
                 feed = plan.raw(listing, headers={"Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.5"})
@@ -2834,6 +2977,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
                 l_page, l_why = plan.read(listing)
                 if l_page is not None and _site(l_page[0].final_url) == _site(c_snap.final_url):
                     roles += [(r, l_page[0]) for r in roles_on_page(l_page[0], l_page[1], rec, own_site=True, tenant_ok=True, site_wide=site_wide, rejected=rejected_roles)]
+                    roles += [(r, l_page[0]) for r in ([] if roles else inline_ads(l_page[0], l_page[1], rec, home.final_url, rejected_roles))]
                     if NO_OPENINGS.search(l_page[2]):
                         hiring_notes["no_openings"].append(_clean_url(l_page[0].final_url))
                 else:
@@ -3131,7 +3275,7 @@ def _extract_site_facts(rec: CompanyRecord, visit: SiteVisit, home: Snapshot, ex
     if parents_site:
         verified = Verified([], refused={r.url: "an ad on a group site is not attributed to a subsidiary" for r, _ in roles}, group_list=True)
     else:
-        verified = verify_roles(plan, rec, roles, names, group_site=company_label == "group_site")
+        verified = verify_roles(plan, rec, roles, names, group_site=company_label == "group_site", site_url=home.final_url)
     # Entries an ATS list carried that were not this entity's open ads count as refused too, so the
     # verdict says the list was read and why nothing in it was published.
     verified.refused = {**(rec.context.get("ats_refused") or {}), **(verified.refused or {})}
@@ -3267,6 +3411,28 @@ def _careers_candidates(anchors: list[tuple[str, str, Snapshot, str]], sitemap: 
 
 
 JOB_LISTING_SEGMENT = re.compile(r"^(?:jobs|jobb|stillinger|ledige-stillinger|ledig-stilling|ledige-jobber|vacancies|open-positions|positions|openings|alle-stillinger)$", re.I)
+
+
+CAREER_PROBES = ("karriere", "ledige-stillinger", "jobb", "jobbe-hos-oss")
+
+
+def _probe_careers(plan: Plan, home: Snapshot, site_host: str) -> tuple[int, str, Snapshot, str, str] | None:
+    """The site's careers page by its usual address, when nothing the agent read links to one: a page
+    in a dropdown the markup hides, or one left out of the menu. The probes get their own allowance, so
+    news and the profile pages keep theirs, and they stop at the first page that is a careers page."""
+    root = urlsplit(home.final_url)
+    fetcher = plan.visit.fetcher
+    plan.limit += len(CAREER_PROBES)
+    if hasattr(fetcher, "raise_company_cap"):
+        fetcher.raise_company_cap(max(0, plan.left()))
+    for path in CAREER_PROBES:
+        if not plan.can(1, 6.0):
+            return None
+        url = urlunsplit((root.scheme, root.netloc, f"/{path}", "", ""))
+        page, _why = plan.read(url)
+        if page is not None and _is_careers_page(page, 0, site_host):
+            return 0, url, home, f"careers page at {url}", ""
+    return None
 
 
 def _job_listing_link(snap: Snapshot, soup: BeautifulSoup) -> str | None:
@@ -3602,23 +3768,27 @@ def _publish_hiring(
     existing = {_norm_url(c["value"].get("url") or "") for c in rec.claims if c["field"] == "job_posting" and isinstance(c["value"], dict)}
     published = 0
     for role, listing, ad_snap in roles:
-        key = _norm_url(role.url)
         title = _clean(role.title)[:300]
+        inline = role.method == INLINE_AD
+        key = f"{_norm_url(role.url)}|{title.lower()}" if inline else _norm_url(role.url)
         if published >= MAX_JOBS or not title or (key in existing and role.url != listing.final_url):
             continue
-        on_listing = key == _norm_url(listing.final_url) and not _role_url(listing.final_url)
-        if not ad_url_ok(role.url) or (on_listing and not (role.method == "json_ld_jobposting" and role.employer and not ats.OPEN_APPLICATION.search(title))):
+        on_listing = _norm_url(role.url) == _norm_url(listing.final_url) and not _role_url(listing.final_url)
+        if not ad_url_ok(role.url) or (on_listing and not inline and not (role.method == "json_ld_jobposting" and role.employer and not ats.OPEN_APPLICATION.search(title))):
             # A search or login link, or a posting whose only address is the careers page. The one
             # exception: a JobPosting in the page's own structured data that names this employer
             # (halvorsenforvaltning.no/karriere carries exactly that for its one vacancy), which is
             # one ad by this company even though it has no page of its own.
             continue
         existing.add(key)
-        value = {"title": title, "url": role.url, "published": role.published, "expires": role.expires, "location": role.location, "employer": role.employer, "source": role.source}
+        employer = role.employer or ((rec.context.get("entity") or {}).get("navn") if role.named_as else None)
+        value = {"title": title, "url": role.url, "published": role.published, "expires": role.expires, "location": role.location, "employer": employer, "source": role.source}
         evidence = []
         if ad_snap is not None:
             # The ad page is the fact: it was read, is open, and names (or does not contradict) us.
-            span = f'ad page: "{title[:150]}"' + (f"; employer named: {role.employer[:80]}" if role.employer else "; no other employer named")
+            span = f'ad page: "{title[:150]}"' + (f"; employer named: {role.employer[:80]}" if role.employer else "")
+            if role.named_as:
+                span += f'; the ad names the company as "{role.named_as[:80]}"'
             evidence.append(rec.evidence_from_snapshot(ad_snap, source_class=_hiring_source(ad_snap, site_host), span=span, method="ad_page_read", url=ad_snap.final_url))
             if _site(ad_snap.final_url) == site_host and hasattr(rec, "note_page"):
                 rec.note_page(ad_snap, title, "job_ad")
@@ -3627,7 +3797,7 @@ def _publish_hiring(
             family="hiring",
             field_name="job_posting",
             value={k: v for k, v in value.items() if v not in (None, "")},
-            key=["job", key if role.url != listing.final_url else f"{key}|{title.lower()}"],
+            key=["job", key if inline or role.url != listing.final_url else f"{key}|{title.lower()}"],
             evidence_ids=evidence,
             confidence=0.9,
             method=role.method,

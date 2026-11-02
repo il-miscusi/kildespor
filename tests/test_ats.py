@@ -494,8 +494,8 @@ class OwnSiteListings(unittest.TestCase):
     """Pool misses of 04f3daf: NUBU's careers page lists one ad; Øgrey's links a sub-list."""
 
     @staticmethod
-    def ad(title: str) -> str:
-        return f"<html><head><title>{title}</title></head><body><main><h1>{title}</h1><p>Vi søker en dyktig medarbeider. Søknadsfrist: 15.11.2099</p></main></body></html>"
+    def ad(title: str, name: str = "") -> str:
+        return f"<html><head><title>{title}</title></head><body><main><h1>{title}</h1><p>{name} søker en dyktig medarbeider. Arbeidsoppgaver: varierte. Søknadsfrist: 15.11.2099</p></main></body></html>"
 
     def test_a_lone_ad_like_link_is_read(self) -> None:
         home = '<html><head><title>NUBU</title></head><body><nav><a href="/no/ledige-stillinger">Ledige stillinger</a></nav></body></html>'
@@ -503,7 +503,7 @@ class OwnSiteListings(unittest.TestCase):
                    '<div class="card"><a href="/no/ledige-stillinger/postdoktor"><span>Ledig stilling</span><h3>Postdoktor (3 år)</h3><span>Les mer</span></a></div></body></html>')
         rec = record("NASJONALT UTVIKLINGSSENTER FOR BARN OG UNGE AS", "985638187")
         harvest_site(rec, "https://www.nubu.no/", home, {
-            "https://www.nubu.no/no/ledige-stillinger": careers, "https://www.nubu.no/no/ledige-stillinger/postdoktor": self.ad("Postdoktor (3 år)")})
+            "https://www.nubu.no/no/ledige-stillinger": careers, "https://www.nubu.no/no/ledige-stillinger/postdoktor": self.ad("Postdoktor (3 år)", "NUBU")})
         self.assertEqual([c["value"]["title"] for c in job_claims(rec)], ["Postdoktor (3 år)"])
 
     def test_a_lone_story_link_is_not(self) -> None:
@@ -523,8 +523,8 @@ class OwnSiteListings(unittest.TestCase):
         rec = record("EINAR ØGREY FARSUND AS", "987260742")
         harvest_site(rec, "https://ogrey.no/", home, {
             "https://ogrey.no/jobb/": landing, "https://ogrey.no/jobb/ledig-stilling/": listing,
-            "https://ogrey.no/ledig-stilling/energimontorer/": self.ad("Fem energimontører"),
-            "https://ogrey.no/ledig-stilling/industrimekaniker/": self.ad("Industrimekaniker")})
+            "https://ogrey.no/ledig-stilling/energimontorer/": self.ad("Fem energimontører", "Einar Øgrey Farsund"),
+            "https://ogrey.no/ledig-stilling/industrimekaniker/": self.ad("Industrimekaniker", "Einar Øgrey Farsund")})
         self.assertEqual(sorted(c["value"]["title"] for c in job_claims(rec)), ["Fem energimontører", "Industrimekaniker"])
 
 

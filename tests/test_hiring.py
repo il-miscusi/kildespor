@@ -92,7 +92,7 @@ def read(url: str, html: str, names: list[str], final_url: str | None = None) ->
 def ad_html(title: str, about: str | None = None, extra: str = "", footer: str = "") -> str:
     about_block = f"<h2>Om {about}</h2><p>Vi bygger Norge.</p>" if about else ""
     return f"""<html><head><title>{title}</title></head><body><header><a href="/">Hjem</a></header><main><h1>{title}</h1>
-    <p>Vi søker en dyktig medarbeider. Søknadsfrist: {FUTURE}</p>{extra}{about_block}</main><footer>{footer}</footer></body></html>"""
+    <p>Fjordbygg søker en dyktig medarbeider. Arbeidsoppgaver: bygging. Søknadsfrist: {FUTURE}</p>{extra}{about_block}</main><footer>{footer}</footer></body></html>"""
 
 
 class CareersPageIsNeverAClaim(unittest.TestCase):
@@ -409,7 +409,7 @@ class ParentVacanciesAbroad(unittest.TestCase):
 
     @staticmethod
     def ad(title: str, text: str, ld: str = "") -> str:
-        return f"<html><head><title>{title}</title>{ld}</head><body><main><h1>{title}</h1><p>{text}</p></main></body></html>"
+        return f"<html><head><title>{title}</title>{ld}</head><body><main><h1>{title}</h1><p>{text}</p><p>Responsibilities and qualifications at PNO Innovation are below.</p></main></body></html>"
 
     def test_norwegian_workplace_signals(self) -> None:
         base = "https://www.pnoinnovation.com/position/"
@@ -539,6 +539,59 @@ class TeamtailorSameAdTwiceTest(unittest.TestCase):
             "https://karriere.okoraad.no/jobs/5082339-helgeland",
             "https://example.no/jobs/7401342-other",
         ])
+
+
+class OrganiserFirstNovember(unittest.TestCase):
+    """Soham's notes of 1 Nov: a group page is not the company's, an ad must name the company, and
+    jobs should start from the company's own careers page."""
+
+    def company(self, name: str = "AIRCOIL AS", form: str = "AS") -> CompanyRecord:
+        rec = record(name)
+        rec.context["entity"] = {"navn": name, "organisasjonsform": {"kode": form}}
+        return rec
+
+    def test_group_account(self) -> None:
+        self.assertTrue(harvest.group_account("permiangruppen", self.company("PERMIAN AS")))
+        self.assertTrue(harvest.group_account("metosgroup", self.company("METOS AS")))
+        self.assertFalse(harvest.group_account("permian", self.company("PERMIAN AS")))
+        self.assertFalse(harvest.group_account("afgruppen", self.company("AF GRUPPEN ASA", "ASA")))
+        self.assertFalse(harvest.group_account("rsvgruppen", self.company("RSV GRUPPEN AS")))
+        self.assertFalse(harvest.group_account("kitrongroup", self.company("KITRON ASA", "ASA")))
+        top = self.company("PERMIAN AS")
+        top.context["group_root"] = top.organisation_number
+        self.assertFalse(harvest.group_account("permiangruppen", top))
+
+    def test_ad_must_name_the_company(self) -> None:
+        rec = self.company("HAUGESUND SPAREBANK")
+        self.assertEqual(harvest.ad_names_company("Haugesund Sparebank søker en leder.", rec), "haugesund sparebank")
+        self.assertIsNone(harvest.ad_names_company("Vi søker en leder til avdelingen vår i Haugesund.", rec))
+        self.assertEqual(harvest.ad_names_company("Bli med i NUBU i dag.", self.company("NASJONALT UTVIKLINGSSENTER AS"), "https://www.nubu.no/"), "nubu")
+
+    def test_a_story_about_working_here_is_not_an_ad(self) -> None:
+        self.assertFalse(harvest.reads_as_ad("Jeg har aldri måttet velge mellom karriere og barn, sier Anna. Søk jobb hos oss."))
+        self.assertTrue(harvest.reads_as_ad("Arbeidsoppgaver: lede teamet. Kvalifikasjoner: erfaring. Søknadsfrist: snarest."))
+
+    def inline(self, body: str, name: str = "AIRCOIL AS") -> list[harvest.Role]:
+        page = snap("https://aircoil.no/ledige_stillinger/", f"<html><body><main>{body}</main></body></html>")
+        return harvest.inline_ads(page, parse(page)[0], self.company(name), "https://aircoil.no/")
+
+    def test_ad_written_on_the_careers_page(self) -> None:
+        roles = self.inline(f"<h1>Ledige stillinger hos Aircoil</h1><h2>Teknisk selger</h2><p>Arbeidsoppgaver: finne nye kunder for Aircoil og følge opp eksisterende kunder over hele landet.</p><p>Kvalifikasjoner: teknisk bakgrunn. Søknadsfrist: {FUTURE}</p>")
+        self.assertEqual([r.title for r in roles], ["Teknisk selger"])
+        self.assertEqual(roles[0].employer, "AIRCOIL AS")
+        self.assertIn("#:~:text=Teknisk%20selger", roles[0].url)
+
+    def test_two_ads_on_one_page_are_two_claims(self) -> None:
+        roles = self.inline("<h1>Aircoil søker</h1><h3>Sjåfør</h3><p>Kvalifikasjoner: førerkort klasse CE og erfaring med transport, gode norskkunnskaper og interesse for faget.</p><h3>Logistikk/planlegger</h3><p>Kvalifikasjoner: erfaring fra logistikk, gode IT-kunnskaper og evne til å arbeide systematisk. Søknadsfrist: snarest.</p>")
+        self.assertEqual([r.title for r in roles], ["Sjåfør", "Logistikk/planlegger"])
+        self.assertNotEqual(roles[0].url, roles[1].url)
+
+    def test_no_inline_ad_when_closed_general_or_unnamed(self) -> None:
+        ad = "<p>Arbeidsoppgaver: finne nye kunder og følge opp eksisterende kunder over hele landet i mange år.</p><p>Kvalifikasjoner: teknisk bakgrunn.</p>"
+        self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Teknisk selger</h2>{ad}<p>Søknadsfrist: {PAST}</p>"), [])
+        self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Vi søker dyktige selgere</h2>{ad}"), [])
+        self.assertEqual(self.inline(f"<h1>Ledige stillinger</h1><h2>Teknisk selger</h2>{ad}", "FJORDBYGG AS"), [])
+        self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Teknisk selger</h2>{ad}<p>Stillingen er besatt.</p>"), [])
 
 
 if __name__ == "__main__":
