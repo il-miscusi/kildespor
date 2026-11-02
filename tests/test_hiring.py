@@ -595,6 +595,12 @@ class OrganiserFirstNovember(unittest.TestCase):
         self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Som elektriker hos Aircoil vil du:</h2>{ad}"), [])
         self.assertEqual(self.inline(f"<h1>Aircoil</h1><h2>Fyll ut skjema og bli kontaktet av en rådgiver nær deg</h2>{ad}"), [])
 
+    def test_a_units_list_on_a_shared_site(self) -> None:
+        ad = "<p>Arbeidsoppgaver: lede avdelingen og følge opp de ansatte gjennom hele skoleåret som kommer.</p><p>Kvalifikasjoner: ledererfaring.</p>"
+        page = snap("https://blaakors.no/ledige-stillinger/", f"<html><body><main><h1>Ledige stillinger</h1><h2>Avdelingsleder, Seiersborg vgs</h2>{ad}<h2>Controller, Blå Kors Fredrikstad</h2>{ad}<p>Stiftelsen Blå Kors Fredrikstad</p></main></body></html>")
+        rec = self.company("STIFTELSEN BLÅ KORS FREDRIKSTAD")
+        self.assertEqual([r.title for r in harvest.inline_ads(page, parse(page)[0], rec, "https://blaakors.no/")], ["Controller, Blå Kors Fredrikstad"])
+
     def test_a_shared_brand_does_not_name_the_employer(self) -> None:
         rec = self.company("STIFTELSEN BLÅ KORS FREDRIKSTAD")
         self.assertEqual(harvest.ad_names_company("Bli med i Blå Kors", rec, "https://blaakors.no/", legal_only=True), None)

@@ -1921,6 +1921,7 @@ def inline_ads(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, site_url
     today = utc_today()
     heads = content.find_all(["h1", "h2", "h3", "h4"])
     legal = (rec.context.get("entity") or {}).get("navn") or named
+    own_domain = any(_domain_label(site_url) == re.sub(r"[^a-z0-9]", "", fold(t)) for t in [" ".join(name_tokens(legal))] for fold in (_fold_a, _fold_b))
     out: list[Role] = []
     titles: list[str] = []
     for i, head in enumerate(heads):
@@ -1944,6 +1945,8 @@ def inline_ads(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, site_url
         section = re.sub(r"\s+", " ", " ".join(parts)).strip()
         if len(section) < 80 or not reads_as_ad(section, 1):
             continue
+        if not own_domain and not ad_names_company(f"{title} {section}", rec, legal_only=True):
+            continue  # blaakors.no lists several units' ads: on a site not named for us, the ad itself must name us
         deadline = DEADLINE.search(section)
         expires = text_date(deadline.group(1)) if deadline else None
         if expires and expires < today:
