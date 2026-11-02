@@ -597,9 +597,9 @@ class OrganiserFirstNovember(unittest.TestCase):
 
     def test_a_units_list_on_a_shared_site(self) -> None:
         ad = "<p>Arbeidsoppgaver: lede avdelingen og følge opp de ansatte gjennom hele skoleåret som kommer.</p><p>Kvalifikasjoner: ledererfaring.</p>"
-        page = snap("https://blaakors.no/ledige-stillinger/", f"<html><body><main><h1>Ledige stillinger</h1><h2>Avdelingsleder, Seiersborg vgs</h2>{ad}<h2>Controller, Blå Kors Fredrikstad</h2>{ad}<p>Stiftelsen Blå Kors Fredrikstad</p></main></body></html>")
+        page = snap("https://blaakors.no/ledige-stillinger/", f"<html><body><main><h1>Ledige stillinger</h1><h2>Avdelingsleder, Seiersborg vgs</h2>{ad}<h2>Controller</h2>{ad}<p>Stiftelsen Blå Kors Fredrikstad søker en controller.</p><h2>Åpen søknad</h2><p>Stiftelsen Blå Kors Fredrikstad</p></main></body></html>")
         rec = self.company("STIFTELSEN BLÅ KORS FREDRIKSTAD")
-        self.assertEqual([r.title for r in harvest.inline_ads(page, parse(page)[0], rec, "https://blaakors.no/")], ["Controller, Blå Kors Fredrikstad"])
+        self.assertEqual([r.title for r in harvest.inline_ads(page, parse(page)[0], rec, "https://blaakors.no/")], ["Controller"])
 
     def test_job_ads_and_deadline_lists_are_not_news(self) -> None:
         self.assertTrue(harvest.JOB_AD_TITLE.search("Lokal entreprenør med stolt historie og vekstambisjoner søker Prosjektleder/Driftsleder Grunn/VA!"))

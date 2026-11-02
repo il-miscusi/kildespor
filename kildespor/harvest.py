@@ -1935,7 +1935,7 @@ def inline_ads(snap: Snapshot, soup: BeautifulSoup, rec: CompanyRecord, site_url
         if any(not str(a["href"]).startswith("#") for a in head.find_all("a", href=True)):
             continue  # a link to a page of its own: the role-link route reads that page
         level = int(head.name[1])
-        stop = next((h for h in heads[i + 1:] if int(h.name[1]) <= level and ROLE_WORD.search(h.get_text(" ", strip=True))), None)
+        stop = next((h for h in heads[i + 1:] if int(h.name[1]) <= level), None)
         parts: list[str] = []
         for node in head.next_elements:
             if node is stop:
