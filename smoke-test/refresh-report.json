@@ -5,10 +5,10 @@
     "run_id": "smoke-100-b",
     "agent": "kildespor",
     "agent_version": "1.0.0",
-    "started_at": "2026-10-31T15:38:54Z",
-    "completed_at": "2026-10-31T15:39:57Z",
+    "started_at": "2026-11-02T05:50:54Z",
+    "completed_at": "2026-11-02T05:52:14Z",
     "terminal_status": "completed",
-    "time_budget_s": 960.0,
+    "time_budget_s": 1500.0,
     "input_count": 100,
     "max_requests": 1900
   },
@@ -163,26 +163,26 @@
   "evidence_records": 7053,
   "changes_detected": 0,
   "operations": {
-    "requests": 1024,
-    "bytes": 73248264,
-    "p50_ms": 597,
-    "p95_ms": 2204,
+    "requests": 1064,
+    "bytes": 85658301,
+    "p50_ms": 899,
+    "p95_ms": 4007,
     "max_requests": 1900,
     "budget_refusals": 0,
     "rate_limited_responses": 1,
-    "dns_timeouts": 0,
-    "wall_clock_s": 63.3,
+    "dns_timeouts": 1,
+    "wall_clock_s": 79.9,
     "per_company_runtime_ms": {
-      "p50": 7452,
-      "p95": 37956
+      "p50": 12408,
+      "p95": 46945
     },
     "third_party_cost_usd": 0.0,
     "language_model_calls": 0
   },
   "nav_feed": {
     "days": 45,
-    "pages": 88,
-    "active_ads": 9384,
+    "pages": 87,
+    "active_ads": 7821,
     "error": null,
     "loaded": true
   }

@@ -90,8 +90,9 @@ newest first.
 On disk (`kildespor/contract.py`), each website, social profile, hiring
 signal and news claim carries a scalar `value` and keeps the full record in
 `detail`: `official_website` (value: the site URL), `social_profile` (value:
-the canonical profile URL), `hiring_signal` (value: the careers page or job
-ad URL; `signal_type` is `careers_page` or `job_posting`) and `dated_news`
+the canonical profile URL), `hiring_signal` (value: the URL of one job ad; an
+ad written out on a careers page has a `#:~:text=` link that opens on it; `detail.employer`
+names the company) and `dated_news`
 (value: `"<title> (<published>)"`). `internal_field` names the agent's
 internal field. Readers that need the record use `detail` when present, else
 `value`.
